@@ -20,6 +20,7 @@ import {
 import type { LayerProps } from "../map";
 import { Input } from "../ui/input";
 import { hexToRgb, rgbToHex } from "@/lib/utils";
+import { PencilIcon } from "lucide-react";
 
 export function AppSidebar({
   layers,
@@ -77,28 +78,51 @@ export function AppSidebar({
                 <DropdownMenu>
                   <DropdownMenuTrigger>
                     <SidebarMenuItem key={layer.id}>
-                      <SidebarMenuButton>{layer.name}</SidebarMenuButton>
+                      <SidebarMenuButton>
+                        <span>{layer.name}</span>
+                      </SidebarMenuButton>
                     </SidebarMenuItem>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent className="w-64" align="start">
-                    <DropdownMenuLabel>{layer.name}</DropdownMenuLabel>
+                    <DropdownMenuLabel>
+                      <Input
+                        defaultValue={layer.name}
+                        className="border-none p-0 h-auto font-medium text-sm focus-visible:ring-0"
+                        onBlur={(e) => {
+                          const newName = e.target.value.trim();
+                          if (newName && newName !== layer.name) {
+                            setLayers(
+                              layers.map((l) =>
+                                l.id === layer.id ? { ...l, name: newName } : l
+                              )
+                            );
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.currentTarget.blur();
+                          }
+                        }}
+                      />
+                    </DropdownMenuLabel>
                     <DropdownMenuSeparator />
-
-                    <Input
-                      type="color"
-                      value={rgbToHex(layer.color)}
-                      onChange={(e) => {
-                        const color = hexToRgb(e.target.value);
-                        console.log(color);
-                        if (color) {
-                          setLayers(
-                            layers.map((l) =>
-                              l.id === layer.id ? { ...l, color } : l
-                            )
-                          );
-                        }
-                      }}
-                    />
+                    <DropdownMenuItem className="p-2">
+                      <Input
+                        type="color"
+                        value={rgbToHex(layer.color)}
+                        className="w-full h-8"
+                        onChange={(e) => {
+                          const color = hexToRgb(e.target.value);
+                          if (color) {
+                            setLayers(
+                              layers.map((l) =>
+                                l.id === layer.id ? { ...l, color } : l
+                              )
+                            );
+                          }
+                        }}
+                      />
+                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               ))}
