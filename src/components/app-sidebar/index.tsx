@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { LayerProps } from "../map";
 import { Input } from "../ui/input";
-import { hexToRgb, rgbToHex } from "@/lib/utils";
+import { getDistance, getPolygonArea, hexToRgb, rgbToHex } from "@/lib/utils";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { Button } from "../ui/button";
 
@@ -81,8 +81,15 @@ export function AppSidebar({
                     className="flex items-center justify-between p-1"
                   >
                     <DropdownMenuTrigger asChild>
-                      <SidebarMenuButton className="flex-1 justify-start">
+                      <SidebarMenuButton className="flex justify-between ">
                         <span>{layer.name}</span>
+                        {layer.type === "polygon" ? (
+                          <p>{getPolygonArea(layer.polygon!)} km²</p>
+                        ) : (
+                          <p>
+                            {getDistance(layer.path![0], layer.path![1])} km
+                          </p>
+                        )}
                       </SidebarMenuButton>
                     </DropdownMenuTrigger>
                     <Button

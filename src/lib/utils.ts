@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
+import * as turf from "@turf/turf";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -38,4 +39,18 @@ export function hexToRgb(hex: string): [number, number, number] | null {
   const b = parseInt(hex.slice(4, 6), 16);
 
   return [r, g, b];
+}
+
+
+export function getPolygonArea(polygon:  [number, number][][]) {
+  const area =turf.area(turf.polygon(polygon));
+  const areaInKm2 = turf.convertArea(area, 'meters', 'kilometers');
+  return areaInKm2.toFixed(2);
+}
+
+
+export function getDistance (point1: [number, number], point2: [number, number]) {
+  const from = turf.point([point1[0], point1[1]]);
+  const to = turf.point([point2[0], point2[1]]);
+  return turf.distance(from, to, {units : 'kilometers'}).toFixed(2);
 }
