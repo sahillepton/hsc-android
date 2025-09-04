@@ -12,6 +12,7 @@ function DeckGLOverlay({ layers }: { layers: any[] }) {
 
 export interface LayerProps {
   type: "point" | "polygon" | "line";
+  visible: boolean; // Default to true
   id: string;
   name: string;
   position?: [number, number]; // Optional for multi-point shapes
@@ -83,6 +84,7 @@ const MapComponent = ({
       position,
       color: [255, 0, 0],
       radius: 50000,
+      visible: true,
     };
     setLayers([...layers, newLayer]);
   };
@@ -100,6 +102,7 @@ const MapComponent = ({
         path: finalPath,
         color: [0, 255, 0],
         lineWidth: 5,
+        visible: true,
       };
       setLayers([...layers, newLayer]);
       setCurrentPath([]);
@@ -137,6 +140,7 @@ const MapComponent = ({
           }`,
           polygon: [closedPath],
           color: [0, 0, 255],
+          visible: true,
         };
         setLayers([...layers, newLayer]);
         setCurrentPath([]);
@@ -162,9 +166,9 @@ const MapComponent = ({
     setDragStart(null);
   };
 
-  const pointLayers = layers.filter((l) => l.type === "point");
-  const lineLayers = layers.filter((l) => l.type === "line");
-  const polygonLayers = layers.filter((l) => l.type === "polygon");
+  const pointLayers = layers.filter((l) => l.type === "point" && l.visible);
+  const lineLayers = layers.filter((l) => l.type === "line" && l.visible);
+  const polygonLayers = layers.filter((l) => l.type === "polygon" && l.visible);
 
   const previewLayers: LayerProps[] = [];
 
@@ -181,6 +185,7 @@ const MapComponent = ({
       path: [currentPath[0], mousePosition],
       color: [0, 255, 0],
       lineWidth: 3,
+      visible: true,
     });
   }
 
@@ -198,6 +203,7 @@ const MapComponent = ({
         path: [currentPath[0], mousePosition],
         color: [0, 0, 255], // Blue
         lineWidth: 2,
+        visible: true,
       });
     } else if (currentPath.length >= 2) {
       // Show current polygon + line to mouse + closing line
@@ -208,6 +214,7 @@ const MapComponent = ({
         name: "Preview Polygon",
         polygon: [previewPath],
         color: [0, 0, 255], // Blue
+        visible: true,
       });
 
       // Show closing line if near first point
@@ -219,6 +226,7 @@ const MapComponent = ({
           path: [mousePosition, currentPath[0]],
           color: [255, 255, 0], // Yellow closing indicator
           lineWidth: 3,
+          visible: true,
         });
       }
     }
@@ -232,6 +240,7 @@ const MapComponent = ({
         position: point,
         color: index === 0 ? [255, 255, 0] : [255, 0, 255], // First point yellow, others magenta
         radius: 30000,
+        visible: true,
       });
     });
   }
@@ -243,6 +252,7 @@ const MapComponent = ({
     getRadius: (d: LayerProps) => d.radius || 50000,
     getFillColor: (d: LayerProps) => d.color,
     pickable: true,
+    visible: true,
   });
 
   const previewPointLayers = previewLayers.filter((l) => l.type === "point");

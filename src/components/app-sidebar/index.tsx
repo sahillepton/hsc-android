@@ -12,7 +12,6 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -20,7 +19,8 @@ import {
 import type { LayerProps } from "../map";
 import { Input } from "../ui/input";
 import { hexToRgb, rgbToHex } from "@/lib/utils";
-import { PencilIcon } from "lucide-react";
+import { EyeIcon, EyeOffIcon } from "lucide-react";
+import { Button } from "../ui/button";
 
 export function AppSidebar({
   layers,
@@ -76,13 +76,41 @@ export function AppSidebar({
             <SidebarMenu>
               {layers.map((layer) => (
                 <DropdownMenu>
-                  <DropdownMenuTrigger>
-                    <SidebarMenuItem key={layer.id}>
-                      <SidebarMenuButton>
+                  <SidebarMenuItem
+                    key={layer.id}
+                    className="flex items-center justify-between p-1"
+                  >
+                    <DropdownMenuTrigger asChild>
+                      <SidebarMenuButton className="flex-1 justify-start">
                         <span>{layer.name}</span>
                       </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  </DropdownMenuTrigger>
+                    </DropdownMenuTrigger>
+                    <Button
+                      variant={"ghost"}
+                      size={"icon"}
+                      className="h-6 w-6 shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        setLayers(
+                          layers.map((l) =>
+                            l.id === layer.id
+                              ? {
+                                  ...l,
+                                  visible: l.visible !== false ? false : true,
+                                }
+                              : l
+                          )
+                        );
+                      }}
+                    >
+                      {layer.visible !== false ? (
+                        <EyeIcon size={12} />
+                      ) : (
+                        <EyeOffIcon size={12} />
+                      )}
+                    </Button>
+                  </SidebarMenuItem>
                   <DropdownMenuContent className="w-64" align="start">
                     <DropdownMenuLabel>
                       <Input
@@ -106,23 +134,42 @@ export function AppSidebar({
                       />
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem className="p-2">
+
+                    <Input
+                      type="color"
+                      value={rgbToHex(layer.color)}
+                      className="w-full h-8"
+                      onChange={(e) => {
+                        const color = hexToRgb(e.target.value);
+                        if (color) {
+                          setLayers(
+                            layers.map((l) =>
+                              l.id === layer.id ? { ...l, color } : l
+                            )
+                          );
+                        }
+                      }}
+                    />
+
+                    <DropdownMenuSeparator />
+                    {layer.type === "point" && (
                       <Input
-                        type="color"
-                        value={rgbToHex(layer.color)}
-                        className="w-full h-8"
+                        type="range"
+                        value={layer.radius}
+                        min={100}
+                        max={100000}
+                        step={1000}
                         onChange={(e) => {
-                          const color = hexToRgb(e.target.value);
-                          if (color) {
-                            setLayers(
-                              layers.map((l) =>
-                                l.id === layer.id ? { ...l, color } : l
-                              )
-                            );
-                          }
+                          setLayers(
+                            layers.map((l) =>
+                              l.id === layer.id
+                                ? { ...l, radius: parseInt(e.target.value) }
+                                : l
+                            )
+                          );
                         }}
                       />
-                    </DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               ))}
