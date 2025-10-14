@@ -1,6 +1,9 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import * as turf from "@turf/turf";
+import Papa from "papaparse";
+import shp from "shpjs";
+
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -53,4 +56,56 @@ export function getDistance (point1: [number, number], point2: [number, number])
   const from = turf.point([point1[0], point1[1]]);
   const to = turf.point([point2[0], point2[1]]);
   return turf.distance(from, to, {units : 'kilometers'}).toFixed(2);
+}
+
+
+function csvToGeoJSON(csvString: string, latField = "latitude", lonField = "longitude") {
+  const result = Papa.parse(csvString, { header: true, skipEmptyLines: true });
+
+  const features = result.data.map((row: any) => {
+    const lat = parseFloat(row[latField]);
+    const lon = parseFloat(row[lonField]);
+
+    if (isNaN(lat) || isNaN(lon)) return null;
+
+    return {
+      type: "Feature",
+      geometry: {
+        type: "Point",
+        coordinates: [lon, lat],
+      },
+      properties: { ...row },
+    };
+  }).filter(f => f !== null);
+
+  return {
+    type: "FeatureCollection",
+    features,
+  };
+}
+
+async function shpToGeoJSON(file: File) {
+  const arrayBuffer = await file.arrayBuffer();
+  const geojson = await shp(arrayBuffer);
+  return geojson;
+}
+
+export async function fileToGeoJSON(file : File) {
+  const ext = file.name.split(".").pop()?.toLowerCase();
+
+  if (ext === "csv") {
+    const text = await file.text();
+    return csvToGeoJSON(text, "latitude", "longitude"); 
+  }
+
+  if (ext === "shp" || ext === "zip") {
+    return await shpToGeoJSON(file);
+  }
+
+  if (ext === "geojson" || ext === "json") {
+    const text = await file.text();
+    return JSON.parse(text); 
+  }
+
+  throw new Error("Unsupported file type");
 }
