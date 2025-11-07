@@ -40,11 +40,20 @@ import {
   Phone,
   Video,
   MessageSquare,
+  Upload,
+  MapPin,
+  Route,
+  Shapes,
+  PieChart,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { useLayersContext } from "@/layers-provider";
+import { Directory } from "@capacitor/filesystem";
 import { useState, useEffect } from "react";
 
+// TODO: Break the sidebar into smaller components that handle maybe a section or a feature of the sidebar, not one large component
+// each part of the sidebar should use its own state and actions, not the whole sidebar state and actions
+// first pass, each sidebar section should be a separate component
 export function AppSidebar() {
   const {
     layers,
@@ -64,19 +73,84 @@ export function AppSidebar() {
     handleVoiceCall,
     handleVideoCall,
     handleSendMessage,
+    handleFtp,
     closeNodeDialog,
     networkLayersVisible,
     toggleNetworkLayersVisibility,
+    downloadLayersToDevice,
+    importLayersFromDevice,
+    uploadGeoJsonFile,
+    uploadDemFile,
+    handleFileImport,
+    getStorageDirectory,
+    setStorageDirectory,
+    getStorageDirectoryName,
+    getStorageDirectoryPath,
   } = useLayersContext();
   const [isDrawingToolsOpen, setIsDrawingToolsOpen] = useState(true);
+  const [currentStorageDir, setCurrentStorageDir] = useState<Directory>(
+    Directory.Documents
+  );
   const [isLayersOpen, setIsLayersOpen] = useState(true);
   const [isNetworkControlsOpen, setIsNetworkControlsOpen] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
+  // Load current storage directory on mount
+  useEffect(() => {
+    getStorageDirectory().then((dir) => {
+      setCurrentStorageDir(dir);
+    });
+  }, [getStorageDirectory]);
+
   return (
     <div className="flex">
       <Sidebar variant="floating" collapsible={"offcanvas"} className="w-80">
-        <SidebarContent className="px-4 py-6 space-y-6">
+        <SidebarContent className="px-4 py-3 space-y-4">
+          {/* QGIS-like top toolbar (non-destructive shortcuts) */}
+          <div className="flex items-center gap-2 px-2 py-1.5 rounded-md border bg-background/60">
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`h-8 w-8 ${
+                drawingMode === "point" ? "bg-accent" : ""
+              }`}
+              onClick={() => toggleDrawingMode("point")}
+              title="Add Point"
+            >
+              <MapPin size={16} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`h-8 w-8 ${drawingMode === "line" ? "bg-accent" : ""}`}
+              onClick={() => toggleDrawingMode("line")}
+              title="Add Line"
+            >
+              <Route size={16} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`h-8 w-8 ${
+                drawingMode === "polygon" ? "bg-accent" : ""
+              }`}
+              onClick={() => toggleDrawingMode("polygon")}
+              title="Add Polygon"
+            >
+              <Shapes size={16} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`h-8 w-8 ${
+                drawingMode === "azimuthal" ? "bg-accent" : ""
+              }`}
+              onClick={() => toggleDrawingMode("azimuthal")}
+              title="Add Azimuthal Sector"
+            >
+              <PieChart size={16} />
+            </Button>
+          </div>
           <SidebarGroup className="space-y-3">
             <SidebarGroupLabel
               className="cursor-pointer hover:bg-accent rounded-lg px-3 py-2.5 flex items-center justify-between text-sm font-semibold transition-colors"
@@ -121,6 +195,17 @@ export function AppSidebar() {
                       className="h-10 px-3 rounded-lg font-medium"
                     >
                       <p>Polygon</p>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+
+                  <SidebarMenuItem key="azimuthal">
+                    <SidebarMenuButton
+                      isActive={drawingMode === "azimuthal"}
+                      asChild
+                      onClick={() => toggleDrawingMode("azimuthal")}
+                      className="h-10 px-3 rounded-lg font-medium"
+                    >
+                      <p>Azimuthal</p>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
 
@@ -202,7 +287,7 @@ export function AppSidebar() {
               className="cursor-pointer hover:bg-accent rounded-lg px-3 py-2.5 flex items-center justify-between text-sm font-semibold transition-colors"
               onClick={() => setIsLayersOpen(!isLayersOpen)}
             >
-              Layers
+              Layers Panel
               {isLayersOpen ? (
                 <ChevronDown size={16} />
               ) : (
@@ -330,7 +415,7 @@ export function AppSidebar() {
                               <div className="space-y-2">
                                 <Input
                                   type="range"
-                                  value={layer.radius || 50000}
+                                  value={layer.radius || 150}
                                   min={100}
                                   max={100000}
                                   step={1000}
@@ -345,7 +430,7 @@ export function AppSidebar() {
                                 <div className="flex justify-between text-xs text-muted-foreground">
                                   <span>100</span>
                                   <span className="font-medium">
-                                    {layer.radius || 50000}
+                                    {layer.radius || 150}
                                   </span>
                                   <span>100k</span>
                                 </div>
@@ -391,11 +476,102 @@ export function AppSidebar() {
             )}
           </SidebarGroup>
 
+          {/* Storage Location Configuration */}
           <SidebarGroup className="space-y-3">
             <SidebarGroupLabel className="px-3 py-2 text-sm font-semibold">
-              Layer Management
+              Storage Location
             </SidebarGroupLabel>
             <SidebarGroupContent className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs text-muted-foreground block">
+                  Current Storage Location (Android Device)
+                </label>
+                <div className="px-3 py-2 bg-muted rounded-md text-xs text-foreground break-all">
+                  {getStorageDirectoryPath(currentStorageDir)}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Files will be saved to:{" "}
+                  <strong>{getStorageDirectoryName(currentStorageDir)}</strong>
+                </p>
+                <p className="text-xs text-blue-600 dark:text-blue-400">
+                  📱 On Android, files are saved to your device's internal
+                  storage. Use a file manager app to access them.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs text-muted-foreground block">
+                  Change Storage Location
+                </label>
+                <select
+                  value={currentStorageDir}
+                  onChange={async (e) => {
+                    try {
+                      const value = e.target.value as Directory;
+                      await setStorageDirectory(value);
+                      setCurrentStorageDir(value);
+                    } catch (error) {
+                      console.error(
+                        "Failed to change storage location:",
+                        error
+                      );
+                    }
+                  }}
+                  className="w-full px-3 py-2 text-sm border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value={Directory.Documents}>
+                    Documents (Recommended for Android)
+                  </option>
+                  <option value={Directory.Data}>Data (App Internal)</option>
+                  <option value={Directory.Cache}>Cache (Temporary)</option>
+                  <option value={Directory.External}>
+                    External Storage (Public)
+                  </option>
+                  <option value={Directory.ExternalStorage}>
+                    External Storage (Public - Alt)
+                  </option>
+                </select>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                  ⚠️ Note: On Android, "Documents" is the recommended location
+                  for user-accessible files. Files saved here can be accessed
+                  via file manager apps.
+                </p>
+              </div>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          {/* File Import/Export Section */}
+          <SidebarGroup className="space-y-3">
+            <SidebarGroupLabel className="px-3 py-2 text-sm font-semibold">
+              Import / Export Layers
+            </SidebarGroupLabel>
+            <SidebarGroupContent className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs text-muted-foreground block px-3">
+                  Import Files
+                </label>
+                <Input
+                  type="file"
+                  accept="*/*"
+                  className="w-full mx-3"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      try {
+                        await handleFileImport(file);
+                        // Reset input so same file can be selected again
+                        e.target.value = "";
+                      } catch (error) {
+                        console.error("Failed to import file:", error);
+                        e.target.value = "";
+                      }
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground px-3">
+                  Import vector files, raster/DEM, or layer exports (JSON)
+                </p>
+              </div>
+
               <Button
                 onClick={async () => {
                   try {
@@ -405,28 +581,14 @@ export function AppSidebar() {
                   }
                 }}
                 disabled={layers.length === 0}
-                className="w-full h-10 font-medium"
-                variant="default"
+                className="w-full h-10 font-medium mx-3"
+                variant="outline"
               >
-                📥 Download All Layers
+                📥 Export All Layers
               </Button>
-
-              <Button
-                onClick={() => {
-                  if (
-                    confirm(
-                      "Are you sure you want to clear all layers? This cannot be undone."
-                    )
-                  ) {
-                    clearAllLayers();
-                  }
-                }}
-                disabled={layers.length === 0}
-                className="w-full h-10 font-medium"
-                variant="destructive"
-              >
-                Clear All Layers
-              </Button>
+              <p className="text-xs text-muted-foreground px-3">
+                Export all layers as JSON with complete layer information
+              </p>
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
@@ -479,7 +641,7 @@ export function AppSidebar() {
               </div>
 
               {/* Action Buttons */}
-              <div className="flex gap-3 pt-4">
+              <div className="grid grid-cols-2 gap-3 pt-4">
                 <Button
                   onClick={() => {
                     handleVoiceCall(selectedNode);
@@ -514,6 +676,18 @@ export function AppSidebar() {
                 >
                   <MessageSquare size={18} className="mr-2" />
                   Message
+                </Button>
+
+                <Button
+                  onClick={() => {
+                    handleFtp(selectedNode);
+                    closeNodeDialog();
+                  }}
+                  className="flex-1 bg-orange-500 hover:bg-orange-600 h-11"
+                  size="default"
+                >
+                  <Upload size={18} className="mr-2" />
+                  FTP
                 </Button>
               </div>
 

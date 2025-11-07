@@ -1,16 +1,17 @@
 import type { LayerProps, Node } from "@/lib/definitions";
 import { useState, useCallback, useEffect } from "react";
 import { ScatterplotLayer, PolygonLayer, LineLayer, GeoJsonLayer, IconLayer } from "@deck.gl/layers";
-import { showMessage, getUploadData, removeUploadData, getDownloadData, removeDownloadData, readFileFromFilesystem, deleteFileFromFilesystem, listFilesInDirectory, getFileInfo } from "@/lib/capacitor-utils";
+import { showMessage, getUploadData, removeUploadData, getDownloadData, removeDownloadData, readFileFromFilesystem, deleteFileFromFilesystem, listFilesInDirectory, getFileInfo, getStorageDirectory, setStorageDirectory as setStorageDirectoryUtil, getStorageDirectoryName, getStorageDirectoryPath } from "@/lib/capacitor-utils";
 import  type {PickingInfo} from '@deck.gl/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { fileToGeoJSON, fileToDEMRaster } from "@/lib/utils";
 
 export const useLayers = () => {
     const [layers, setLayers] = useState<LayerProps[]>([]);
     const [isDrawing, setIsDrawing] = useState(false);
     const [currentPath, setCurrentPath] = useState<[number, number][]>([]);
     const [dragStart, setDragStart] = useState<[number, number] | null>(null);
-    const [drawingMode, setDrawingMode] = useState<"point" | "polygon" | "line" | null>(
+    const [drawingMode, setDrawingMode] = useState<"point" | "polygon" | "line" | "azimuthal" | null>(
       null
     );
     const [selectedNode, setSelectedNode] = useState<Node | null>(null);
@@ -22,7 +23,22 @@ export const useLayers = () => {
     const [networkLayersVisible, setNetworkLayersVisible] = useState(true);
     const [nodeIconMappings, setNodeIconMappings] = useState<Record<string, string>>({});
 
+  // Helper: convert base64 string to File for reuse of existing upload logic
+  // TODO: not using any state, so should be in a utils folder or the module scope
+  const base64ToFile = (base64Data: string, fileName: string, mimeType: string): File => {
+    const byteString = atob(base64Data);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+      ia[i] = byteString.charCodeAt(i);
+    }
+    const blob = new Blob([ab], { type: mimeType });
+    return new File([blob], fileName, { type: mimeType });
+  };
+
     // Handle Escape key to exit drawing mode
+    // TODO: Add a component called KeyboardShortcuts that has all these effects and takes to the store
+    // It can return null since it doesn't have any UI
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === 'Escape' && drawingMode) {
@@ -37,11 +53,22 @@ export const useLayers = () => {
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [drawingMode]);
-    
+
+    // useKeyboardShortcut('Escape', (event) => {
+    //   if (drawingMode) {
+    //     setDrawingMode(null);
+    //     setIsDrawing(false);
+    //     setCurrentPath([]);
+    //     setDragStart(null);
+    //   }
+    // })
+
+    // TODO: again a util, keep it outside
    const generateLayerId = () => {
     return `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
    }
 
+   // TODO: constant list, keep it outside
    // Available icons from the icons folder
    const availableIcons = [
      'alert',
@@ -56,8 +83,11 @@ export const useLayers = () => {
      'unknown_aircraft'
    ];
 
+   // TODO: why is this needed? There is a fixed list, consumers can just use that
    const getAvailableIcons = () => availableIcons;
 
+   // TODO: There should be one nodes list maintained in the store, the nodes list should have each node
+   // Each node should have its id, icon, category, position, etc.
    const setNodeIcon = (nodeId: string, iconName: string) => {
      if (iconName === '') {
        // Remove the mapping to use default icon
@@ -74,18 +104,25 @@ export const useLayers = () => {
      }
    };
 
+   // TODO: Rethink why you need both node and allNodes, and this again seems not depend on state,
+   // take it outside or useCallback for sure, 
+   // Make things efficient and performant by default
+   // TODO: test react-compiler
    const getNodeIcon = (node: Node, allNodes: Node[] = []) => {
     // Check for custom icon mapping first
     const nodeId = node.userId.toString();
     if (nodeIconMappings[nodeId]) {
       const iconName = nodeIconMappings[nodeId];
       console.log(`Using custom icon: ${iconName}.svg for node ${node.userId}`);
+      // Special handling for rectangular icons to prevent cutting
+      const isRectangularIcon = ['ground_unit', 'command_post', 'naval_unit'].includes(iconName);
+      
       return {
         url: `/icons/${iconName}.svg`,
-        width: 32,
-        height: 32,
-        anchorY: 16,
-        anchorX: 16,
+        width: isRectangularIcon ? 28 : 24, // Smaller width for rectangular icons
+        height: isRectangularIcon ? 20 : 24, // Smaller height for rectangular icons
+        anchorY: isRectangularIcon ? 10 : 12, // Adjust anchor for rectangular icons
+        anchorX: isRectangularIcon ? 14 : 12, // Adjust anchor for rectangular icons
         mask: false
       };
     }
@@ -135,16 +172,21 @@ export const useLayers = () => {
 
     console.log(`Using auto-selected icon: ${iconName}.svg for node ${node.userId}`);
     
+    // Special handling for rectangular icons to prevent cutting
+    // TODO: this check is happeninng twice in this function, why? Wrongly organized code I feel
+    const isRectangularIcon = ['ground_unit', 'command_post', 'naval_unit'].includes(iconName);
+    
     return {
       url: `/icons/${iconName}.svg`,
-      width: 32,
-      height: 32,
-      anchorY: 16, // Center the icon vertically
-      anchorX: 16, // Center the icon horizontally
+      width: isRectangularIcon ? 28 : 24, // Smaller width for rectangular icons
+      height: isRectangularIcon ? 20 : 24, // Smaller height for rectangular icons
+      anchorY: isRectangularIcon ? 10 : 12, // Adjust anchor for rectangular icons
+      anchorX: isRectangularIcon ? 14 : 12, // Adjust anchor for rectangular icons
       mask: false
     };
    }
 
+   // TODO: These are utility functions, don't depend on state, take it outside
    const getSignalColor = (snr: number, rssi: number): [number, number, number] => {
     // Use SNR as primary indicator, RSSI as secondary
     // SNR: Higher is better (typically 0-30 dB)
@@ -159,19 +201,21 @@ export const useLayers = () => {
     // Combine both metrics (70% SNR, 30% RSSI)
     const signalStrength = (normalizedSNR * 0.7) + (normalizedRSSI * 0.3);
     
-    // Greyish color mapping: Dark Grey (weak) -> Medium Grey (medium) -> Light Grey (strong)
+    // Color mapping: Green (strong) -> Orange (medium) -> Red (weak)
     if (signalStrength >= 0.7) {
-      // Strong signal - Light Grey
-      return [200, 200, 200]; // Light grey
+      // Strong signal - Green
+      return [0, 255, 0]; // Green
     } else if (signalStrength >= 0.4) {
-      // Medium signal - Medium Grey
-      return [150, 150, 150]; // Medium grey
+      // Medium signal - Orange
+      return [255, 165, 0]; // Orange
     } else {
-      // Weak signal - Dark Grey
-      return [100, 100, 100]; // Dark grey
+      // Weak signal - Red
+      return [255, 0, 0]; // Red
     }
    }
 
+   // TODO: This and the below function are very confusing. No idea what they are doing. Clarify the names
+   // arguments and what they return
    const createConnectionsLayer = (connectionLines: [[number, number], [number, number]][], nodes: Node[], layerName?: string): LayerProps[] => {
     // Create individual line layers for each connection with signal-based colors
     const connectionLayers: LayerProps[] = connectionLines.map((line, index) => {
@@ -244,6 +288,7 @@ export const useLayers = () => {
     });
 
     // FORCE TEST CONNECTIONS - Always create them for debugging
+    // TODO: How does this debug?
     if (nodes.length >= 2) {
       for (let i = 0; i < Math.min(nodes.length - 1, 3); i++) {
         const testConnection: [[number, number], [number, number]] = [
@@ -261,6 +306,7 @@ export const useLayers = () => {
     }
    }
     
+   // TODO: Add prettier, why is this not formatted? Format on Save should be enabled
       const handleClick = (event: any) => {
         console.log("handleClick called with:", { event, drawingMode, lngLat: event.lngLat });
         
@@ -285,18 +331,39 @@ export const useLayers = () => {
           case "polygon":
             handlePolygonDrawing(clickPoint);
             break;
+          case "azimuthal":
+            handleAzimuthalDrawing(clickPoint);
+            break;
         }
       };
     
       const createPointLayer = (position: [number, number]) => {
         console.log("createPointLayer called with position:", position);
+        
+        // Validate coordinates are within Mumbai bounds
+        // TODO: Why is this hardcoded here?
+        const mumbaiBounds = {
+          north: 19.3,
+          south: 18.9,
+          east: 73.0,
+          west: 72.7
+        };
+        
+        const [lng, lat] = position;
+        const isWithinBounds = lat >= mumbaiBounds.south && 
+                               lat <= mumbaiBounds.north && 
+                               lng >= mumbaiBounds.west && 
+                               lng <= mumbaiBounds.east;
+        
+        console.log("Point coordinates validation:", { lng, lat, isWithinBounds, mumbaiBounds });
+        
         const newLayer: LayerProps = {
           type: "point",
           id: generateLayerId(),
           name: `Point ${layers.filter((l) => l.type === "point").length + 1}`,
           position,
           color: [255, 0, 0],
-          radius: 50000,
+          radius: 200,
           visible: true,
         };
         console.log("Creating new point layer:", newLayer);
@@ -322,6 +389,421 @@ export const useLayers = () => {
         
        
         setLayers([...layers, newLayer]);
+      };
+
+      const uploadGeoJsonFile = async (file: File) => {
+        try {
+          console.log("Uploading file:", file.name, "Size:", file.size);
+          
+          // Better extension detection (handle .geojson and multi-dot filenames)
+          const fileName = file.name.toLowerCase();
+          let ext = '';
+          if (fileName.endsWith('.geojson')) {
+            ext = 'geojson';
+          } else {
+            const parts = fileName.split('.');
+            ext = parts.length > 1 ? parts[parts.length - 1] : '';
+          }
+          
+          const supportedFormats = ["geojson", "json", "shp", "zip", "csv", "gpx", "kml", "kmz"];
+          
+          // Allow file if extension is supported OR if MIME type suggests it's JSON/GeoJSON
+          const mimeType = file.type?.toLowerCase() || '';
+          const isSupportedByExt = ext && supportedFormats.includes(ext);
+          const isSupportedByMime = mimeType.includes('json') || mimeType.includes('geojson');
+          
+          if (!isSupportedByExt && !isSupportedByMime) {
+            console.warn(`File extension .${ext} not in supported formats, but attempting to process anyway`);
+          }
+
+          // Convert file to GeoJSON
+          console.log("Converting file to GeoJSON...");
+          const geojson = await fileToGeoJSON(file);
+          console.log("GeoJSON conversion result:", geojson);
+          
+          // Validate GeoJSON structure
+          if (!geojson) {
+            showMessage("Invalid vector file format. Could not convert to GeoJSON.", true);
+            return;
+          }
+
+          if (geojson.type !== "FeatureCollection") {
+            showMessage(`Invalid GeoJSON format: expected FeatureCollection, got ${geojson.type}`, true);
+            return;
+          }
+
+          if (!Array.isArray(geojson.features)) {
+            showMessage("Invalid GeoJSON format: features is not an array.", true);
+            return;
+          }
+
+          if (geojson.features.length === 0) {
+            showMessage("Vector file contains no features.", true);
+            return;
+          }
+
+          console.log(`Creating layer from GeoJSON with ${geojson.features.length} features`);
+          // Create layer from GeoJSON
+          createGeoJsonLayer(geojson, file.name);
+          showMessage(`Successfully uploaded ${geojson.features.length} feature(s) from ${file.name}`);
+        } catch (error) {
+          console.error("Error uploading file:", error);
+          showMessage(`Error uploading file: ${error instanceof Error ? error.message : "Unknown error"}`, true);
+        }
+      };
+
+      const uploadDemFile = async (file: File) => {
+        try {
+          console.log("Uploading DEM file:", file.name);
+          const dem = await fileToDEMRaster(file);
+          
+          // Check if default bounds were used (India bounds)
+          const isDefaultBounds = dem.bounds[0] === 68.0 && dem.bounds[1] === 6.0 && 
+                                  dem.bounds[2] === 97.0 && dem.bounds[3] === 37.0;
+          
+          const newLayer: LayerProps = {
+            type: "dem",
+            id: generateLayerId(),
+            name: file.name.split('.')[0],
+            color: [255, 255, 255],
+            visible: true,
+            bounds: [[dem.bounds[0], dem.bounds[1]], [dem.bounds[2], dem.bounds[3]]],
+            bitmap: dem.canvas,
+          };
+          setLayers([...layers, newLayer]);
+          
+          if (isDefaultBounds) {
+            showMessage(`DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.`);
+          } else {
+            showMessage(`Successfully uploaded DEM: ${file.name}`);
+          }
+        } catch (error) {
+          console.error("Error uploading DEM file:", error);
+          showMessage(`Error uploading DEM: ${error instanceof Error ? error.message : 'Unknown error'}`, true);
+        }
+      };
+
+      // Capacitor Filesystem variants: read file and reuse uploaders
+      const uploadGeoJsonFromFilesystem = async (path: string, fileName?: string) => {
+        try {
+          const name = fileName || path.split('/').pop() || 'data.geojson';
+          const ext = (name.split('.').pop() || '').toLowerCase();
+          const mime = ext === 'csv' ? 'text/csv' : (ext === 'zip' ? 'application/zip' : 'application/json');
+          const res = await Filesystem.readFile({ path, directory: Directory.Documents });
+          const file = base64ToFile(res.data as string, name, mime);
+          await uploadGeoJsonFile(file);
+        } catch (error) {
+          console.error('Error uploading GeoJSON from filesystem:', error);
+          showMessage(`Error uploading GeoJSON from device: ${error instanceof Error ? error.message : 'Unknown error'}`, true);
+        }
+      };
+
+      const uploadDemFromFilesystem = async (path: string, fileName?: string) => {
+        try {
+          const name = fileName || path.split('/').pop() || 'dem.tif';
+          const res = await Filesystem.readFile({ path, directory: Directory.Documents });
+          const file = base64ToFile(res.data as string, name, 'image/tiff');
+          await uploadDemFile(file);
+        } catch (error) {
+          console.error('Error uploading DEM from filesystem:', error);
+          showMessage(`Error uploading DEM from device: ${error instanceof Error ? error.message : 'Unknown error'}`, true);
+        }
+      };
+
+      // Import layers from JSON export file
+      const importLayersFromJson = async (file: File) => {
+        try {
+          const text = await file.text();
+          const importData = JSON.parse(text);
+
+          // Check if this is a layer export file (has version and layers)
+          if (importData.version && Array.isArray(importData.layers)) {
+            // Validate the data structure
+            if (!importData.layers || !Array.isArray(importData.layers)) {
+              throw new Error('Invalid layers data format');
+            }
+
+            // Use setTimeout to defer state updates and avoid OpenGL rendering conflicts
+            setTimeout(() => {
+              // Combine state updates - set layers and icon mappings in a single render cycle
+              setLayers(importData.layers);
+              
+              // Import node icon mappings if available
+              if (importData.nodeIconMappings) {
+                setNodeIconMappings(importData.nodeIconMappings);
+              }
+              
+              // Show success message after rendering completes
+              setTimeout(() => {
+                showMessage(`Successfully imported ${importData.layers.length} layers from ${file.name}`);
+              }, 500);
+            }, 300);
+
+            return true;
+          } else {
+            // Not a layer export file, treat as regular GeoJSON
+            return false;
+          }
+        } catch (error) {
+          console.error('Error importing layers from JSON:', error);
+          // If parsing fails, it's not a valid JSON layer export
+          return false;
+        }
+      };
+
+      // Function to upload annotation layer from file
+      const uploadAnnotationFile = async (file: File) => {
+        try {
+          console.log("Uploading annotation file:", file.name);
+          
+          // Convert file to GeoJSON first
+          const geojson = await fileToGeoJSON(file);
+          
+          // Validate GeoJSON structure
+          if (!geojson || geojson.type !== "FeatureCollection" || !Array.isArray(geojson.features)) {
+            showMessage("Invalid annotation file format. Could not convert to GeoJSON.", true);
+            return;
+          }
+
+          if (geojson.features.length === 0) {
+            showMessage("Annotation file contains no features.", true);
+            return;
+          }
+
+          // Extract annotations from GeoJSON features
+          const annotations: Array<{
+            position: [number, number];
+            text: string;
+            color?: [number, number, number];
+            fontSize?: number;
+          }> = [];
+
+          geojson.features.forEach((feature : any) => {
+            // Check if feature has text/annotation properties
+            const text = feature.properties?.text || 
+                        feature.properties?.label || 
+                        feature.properties?.name || 
+                        feature.properties?.annotation ||
+                        feature.properties?.title ||
+                        '';
+            
+            // Only process features with text and valid geometry
+            if (text && feature.geometry) {
+              let position: [number, number] | null = null;
+              
+              // Extract position based on geometry type
+              if (feature.geometry.type === 'Point' && feature.geometry.coordinates) {
+                position = [feature.geometry.coordinates[0], feature.geometry.coordinates[1]];
+              } else if (feature.geometry.type === 'LineString' && feature.geometry.coordinates.length > 0) {
+                // Use first point of line
+                position = [feature.geometry.coordinates[0][0], feature.geometry.coordinates[0][1]];
+              } else if (feature.geometry.type === 'Polygon' && feature.geometry.coordinates.length > 0) {
+                // Use first point of first ring
+                position = [feature.geometry.coordinates[0][0][0], feature.geometry.coordinates[0][0][1]];
+              }
+
+              if (position) {
+                // Extract color from properties or use default
+                let color: [number, number, number] | undefined;
+                if (feature.properties?.color) {
+                  if (Array.isArray(feature.properties.color)) {
+                    color = feature.properties.color.slice(0, 3) as [number, number, number];
+                  }
+                }
+
+                annotations.push({
+                  position,
+                  text: String(text),
+                  color,
+                  fontSize: feature.properties?.fontSize || feature.properties?.font_size || undefined,
+                });
+              }
+            }
+          });
+
+          if (annotations.length === 0) {
+            showMessage("No valid annotations found. Features must have text/label/name/annotation properties.", true);
+            return;
+          }
+
+          // Create annotation layer
+          const newLayer: LayerProps = {
+            type: "annotation",
+            id: generateLayerId(),
+            name: file.name.split('.')[0],
+            color: [0, 0, 0], // Default black text
+            visible: true,
+            annotations: annotations,
+          };
+
+          setLayers([...layers, newLayer]);
+          showMessage(`Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`);
+        } catch (error) {
+          console.error("Error uploading annotation file:", error);
+          showMessage(`Error uploading annotation file: ${error instanceof Error ? error.message : "Unknown error"}`, true);
+        }
+      };
+
+      // Function to extract and process TIFF from ZIP
+      const extractTiffFromZip = async (file: File): Promise<File | null> => {
+        try {
+          // Dynamically import JSZip
+          const JSZip = (await import('jszip')).default;
+          const zip = await JSZip.loadAsync(file);
+          
+          // Find TIFF files in the ZIP
+          const tiffFiles = Object.keys(zip.files).filter(name => {
+            const lowerName = name.toLowerCase();
+            return lowerName.endsWith('.tif') || lowerName.endsWith('.tiff');
+          });
+          
+          if (tiffFiles.length === 0) {
+            console.log('No TIFF files found in ZIP');
+            return null;
+          }
+          
+          // Use the first TIFF file found
+          const tiffFileName = tiffFiles[0];
+          console.log('Found TIFF file in ZIP:', tiffFileName);
+          
+          const tiffData = await zip.files[tiffFileName].async('blob');
+          const tiffFile = new File([tiffData], tiffFileName, { type: 'image/tiff' });
+          
+          return tiffFile;
+        } catch (error) {
+          console.error('Error extracting TIFF from ZIP:', error);
+          return null;
+        }
+      };
+
+      // Function to handle file import from input
+      const handleFileImport = async (file: File) => {
+        try {
+          if (!file) {
+            return;
+          }
+
+          console.log('Importing file:', file.name, 'Type:', file.type, 'Size:', file.size);
+
+          // Determine file type from extension (handle multiple dots in filename)
+          const fileName = file.name?.toLowerCase() || '';
+          let ext = '';
+          
+          // Handle special cases for multi-part extensions
+          if (fileName.endsWith('.geojson')) {
+            ext = 'geojson';
+          } else if (fileName.endsWith('.tiff')) {
+            ext = 'tiff';
+          } else {
+            // Get last extension
+            const parts = fileName.split('.');
+            ext = parts.length > 1 ? parts[parts.length - 1] : '';
+          }
+          
+          console.log('Detected extension:', ext);
+          
+          // First, check if it's a JSON file that might be a layer export
+          if (ext === 'json') {
+            const isLayerExport = await importLayersFromJson(file);
+            if (isLayerExport) {
+              // Successfully imported as layer export
+              return;
+            }
+            // If not a layer export, fall through to treat as vector file
+          }
+          
+          // Check if ZIP file contains TIFF files
+          if (ext === 'zip') {
+            console.log('Checking if ZIP contains TIFF files...');
+            const tiffFile = await extractTiffFromZip(file);
+            if (tiffFile) {
+              console.log('Found TIFF in ZIP, processing as DEM');
+              await uploadDemFile(tiffFile);
+              return;
+            }
+            // If no TIFF found, fall through to process as shapefile
+            console.log('No TIFF in ZIP, processing as shapefile');
+          }
+          
+          // Vector file extensions
+          const vectorExtensions = ['geojson', 'json', 'shp', 'zip', 'csv', 'gpx', 'kml', 'kmz'];
+          // Raster/DEM file extensions (currently only GeoTIFF is supported)
+          const rasterExtensions = ['tif', 'tiff'];
+
+          // For GeoJSON/JSON files, try to detect if they contain annotations
+          // Check if file might be an annotation file (by filename or content)
+          if (ext === 'geojson' || ext === 'json') {
+            const isAnnotationFile = fileName.includes('annotation') || 
+                                     fileName.includes('label') || 
+                                     fileName.includes('text') ||
+                                     fileName.includes('annot');
+            
+            // Try annotation processing first (for files with annotation keywords or all GeoJSON files)
+            // This allows any GeoJSON with text properties to be processed as annotations
+            try {
+              console.log('Attempting to process as annotation file...');
+              // Create a temporary file reader to check content
+              const text = await file.text();
+              const parsed = JSON.parse(text);
+              
+              // Check if it has features with text/label/name/annotation properties
+              if (parsed.type === 'FeatureCollection' && Array.isArray(parsed.features)) {
+                const hasTextProperties = parsed.features.some((f: any) => 
+                  f.properties && (
+                    f.properties.text || 
+                    f.properties.label || 
+                    f.properties.annotation ||
+                    f.properties.title
+                  )
+                );
+                
+                if (hasTextProperties || isAnnotationFile) {
+                  console.log('Features contain text properties, processing as annotation layer');
+                  // Reset file position by creating a new File object
+                  const fileBlob = new Blob([text], { type: file.type });
+                  const newFile = new File([fileBlob], file.name, { type: file.type });
+                  await uploadAnnotationFile(newFile);
+                  return;
+                }
+              }
+            } catch (error) {
+              console.log('Annotation processing failed or not applicable, falling back to vector processing');
+              // Fall through to vector processing
+            }
+          }
+
+          if (vectorExtensions.includes(ext)) {
+            // Handle as vector file
+            console.log('Processing as vector file');
+            await uploadGeoJsonFile(file);
+          } else if (rasterExtensions.includes(ext)) {
+            // Handle as DEM/raster file
+            console.log('Processing as raster/DEM file');
+            await uploadDemFile(file);
+          } else {
+            // Try to detect by MIME type as fallback
+            const mimeType = file.type?.toLowerCase() || '';
+            if (mimeType.includes('json') || mimeType.includes('geojson')) {
+              console.log('Detected by MIME type as JSON/GeoJSON');
+              await uploadGeoJsonFile(file);
+            } else if (mimeType.includes('tiff') || mimeType.includes('tif')) {
+              console.log('Detected by MIME type as TIFF');
+              await uploadDemFile(file);
+            } else {
+              showMessage(
+                `Unsupported file type: .${ext} (${file.type || 'unknown type'}). Supported formats:\n` +
+                `Layer Export: JSON (with layers array)\n` +
+                `Vector: ${vectorExtensions.filter(e => e !== 'json').join(', ')}, JSON\n` +
+                `Raster/DEM: ${rasterExtensions.join(', ')}, ZIP (with TIFF)\n` +
+                `Note: ZIP files are checked for TIFF files first, then processed as shapefiles if no TIFF found.`,
+                true
+              );
+            }
+          }
+        } catch (error) {
+          console.error('Error importing file:', error);
+          showMessage(`Error importing file: ${error instanceof Error ? error.message : 'Unknown error'}`, true);
+        }
       };
 
       const createNodeLayer = useCallback((nodes: Node[], layerName?: string) => {
@@ -435,7 +917,20 @@ export const useLayers = () => {
       };
 
       const handleLayerVisibility = (layerId: string, visible: boolean) => {
-        setLayers(layers.map((l) => l.id === layerId ? { ...l, visible } : l));
+        // Find target layer to determine if it's a polygon
+        const target = layers.find(l => l.id === layerId);
+        const isPolygon = target?.type === "polygon";
+
+        setLayers(layers.map((l) => {
+          if (l.id === layerId) {
+            return { ...l, visible };
+          }
+          // If polygon visibility changes, also apply to its vertex point layers
+          if (isPolygon && (l.name || "").startsWith("Polygon Point")) {
+            return { ...l, visible };
+          }
+          return l;
+        }));
       };
 
       const toggleNetworkLayersVisibility = () => {
@@ -479,17 +974,23 @@ export const useLayers = () => {
           // Convert to JSON string with pretty formatting
           const jsonContent = JSON.stringify(exportData, null, 2);
           
+          // Get configured storage directory
+          const storageDir = await getStorageDirectory();
+          const dirName = getStorageDirectoryName(storageDir);
+          const dirPath = getStorageDirectoryPath(storageDir);
+          
           // Save file using Capacitor Filesystem
           const result = await Filesystem.writeFile({
             path: `HSC_Layers/${filename}`,
             data: jsonContent,
-            directory: Directory.Documents,
+            directory: storageDir,
             encoding: Encoding.UTF8,
             recursive: true, // Create folder if it doesn't exist
           });
           
           console.log('File saved successfully at:', result.uri);
-          showMessage(`Successfully downloaded ${layers.length} layers to ${filename}`);
+          const fullPath = `${dirName}${dirPath}HSC_Layers/${filename}`;
+          showMessage(`Successfully downloaded ${layers.length} layers to Android device:\n\n📁 Path: ${fullPath}\n\n📍 Full URI: ${result.uri}\n\n💡 Tip: Files are saved to your Android device's storage. You can access them using a file manager app.`);
           
           return result.uri;
         } catch (error) {
@@ -637,6 +1138,112 @@ export const useLayers = () => {
         }
       };
 
+      // Download layers data to device storage
+      const downloadLayersToDevice = async () => {
+        try {
+          // Prepare the export data with all layers and node icon mappings
+          const exportData = {
+            version: "1.0",
+            exportDate: new Date().toISOString(),
+            totalLayers: layers.length,
+            layers: layers, // This includes ALL layers including network and connection layers
+            nodeIconMappings: nodeIconMappings, // Include icon mappings
+          };
+          
+          // Convert to JSON string with pretty formatting
+          const jsonContent = JSON.stringify(exportData, null, 2);
+          
+          // Get configured storage directory
+          const storageDir = await getStorageDirectory();
+          const dirName = getStorageDirectoryName(storageDir);
+          const dirPath = getStorageDirectoryPath(storageDir);
+          
+          // Save file using Capacitor Filesystem - always rewrite the same file
+          const result = await Filesystem.writeFile({
+            path: "secrets/layers_data.json",
+            data: jsonContent,
+            directory: storageDir,
+            encoding: Encoding.UTF8,
+            recursive: true, // Create folder if it doesn't exist
+          });
+          
+          console.log('Layers data saved successfully at:', result.uri);
+          const fullPath = `${dirName}${dirPath}secrets/layers_data.json`;
+          
+          // Use longer delay to allow MediaScannerConnection and system processes to complete
+          // This prevents OpenGL rendering conflicts
+          setTimeout(() => {
+            showMessage(`Successfully saved ${layers.length} layers to Android device storage:\n\n📁 Path: ${fullPath}\n\n📍 Full URI: ${result.uri}\n\n💡 Tip: Files are saved to your Android device's storage. You can access them using a file manager app.`);
+          }, 500);
+          
+          return result.uri;
+        } catch (error) {
+          console.error('Error saving layers to device:', error);
+          // Suppress OpenGL errors that are harmless warnings
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          if (!errorMessage.includes('swap behavior') && !errorMessage.includes('OpenGL')) {
+            setTimeout(() => {
+              showMessage(`Error saving layers: ${errorMessage}`, true);
+            }, 500);
+          }
+          throw error;
+        }
+      };
+
+      // Import layers data from device storage
+      const importLayersFromDevice = async () => {
+        try {
+          // Get configured storage directory
+          const storageDir = await getStorageDirectory();
+          
+          // Read the layers data file
+          const contents = await Filesystem.readFile({
+            path: "secrets/layers_data.json",
+            directory: storageDir,
+            encoding: Encoding.UTF8,
+          });
+
+          console.log("Importing layers data:", contents);
+          
+          // Parse the JSON data
+          const importData = JSON.parse(contents.data as string);
+          
+          // Validate the data structure
+          if (!importData.layers || !Array.isArray(importData.layers)) {
+            throw new Error('Invalid layers data format');
+          }
+          
+          // Use setTimeout to defer state updates and avoid OpenGL rendering conflicts
+          // This allows the renderer to finish any ongoing operations before updating
+          setTimeout(() => {
+            // Combine state updates - set layers and icon mappings in a single render cycle
+            setLayers(importData.layers);
+            
+            // Import node icon mappings if available
+            if (importData.nodeIconMappings) {
+              setNodeIconMappings(importData.nodeIconMappings);
+            }
+            
+            // Show success message after rendering completes to avoid UI conflicts
+            setTimeout(() => {
+              showMessage(`Successfully imported ${importData.layers.length} layers from device storage`);
+            }, 500);
+          }, 300);
+          
+          return true;
+        } catch (error) {
+          console.error('Error importing layers from device:', error);
+          // Suppress OpenGL errors that are harmless warnings
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          if (!errorMessage.includes('swap behavior') && !errorMessage.includes('OpenGL')) {
+            setTimeout(() => {
+              showMessage(`Error importing layers: ${errorMessage}`, true);
+            }, 500);
+          }
+          return false;
+        }
+      };
+
       const deleteLayer = (layerId: string) => {
         console.log('Deleting layer with ID:', layerId);
         setLayers(prevLayers => {
@@ -651,24 +1258,48 @@ export const useLayers = () => {
       const isPointNearFirstPoint = (
         point: [number, number],
         firstPoint: [number, number],
-        threshold = 0.1
+        threshold = 0.01
       ) => {
         const distance = Math.sqrt(
           Math.pow(point[0] - firstPoint[0], 2) +
             Math.pow(point[1] - firstPoint[1], 2)
         );
+        console.log("Checking if point is near first point:", {
+          point,
+          firstPoint,
+          distance,
+          threshold,
+          isNear: distance < threshold
+        });
         return distance < threshold;
       };
     
       const handlePolygonDrawing = (point: [number, number]) => {
+        console.log("handlePolygonDrawing called with:", { point, isDrawing, currentPathLength: currentPath.length });
+        
         if (!isDrawing) {
+          console.log("Starting new polygon at:", point);
           setCurrentPath([point]);
           setIsDrawing(true);
+          // Add persistent point marker at first click
+          const pointLayer: LayerProps = {
+            type: "point",
+            id: generateLayerId(),
+            name: `Polygon Point ${layers.filter((l) => l.type === "point").length + 1}`,
+            position: point,
+            color: [32, 32, 32],
+            radius: 5000,
+            visible: true,
+          };
+          setLayers([...layers, pointLayer]);
         } else {
+          console.log("Adding point to polygon. Current path length:", currentPath.length);
+          
           if (
             currentPath.length >= 3 &&
             isPointNearFirstPoint(point, currentPath[0])
           ) {
+            console.log("Closing polygon with", currentPath.length, "points");
             const closedPath = [...currentPath, currentPath[0]];
             const newLayer: LayerProps = {
               type: "polygon",
@@ -677,13 +1308,26 @@ export const useLayers = () => {
                 layers.filter((l) => l.type === "polygon").length + 1
               }`,
               polygon: [closedPath],
-              color: [96, 96, 96], // Dark grey for regular polygons
+              color: [32, 32, 32, 180], // Default to dark, higher-opacity fill
               visible: true,
             };
+            console.log("Creating polygon layer:", newLayer);
             setLayers([...layers, newLayer]);
             setCurrentPath([]);
             setIsDrawing(false);
           } else {
+            console.log("Adding point to current path");
+            // Add persistent point marker on each subsequent click
+            const pointLayer: LayerProps = {
+              type: "point",
+              id: generateLayerId(),
+              name: `Polygon Point ${layers.filter((l) => l.type === "point").length + 1}`,
+              position: point,
+              color: [32, 32, 32],
+              radius: 5000,
+              visible: true,
+            };
+            setLayers([...layers, pointLayer]);
             setCurrentPath((prev) => [...prev, point]);
           }
         }
@@ -695,6 +1339,112 @@ export const useLayers = () => {
         const { lng: longitude, lat: latitude } = event.lngLat;
         const currentPoint: [number, number] = [longitude, latitude];
         setMousePosition(currentPoint);
+      };
+
+      // --- Azimuthal helpers & drawing ---
+      const toRadians = (deg: number) => (deg * Math.PI) / 180;
+      const toDegrees = (rad: number) => (rad * 180) / Math.PI;
+
+      const calculateDistanceMeters = (a: [number, number], b: [number, number]) => {
+        const R = 6371000;
+        const lat1 = toRadians(a[1]);
+        const lat2 = toRadians(b[1]);
+        const dLat = toRadians(b[1] - a[1]);
+        const dLon = toRadians(b[0] - a[0]);
+        const s = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+        const c = 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+        return R * c;
+      };
+
+      const calculateBearingDegrees = (a: [number, number], b: [number, number]) => {
+        const lat1 = toRadians(a[1]);
+        const lat2 = toRadians(b[1]);
+        const dLon = toRadians(b[0] - a[0]);
+        const y = Math.sin(dLon) * Math.cos(lat2);
+        const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+        const brng = Math.atan2(y, x);
+        return (toDegrees(brng) + 360) % 360; // Normalize 0-360
+      };
+
+      const makeSectorPolygon = (
+        center: [number, number],
+        radiusMeters: number,
+        bearingDeg: number,
+        sectorAngleDeg: number,
+        segments = 64
+      ): [number, number][] => {
+        const [lng, lat] = center;
+        const latRad = toRadians(lat);
+        const metersPerDegLat = 111320; // approx
+        const metersPerDegLng = 111320 * Math.cos(latRad);
+        const dLat = radiusMeters / metersPerDegLat;
+        const dLng = radiusMeters / metersPerDegLng;
+
+        const half = sectorAngleDeg / 2;
+        const start = toRadians(bearingDeg - half);
+        const end = toRadians(bearingDeg + half);
+
+        const points: [number, number][] = [];
+        // start at center
+        points.push([lng, lat]);
+
+        // sample arc from start to end
+        const steps = Math.max(8, Math.floor((segments * sectorAngleDeg) / 360));
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const theta = start + t * (end - start);
+          const x = dLng * Math.sin(theta); // east-west offset
+          const y = dLat * Math.cos(theta); // north-south offset
+          points.push([lng + x, lat + y]);
+        }
+
+        // close back to center
+        points.push([lng, lat]);
+        return points;
+      };
+
+      const handleAzimuthalDrawing = (point: [number, number]) => {
+        if (!isDrawing) {
+          // First click sets the center
+          setCurrentPath([point]);
+          setIsDrawing(true);
+          return;
+        }
+
+        // Second click sets the azimuth and radius
+        const center = currentPath[0];
+        const end = point;
+        const radiusMeters = calculateDistanceMeters(center, end);
+        const bearing = calculateBearingDegrees(center, end);
+
+        const sectorAngleDeg = 60; // default sector width
+        const sector = makeSectorPolygon(center, radiusMeters, bearing, sectorAngleDeg);
+
+        // Build GeoJSON with only the sector polygon (no point or azimuth line)
+        const featureCollection: GeoJSON.FeatureCollection = {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: { type: "Polygon", coordinates: [sector] },
+              properties: { kind: "sector", radiusMeters, bearing, sectorAngleDeg }
+            }
+          ]
+        };
+
+        const newLayer: LayerProps = {
+          type: "geojson",
+          id: generateLayerId(),
+          name: `Azimuthal ${layers.filter((l) => l.name?.startsWith("Azimuthal")).length + 1}`,
+          geojson: featureCollection,
+          color: [32, 32, 32, 180],
+          pointRadius: 40000,
+          visible: true,
+        };
+
+        setLayers([...layers, newLayer]);
+        setCurrentPath([]);
+        setIsDrawing(false);
       };
 
 
@@ -716,12 +1466,18 @@ export const useLayers = () => {
         alert(`Send message to Node ${node.userId} - Feature coming soon!`);
       };
 
+      const handleFtp = (node: Node) => {
+        console.log('Starting FTP transfer with node:', node.userId);
+        // TODO: Implement FTP functionality
+        alert(`FTP transfer with Node ${node.userId} - Feature coming soon!`);
+      };
+
       const closeNodeDialog = () => {
         setIsNodeDialogOpen(false);
         setSelectedNode(null);
       };
 
-      const toggleDrawingMode = (mode: "point" | "polygon" | "line" | null) => {
+      const toggleDrawingMode = (mode: "point" | "polygon" | "line" | "azimuthal" | null) => {
         console.log("toggleDrawingMode called with mode:", mode, "current drawingMode:", drawingMode);
         // If clicking the same mode, turn it off (set to null)
         if (drawingMode === mode) {
@@ -770,6 +1526,15 @@ export const useLayers = () => {
       const polygonLayers = layers.filter((l) => l.type === "polygon" && isLayerVisible(l));
       const geoJsonLayers = layers.filter((l) => l.type === "geojson" && isLayerVisible(l));
       const nodeLayers = layers.filter((l) => l.type === "nodes" && isLayerVisible(l));
+      
+      // Debug logging for layer counts
+      console.log("Layer counts:", {
+        totalLayers: layers.length,
+        pointLayers: pointLayers.length,
+        lineLayers: lineLayers.length,
+        polygonLayers: polygonLayers.length,
+        nodeLayers: nodeLayers.length
+      });
     
       const previewLayers: LayerProps[] = [];
     
@@ -814,7 +1579,7 @@ export const useLayers = () => {
             id: generateLayerId(),
             name: "Preview Polygon",
             polygon: [previewPath],
-            color: [160, 160, 160], // Light grey for polygon preview
+            color: [32, 32, 32, 100], // Darker preview for polygon
             visible: true,
           });
     
@@ -832,6 +1597,29 @@ export const useLayers = () => {
           }
         }
       }
+      // Azimuthal preview: line from center to mouse and a sector at that radius
+      if (
+        isDrawing &&
+        drawingMode === "azimuthal" &&
+        currentPath.length === 1 &&
+        mousePosition
+      ) {
+        const center = currentPath[0];
+        const radiusMeters = calculateDistanceMeters(center, mousePosition);
+        const bearing = calculateBearingDegrees(center, mousePosition);
+        const sector = makeSectorPolygon(center, radiusMeters, bearing, 60, 64);
+
+        // Do not show azimuth line in preview; only show sector
+
+        previewLayers.push({
+          type: "polygon",
+          id: generateLayerId(),
+          name: "Preview Azimuth Sector",
+          polygon: [sector],
+          color: [32, 32, 32, 100],
+          visible: true,
+        });
+      }
       if (isDrawing && currentPath.length > 0) {
         currentPath.forEach((point, index) => {
           previewLayers.push({
@@ -840,7 +1628,7 @@ export const useLayers = () => {
             name: `Preview Point ${index + 1}`,
             position: point,
             color: index === 0 ? [255, 255, 0] : [255, 0, 255], // First point yellow, others magenta
-            radius: 30000,
+            radius: 150,
             visible: true,
           });
         });
@@ -849,14 +1637,20 @@ export const useLayers = () => {
       const scatterLayer = new ScatterplotLayer({
         id: "point-layer",
         data: pointLayers,
-        getPosition: (d: LayerProps) => d.position!,
-        getRadius: (d: LayerProps) => d.radius || 50000,
+        getPosition: (d: LayerProps) => {
+          console.log("ScatterplotLayer getPosition called with:", d);
+          return d.position!;
+        },
+        getRadius: (d: LayerProps) => d.radius || 200,
         getFillColor: (d: LayerProps) => d.color,
         pickable: true,
         visible: true,
         onHover: (info) => setHoverInfo(info),
         onHoverEnd: () => setHoverInfo(undefined),
+        radiusMinPixels: 4,
       });
+      
+      console.log("ScatterplotLayer created with data:", pointLayers);
     
       const previewPointLayers = previewLayers.filter((l) => l.type === "point");
       const previewLineLayers = previewLayers.filter((l) => l.type === "line");
@@ -868,9 +1662,10 @@ export const useLayers = () => {
         id: "preview-point-layer",
         data: previewPointLayers,
         getPosition: (d: LayerProps) => d.position!,
-        getRadius: (d: LayerProps) => d.radius || 30000,
+        getRadius: (d: LayerProps) => d.radius || 200,
         getFillColor: (d: LayerProps) => d.color,
         pickable: false,
+        radiusMinPixels: 4,
       });
     
       const pathData = lineLayers.flatMap((layer) =>
@@ -1021,6 +1816,57 @@ export const useLayers = () => {
         });
       });
 
+      // DEM raster layers using BitmapLayer
+      const demLayers = layers.filter((l) => l.type === "dem" && isLayerVisible(l));
+      const demBitmapLayers = demLayers.map((layer) => {
+        return new (require('@deck.gl/layers').BitmapLayer)({
+          id: layer.id,
+          image: layer.bitmap as any,
+          bounds: [
+            layer.bounds![0][0],
+            layer.bounds![0][1],
+            layer.bounds![1][0],
+            layer.bounds![1][1],
+          ],
+          pickable: false,
+          visible: layer.visible !== false,
+          opacity: 0.9,
+        });
+      });
+
+      // Annotation layers using TextLayer
+      const annotationLayers = layers.filter((l) => l.type === "annotation" && isLayerVisible(l));
+      const annotationTextLayers = annotationLayers.flatMap((layer) => {
+        if (!layer.annotations || layer.annotations.length === 0) {
+          return [];
+        }
+
+        try {
+          const { TextLayer } = require('@deck.gl/layers');
+          return new TextLayer({
+            id: layer.id,
+            data: layer.annotations,
+            getPosition: (d: any) => d.position,
+            getText: (d: any) => d.text,
+            getColor: (d: any) => d.color || layer.color || [0, 0, 0],
+            getSize: (d: any) => d.fontSize || 14,
+            getAngle: 0,
+            getTextAnchor: 'middle',
+            getAlignmentBaseline: 'center',
+            pickable: true,
+            visible: layer.visible !== false,
+            sizeScale: 1,
+            fontFamily: 'Arial, sans-serif',
+            fontWeight: 'normal',
+            onHover: (info: any) => setHoverInfo(info),
+            onHoverEnd: () => setHoverInfo(undefined),
+          });
+        } catch (error) {
+          console.error('Error creating TextLayer:', error);
+          return [];
+        }
+      });
+
       // Create node layers using IconLayer (prioritize icons over circles)
       const nodeIconLayers = nodeLayers.flatMap((layer) => {
         console.log('Processing node layer:', layer.id, 'with', layer.nodes?.length, 'nodes');
@@ -1046,16 +1892,18 @@ export const useLayers = () => {
             pickable: true,
             getIcon: (node: Node) => {
               const iconConfig = getNodeIcon(node, layer.nodes);
-              console.log(`Loading icon for node ${node.userId}:`, iconConfig.url);
+           //   console.log(`Loading icon for node ${node.userId}:`, iconConfig.url);
               return iconConfig;
             },
             getPosition: (node: Node) => [node.longitude, node.latitude],
-            getSize: 32, // Larger icon size for better visibility
+            getSize: 24, // Smaller size to prevent cutting issues
             sizeScale: 1,
-            getPixelOffset: [0, 0],
-            alphaCutoff: 0.01, // Lower cutoff for better icon visibility
+            getPixelOffset: [0, -10], // Offset icons slightly up to prevent cutting at bottom
+            alphaCutoff: 0.001, // Even lower cutoff for better icon visibility
             billboard: true,
             sizeUnits: 'pixels',
+            sizeMinPixels: 16, // Minimum size to prevent icons from becoming too small
+            sizeMaxPixels: 32, // Maximum size to prevent icons from becoming too large
             updateTriggers: {
               getIcon: [layer.nodes?.length, layer.nodes?.map(n => n.userId).join('-'), Object.keys(nodeIconMappings).join('-')],
               getPosition: [layer.nodes?.length],
@@ -1069,6 +1917,8 @@ export const useLayers = () => {
             onClick: (info) => {
               if (info.object) {
                 const node = info.object as Node;
+                // Close any active hover tooltip immediately on click
+                setHoverInfo(undefined);
                 // Only show dialog for socket nodes (nodes with network properties)
                 const isSocketNode = node.hasOwnProperty('snr') && 
                                    node.hasOwnProperty('rssi') && 
@@ -1077,7 +1927,10 @@ export const useLayers = () => {
                 
                 if (isSocketNode) {
                   console.log('Socket node clicked:', node);
-                  // Trigger node click dialog by dispatching a custom event
+                  // Set selected node and open dialog
+                  setSelectedNode(node);
+                  setIsNodeDialogOpen(true);
+                  // Also dispatch event for backward compatibility
                   const event = new CustomEvent('nodeIconSelection', {
                     detail: { 
                       nodeId: node.userId.toString(),
@@ -1103,10 +1956,12 @@ export const useLayers = () => {
               data: [...layer.nodes],
               pickable: true,
               getPosition: (node: Node) => [node.longitude, node.latitude],
-              getRadius: 8000, // Smaller fallback circles
+              getRadius: 12000, // Larger fallback circles to prevent cutting
               getFillColor: (node: Node) => getSignalColor(node.snr, node.rssi),
               getLineColor: [255, 255, 255, 200],
-              getLineWidth: 1,
+              getLineWidth: 2, // Thicker border for better visibility
+              radiusMinPixels: 8, // Minimum pixel size to prevent cutting
+              radiusMaxPixels: 32, // Maximum pixel size
               onHover: (info) => setHoverInfo(info),
               onHoverEnd: () => setHoverInfo(undefined),
             }));
@@ -1132,11 +1987,18 @@ export const useLayers = () => {
         previewPathLayer,
         previewPolygonLayer,
         ...geoLayers,
+        ...demBitmapLayers,
+        ...annotationTextLayers,
         ...nodeIconLayers,
       ].filter(Boolean) // Remove any null/undefined layers
 
     // Filter out connection layers from the layers array for sidebar display
-    const sidebarLayers = layers.filter(layer => !layer.name?.includes("Connection"));
+    const sidebarLayers = layers.filter(layer => {
+      const name = layer.name || "";
+      if (name.includes("Connection")) return false;
+      if (name.startsWith("Polygon Point")) return false; // hide polygon vertex point layers from sidebar
+      return true;
+    });
 
     return {
         allLayers,
@@ -1161,6 +2023,7 @@ export const useLayers = () => {
         handleVoiceCall,
         handleVideoCall,
         handleSendMessage,
+        handleFtp,
         closeNodeDialog,
         networkLayersVisible,
         toggleNetworkLayersVisibility,
@@ -1180,5 +2043,23 @@ export const useLayers = () => {
         loadFileFromFilesystem,
         deleteStoredFile,
         getFileInfoFromFilesystem,
-    }
-}
+        // New device storage functions
+        downloadLayersToDevice,
+        importLayersFromDevice,
+        // File upload functions
+        uploadGeoJsonFile,
+        uploadDemFile,
+        uploadAnnotationFile,
+        uploadGeoJsonFromFilesystem,
+        uploadDemFromFilesystem,
+        handleFileImport,
+        // Storage directory functions
+        getStorageDirectory,
+        setStorageDirectory: async (directory: Directory) => {
+          await setStorageDirectoryUtil(directory);
+          showMessage(`Storage location changed to: ${getStorageDirectoryName(directory)}`);
+        },
+        getStorageDirectoryName,
+        getStorageDirectoryPath,
+      };
+    };

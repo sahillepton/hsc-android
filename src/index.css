@@ -117,4 +117,18 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Hide map watermark/attribution/logos from MapTiler/Mapbox/MapLibre */
+  .mapboxgl-ctrl-logo,
+  .mapboxgl-ctrl-attrib,
+  .mapbox-logo,
+  .maplibregl-ctrl-logo,
+  .maptiler-logo,
+  .map-credits,
+  .mapboxgl-ctrl-bottom-left,
+  .mapboxgl-ctrl-bottom-right {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
 }

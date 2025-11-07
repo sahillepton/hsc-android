@@ -11,6 +11,7 @@ const App = () => {
   const { data: socketData, isConnected } = useSocket("ws://localhost:8080");
   const { createNodeLayer } = useLayersContext();
 
+  // TODO: This should be a custom hook, not in the main component
   useEffect(() => {
     console.log("Socket data received:", socketData);
     console.log("Socket connection status:", isConnected);

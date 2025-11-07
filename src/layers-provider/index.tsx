@@ -4,6 +4,14 @@ import type { LayerProps, Node } from "@/lib/definitions";
 import type { PickingInfo } from "@deck.gl/core";
 import { createContext, useContext } from "react";
 
+// TODO: This is very inefficient. The whole application is rendering from the top everytime any change is made.
+// Literally worst case scenario
+
+// Step 1: Separate state and setters/actions
+// step 2: Use an external store like zustand to manage the state and actions
+// Step 3: The context provider should only be used to provide the store to the components
+// Step 4: The components should use the store to get the state and actions, only the ones they use, not all the state
+
 interface LayersContextType {
   allLayers: any[];
   layers: LayerProps[];
@@ -11,8 +19,10 @@ interface LayersContextType {
   handleMouseMove: (event: any) => void;
   handleMouseUp: () => void;
   handleLayerVisibility: (layerId: string, visible: boolean) => void;
-  toggleDrawingMode: (mode: "point" | "polygon" | "line" | null) => void;
-  drawingMode: "point" | "polygon" | "line" | null;
+  toggleDrawingMode: (
+    mode: "point" | "polygon" | "line" | "azimuthal" | null
+  ) => void;
+  drawingMode: "point" | "polygon" | "line" | "azimuthal" | null;
   handleLayerName: (layerId: string, name: string) => void;
   handleLayerColor: (layerId: string, color: [number, number, number]) => void;
   handleLayerRadius: (layerId: string, radius: number) => void;
@@ -40,6 +50,37 @@ interface LayersContextType {
   loadFileFromFilesystem: (fileName: string) => Promise<boolean>;
   deleteStoredFile: (fileName: string) => Promise<void>;
   getFileInfoFromFilesystem: (fileName: string) => Promise<any>;
+  // New device storage functions
+  downloadLayersToDevice: () => Promise<string>;
+  importLayersFromDevice: () => Promise<boolean>;
+  // File upload function
+  uploadGeoJsonFile: (file: File) => Promise<void>;
+  uploadDemFile: (file: File) => Promise<void>;
+  uploadGeoJsonFromFilesystem: (
+    path: string,
+    fileName?: string
+  ) => Promise<void>;
+  uploadDemFromFilesystem: (path: string, fileName?: string) => Promise<void>;
+  handleFileImport: (file: File) => Promise<void>;
+  // Storage directory functions
+  getStorageDirectory: () => Promise<import("@capacitor/filesystem").Directory>;
+  setStorageDirectory: (
+    directory: import("@capacitor/filesystem").Directory
+  ) => Promise<void>;
+  getStorageDirectoryName: (
+    directory: import("@capacitor/filesystem").Directory
+  ) => string;
+  getStorageDirectoryPath: (
+    directory: import("@capacitor/filesystem").Directory
+  ) => string;
+  // Node dialog functions
+  selectedNode: Node | null;
+  isNodeDialogOpen: boolean;
+  handleVoiceCall: (node: Node) => void;
+  handleVideoCall: (node: Node) => void;
+  handleSendMessage: (node: Node) => void;
+  handleFtp: (node: Node) => void;
+  closeNodeDialog: () => void;
 }
 
 const LayersContext = createContext<LayersContextType | null>(null);
@@ -78,6 +119,24 @@ export const LayersProvider = ({ children }: { children: React.ReactNode }) => {
     loadFileFromFilesystem,
     deleteStoredFile,
     getFileInfoFromFilesystem,
+    downloadLayersToDevice,
+    importLayersFromDevice,
+    uploadGeoJsonFile,
+    uploadDemFile,
+    uploadGeoJsonFromFilesystem,
+    uploadDemFromFilesystem,
+    handleFileImport,
+    getStorageDirectory,
+    setStorageDirectory,
+    getStorageDirectoryName,
+    getStorageDirectoryPath,
+    selectedNode,
+    isNodeDialogOpen,
+    handleVoiceCall,
+    handleVideoCall,
+    handleSendMessage,
+    handleFtp,
+    closeNodeDialog,
   } = useLayers();
   return (
     <LayersContext.Provider
@@ -114,6 +173,24 @@ export const LayersProvider = ({ children }: { children: React.ReactNode }) => {
         loadFileFromFilesystem,
         deleteStoredFile,
         getFileInfoFromFilesystem,
+        downloadLayersToDevice,
+        importLayersFromDevice,
+        uploadGeoJsonFile,
+        uploadDemFile,
+        uploadGeoJsonFromFilesystem,
+        uploadDemFromFilesystem,
+        handleFileImport,
+        getStorageDirectory,
+        setStorageDirectory,
+        getStorageDirectoryName,
+        getStorageDirectoryPath,
+        selectedNode,
+        isNodeDialogOpen,
+        handleVoiceCall,
+        handleVideoCall,
+        handleSendMessage,
+        handleFtp,
+        closeNodeDialog,
       }}
     >
       {children}

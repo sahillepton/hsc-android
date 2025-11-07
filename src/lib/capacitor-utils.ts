@@ -1,3 +1,6 @@
+// TODO: Duplicate functions maybe, why are we saying download data and upload data in preferences? shouldn't they be in storage or 
+// somewhere with more space allowed. Why not use capacitor to detect isMobile or not?
+
 import { Preferences } from '@capacitor/preferences';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 
@@ -21,6 +24,65 @@ export const getDownloadData = async (key: string) => {
 
 export const removeDownloadData = async (key: string) => {
   await Preferences.remove({ key: `download_${key}` });
+};
+
+// Storage directory preference functions
+export const STORAGE_DIRECTORY_KEY = 'storage_directory';
+export const DEFAULT_STORAGE_DIRECTORY = Directory.Documents;
+
+export const getStorageDirectory = async (): Promise<Directory> => {
+  try {
+    const { value } = await Preferences.get({ key: STORAGE_DIRECTORY_KEY });
+    if (value && Object.values(Directory).includes(value as Directory)) {
+      return value as Directory;
+    }
+    return DEFAULT_STORAGE_DIRECTORY;
+  } catch (error) {
+    console.error('Error getting storage directory:', error);
+    return DEFAULT_STORAGE_DIRECTORY;
+  }
+};
+
+export const setStorageDirectory = async (directory: Directory): Promise<void> => {
+  try {
+    await Preferences.set({
+      key: STORAGE_DIRECTORY_KEY,
+      value: directory,
+    });
+  } catch (error) {
+    console.error('Error setting storage directory:', error);
+    throw error;
+  }
+};
+
+export const getStorageDirectoryName = (directory: Directory): string => {
+  const directoryNames: Partial<Record<Directory, string>> = {
+    [Directory.Documents]: 'Documents (Android: /Documents/)',
+    [Directory.Data]: 'Data (Android: App Data)',
+    [Directory.Cache]: 'Cache (Android: App Cache)',
+    [Directory.External]: 'External Storage (Android: Public)',
+    [Directory.ExternalStorage]: 'External Storage (Android: Public)',
+    [Directory.Library]: 'Library',
+    [Directory.ExternalCache]: 'External Cache',
+    [Directory.LibraryNoCloud]: 'Library (No Cloud)',
+    [Directory.Temporary]: 'Temporary',
+  };
+  return directoryNames[directory] || 'Documents (Android: /Documents/)';
+};
+
+export const getStorageDirectoryPath = (directory: Directory): string => {
+  const directoryPaths: Partial<Record<Directory, string>> = {
+    [Directory.Documents]: '/Documents/',
+    [Directory.Data]: '/Data/',
+    [Directory.Cache]: '/Cache/',
+    [Directory.External]: '/External/',
+    [Directory.ExternalStorage]: '/ExternalStorage/',
+    [Directory.Library]: '/Library/',
+    [Directory.ExternalCache]: '/ExternalCache/',
+    [Directory.LibraryNoCloud]: '/LibraryNoCloud/',
+    [Directory.Temporary]: '/Temporary/',
+  };
+  return directoryPaths[directory] || '/Documents/';
 };
 
 // Upload functions using Capacitor Preferences
@@ -56,12 +118,13 @@ export const downloadAndSaveFile = async (url: string, fileName: string) => {
   }
 };
 
-export const saveFileToFilesystem = async (fileName: string, content: string) => {
+export const saveFileToFilesystem = async (fileName: string, content: string, directory?: Directory) => {
   try {
+    const storageDir = directory || await getStorageDirectory();
     const result = await Filesystem.writeFile({
       path: fileName,
       data: content,
-      directory: Directory.Documents,
+      directory: storageDir,
       encoding: Encoding.UTF8,
     });
     console.log('File saved to:', result.uri);
@@ -72,11 +135,12 @@ export const saveFileToFilesystem = async (fileName: string, content: string) =>
   }
 };
 
-export const readFileFromFilesystem = async (fileName: string) => {
+export const readFileFromFilesystem = async (fileName: string, directory?: Directory) => {
   try {
+    const storageDir = directory || await getStorageDirectory();
     const result = await Filesystem.readFile({
       path: fileName,
-      directory: Directory.Documents,
+      directory: storageDir,
       encoding: Encoding.UTF8,
     });
     return result.data;
@@ -86,11 +150,12 @@ export const readFileFromFilesystem = async (fileName: string) => {
   }
 };
 
-export const deleteFileFromFilesystem = async (fileName: string) => {
+export const deleteFileFromFilesystem = async (fileName: string, directory?: Directory) => {
   try {
+    const storageDir = directory || await getStorageDirectory();
     await Filesystem.deleteFile({
       path: fileName,
-      directory: Directory.Documents,
+      directory: storageDir,
     });
     console.log('File deleted:', fileName);
   } catch (error) {
@@ -360,6 +425,7 @@ export const createDownloadButton = (filename: string, content: string, mimeType
 };
 
 // Show message to user
+// TODO: We should not use alert, use a toast library instead
 export const showMessage = (message: string, isError: boolean = false) => {
   // Log to console
   if (isError) {
