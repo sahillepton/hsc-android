@@ -10,6 +10,57 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+export const base64ToFile = (base64Data: string, fileName: string, mimeType: string): File => {
+  const byteString = atob(base64Data);
+  const ab = new ArrayBuffer(byteString.length);
+  const ia = new Uint8Array(ab);
+  for (let i = 0; i < byteString.length; i++) {
+    ia[i] = byteString.charCodeAt(i);
+  }
+  const blob = new Blob([ab], { type: mimeType });
+  return new File([blob], fileName, { type: mimeType });
+};
+
+
+export const collectCoordinates = (coordinates: any): [number, number][] => {
+  if (!coordinates) return [];
+
+  if (Array.isArray(coordinates)) {
+    if (
+      coordinates.length >= 2 &&
+      typeof coordinates[0] === "number" &&
+      typeof coordinates[1] === "number"
+    ) {
+      return [[coordinates[0], coordinates[1]]];
+    }
+
+    return coordinates.flatMap((coord) => collectCoordinates(coord));
+  }
+
+  return [];
+};
+
+export const extractGeometryCoordinates = (geometry: GeoJSON.Geometry): [number, number][] => {
+  if (!geometry) return [];
+
+  switch (geometry.type) {
+    case "Point":
+      return collectCoordinates(geometry.coordinates);
+    case "MultiPoint":
+    case "LineString":
+      return collectCoordinates(geometry.coordinates);
+    case "MultiLineString":
+    case "Polygon":
+      return collectCoordinates(geometry.coordinates);
+    case "MultiPolygon":
+      return collectCoordinates(geometry.coordinates);
+    case "GeometryCollection":
+      return geometry.geometries.flatMap((child) => extractGeometryCoordinates(child));
+    default:
+      return [];
+  }
+};
+
 
 export function rgbToHex(rgb: [number, number, number] | [number, number, number, number]): string {
   const [r, g, b, a] = rgb;
@@ -80,7 +131,7 @@ export function getDistance (point1: [number, number], point2: [number, number])
 }
 
 
-function csvToGeoJSON(csvString: string, latField = "latitude", lonField = "longitude") {
+export function csvToGeoJSON(csvString: string, latField = "latitude", lonField = "longitude") {
   const result = Papa.parse(csvString, { header: true, skipEmptyLines: true });
 
   const features = result.data.map((row: any) => {
@@ -105,14 +156,14 @@ function csvToGeoJSON(csvString: string, latField = "latitude", lonField = "long
   };
 }
 
-async function shpToGeoJSON(file: File) {
+export async function shpToGeoJSON(file: File) {
   const arrayBuffer = await file.arrayBuffer();
   const geojson = await shp(arrayBuffer);
   return geojson;
 }
 
 // Parse GPX to GeoJSON
-function gpxToGeoJSON(gpxText: string): GeoJSON.FeatureCollection {
+export function gpxToGeoJSON(gpxText: string): GeoJSON.FeatureCollection {
   const parser = new DOMParser();
   const gpxDoc = parser.parseFromString(gpxText, "text/xml");
   const features: GeoJSON.Feature[] = [];
@@ -212,7 +263,7 @@ function gpxToGeoJSON(gpxText: string): GeoJSON.FeatureCollection {
 }
 
 // Parse KML to GeoJSON
-async function kmlToGeoJSON(kmlText: string): Promise<GeoJSON.FeatureCollection> {
+export async function kmlToGeoJSON(kmlText: string): Promise<GeoJSON.FeatureCollection> {
   const parser = new DOMParser();
   const kmlDoc = parser.parseFromString(kmlText, "text/xml");
   const features: GeoJSON.Feature[] = [];
@@ -320,7 +371,7 @@ async function kmlToGeoJSON(kmlText: string): Promise<GeoJSON.FeatureCollection>
 }
 
 // Extract KMZ (ZIP containing KML)
-async function kmzToGeoJSON(file: File): Promise<GeoJSON.FeatureCollection> {
+export  async function kmzToGeoJSON(file: File): Promise<GeoJSON.FeatureCollection> {
   // Use JSZip-like approach or parse as ZIP
   // For now, try to read as text first (some KMZ files can be read as text)
   try {

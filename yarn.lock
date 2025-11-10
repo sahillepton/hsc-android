@@ -6169,3 +6169,8 @@ zstddec@^0.2.0-alpha.3:
   version "0.2.0-alpha.3"
   resolved "https://registry.yarnpkg.com/zstddec/-/zstddec-0.2.0-alpha.3.tgz#23d34fa12437a16a0a69aa8bb71151371eff096e"
   integrity sha512-uHyE3TN8jRFOaMVwdhERfrcaabyoUUawIRDKXE6x0nCU7mzyIZO0LndJ3AtVUiKLF0lC+8F5bMSySWEF586PSA==
+
+zustand@^5.0.8:
+  version "5.0.8"
+  resolved "https://registry.yarnpkg.com/zustand/-/zustand-5.0.8.tgz#b998a0c088c7027a20f2709141a91cb07ac57f8a"
+  integrity sha512-gyPKpIaxY9XcO2vSMrLbiER7QMAMGOQZVRdJ6Zi782jkbzZygq5GI9nG8g+sMgitRtndwaBSl7uiqC49o1SSiw==

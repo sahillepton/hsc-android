@@ -5,7 +5,9 @@ import { TerrainLayer } from "@deck.gl/geo-layers";
 import { showMessage, getUploadData, removeUploadData, getDownloadData, removeDownloadData, readFileFromFilesystem, deleteFileFromFilesystem, listFilesInDirectory, getFileInfo, getStorageDirectory, setStorageDirectory as setStorageDirectoryUtil, getStorageDirectoryName, getStorageDirectoryPath } from "@/lib/capacitor-utils";
 import  type {PickingInfo} from '@deck.gl/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
-import { fileToGeoJSON, fileToDEMRaster } from "@/lib/utils";
+import { fileToGeoJSON, fileToDEMRaster, base64ToFile } from "@/lib/utils";
+import { computeLayerBounds, generateLayerId } from "@/lib/layers";
+
 
 export const useLayers = () => {
     const [layers, setLayers] = useState<LayerProps[]>([]);
@@ -31,125 +33,9 @@ export const useLayers = () => {
       timestamp: number;
     } | null>(null);
 
-    const collectCoordinates = (coordinates: any): [number, number][] => {
-      if (!coordinates) return [];
+    
 
-      if (Array.isArray(coordinates)) {
-        if (
-          coordinates.length >= 2 &&
-          typeof coordinates[0] === "number" &&
-          typeof coordinates[1] === "number"
-        ) {
-          return [[coordinates[0], coordinates[1]]];
-        }
-
-        return coordinates.flatMap((coord) => collectCoordinates(coord));
-      }
-
-      return [];
-    };
-
-    const extractGeometryCoordinates = (geometry: GeoJSON.Geometry): [number, number][] => {
-      if (!geometry) return [];
-
-      switch (geometry.type) {
-        case "Point":
-          return collectCoordinates(geometry.coordinates);
-        case "MultiPoint":
-        case "LineString":
-          return collectCoordinates(geometry.coordinates);
-        case "MultiLineString":
-        case "Polygon":
-          return collectCoordinates(geometry.coordinates);
-        case "MultiPolygon":
-          return collectCoordinates(geometry.coordinates);
-        case "GeometryCollection":
-          return geometry.geometries.flatMap((child) => extractGeometryCoordinates(child));
-        default:
-          return [];
-      }
-    };
-
-    const computeLayerBounds = (layer: LayerProps) => {
-      const points: [number, number][] = [];
-
-      if (layer.type === "point" && layer.position) {
-        points.push(layer.position);
-      }
-
-      if (layer.type === "line" && layer.path) {
-        points.push(...layer.path);
-      }
-
-      if (layer.type === "polygon" && layer.polygon) {
-        layer.polygon.forEach((ring) => {
-          ring.forEach((coord) => {
-            points.push(coord);
-          });
-        });
-      }
-
-      if (layer.type === "geojson" && layer.geojson) {
-        layer.geojson.features.forEach((feature) => {
-          if (feature.geometry) {
-            points.push(...extractGeometryCoordinates(feature.geometry));
-          }
-        });
-      }
-
-      if (layer.type === "nodes" && layer.nodes) {
-        layer.nodes.forEach((node) => {
-          points.push([node.longitude, node.latitude]);
-        });
-      }
-
-      if (layer.bounds) {
-        const [[minLng, minLat], [maxLng, maxLat]] = layer.bounds;
-        points.push([minLng, minLat], [maxLng, maxLat]);
-      }
-
-      const validPoints = points.filter(
-        (point) =>
-          Array.isArray(point) &&
-          point.length >= 2 &&
-          typeof point[0] === "number" &&
-          typeof point[1] === "number" &&
-          !Number.isNaN(point[0]) &&
-          !Number.isNaN(point[1])
-      );
-
-      if (validPoints.length === 0) {
-        return null;
-      }
-
-      const longitudes = validPoints.map((point) => point[0]);
-      const latitudes = validPoints.map((point) => point[1]);
-
-      const minLng = Math.min(...longitudes);
-      const maxLng = Math.max(...longitudes);
-      const minLat = Math.min(...latitudes);
-      const maxLat = Math.max(...latitudes);
-
-      const isSinglePoint =
-        Math.abs(maxLng - minLng) < 1e-6 &&
-        Math.abs(maxLat - minLat) < 1e-6;
-
-      const center: [number, number] = [
-        (minLng + maxLng) / 2,
-        (minLat + maxLat) / 2,
-      ];
-
-      return {
-        bounds: [minLng, minLat, maxLng, maxLat] as [
-          number,
-          number,
-          number,
-          number
-        ],
-        center,
-        isSinglePoint,
-      };
-    };
+   
 
     const focusLayer = (layerId: string) => {
       const targetLayer = layers.find((layer) => layer.id === layerId);
@@ -179,53 +65,8 @@ export const useLayers = () => {
       setFocusLayerRequest(null);
     };
 
-  // Helper: convert base64 string to File for reuse of existing upload logic
-  // TODO: not using any state, so should be in a utils folder or the module scope
-  const base64ToFile = (base64Data: string, fileName: string, mimeType: string): File => {
-    const byteString = atob(base64Data);
-    const ab = new ArrayBuffer(byteString.length);
-    const ia = new Uint8Array(ab);
-    for (let i = 0; i < byteString.length; i++) {
-      ia[i] = byteString.charCodeAt(i);
-    }
-    const blob = new Blob([ab], { type: mimeType });
-    return new File([blob], fileName, { type: mimeType });
-  };
+   
 
-    // Handle Escape key to exit drawing mode
-    // TODO: Add a component called KeyboardShortcuts that has all these effects and takes to the store
-    // It can return null since it doesn't have any UI
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape' && drawingMode) {
-                console.log("Escape key pressed, exiting drawing mode");
-                setDrawingMode(null);
-                setIsDrawing(false);
-                setCurrentPath([]);
-                setDragStart(null);
-            }
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [drawingMode]);
-
-    // useKeyboardShortcut('Escape', (event) => {
-    //   if (drawingMode) {
-    //     setDrawingMode(null);
-    //     setIsDrawing(false);
-    //     setCurrentPath([]);
-    //     setDragStart(null);
-    //   }
-    // })
-
-    // TODO: again a util, keep it outside
-   const generateLayerId = () => {
-    return `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-   }
-
-   // TODO: constant list, keep it outside
-   // Available icons from the icons folder
    const availableIcons = [
      'alert',
      'command_post', 
@@ -239,11 +80,8 @@ export const useLayers = () => {
      'unknown_aircraft'
    ];
 
-   // TODO: why is this needed? There is a fixed list, consumers can just use that
    const getAvailableIcons = () => availableIcons;
 
-   // TODO: There should be one nodes list maintained in the store, the nodes list should have each node
-   // Each node should have its id, icon, category, position, etc.
    const setNodeIcon = (nodeId: string, iconName: string) => {
      if (iconName === '') {
        // Remove the mapping to use default icon
@@ -260,33 +98,24 @@ export const useLayers = () => {
      }
    };
 
-   // TODO: Rethink why you need both node and allNodes, and this again seems not depend on state,
-   // take it outside or useCallback for sure, 
-   // Make things efficient and performant by default
-   // TODO: test react-compiler
    const getNodeIcon = (node: Node, allNodes: Node[] = []) => {
-    // Check for custom icon mapping first
     const nodeId = node.userId.toString();
     if (nodeIconMappings[nodeId]) {
       const iconName = nodeIconMappings[nodeId];
-      console.log(`Using custom icon: ${iconName}.svg for node ${node.userId}`);
-      // Special handling for rectangular icons to prevent cutting
       const isRectangularIcon = ['ground_unit', 'command_post', 'naval_unit'].includes(iconName);
       
       return {
         url: `/icons/${iconName}.svg`,
-        width: isRectangularIcon ? 28 : 24, // Smaller width for rectangular icons
-        height: isRectangularIcon ? 20 : 24, // Smaller height for rectangular icons
-        anchorY: isRectangularIcon ? 10 : 12, // Adjust anchor for rectangular icons
-        anchorX: isRectangularIcon ? 14 : 12, // Adjust anchor for rectangular icons
+        width: isRectangularIcon ? 28 : 24, 
+        height: isRectangularIcon ? 20 : 24, 
+        anchorY: isRectangularIcon ? 10 : 12, 
+        anchorX: isRectangularIcon ? 14 : 12, 
         mask: false
       };
     }
 
-    // Fallback to automatic icon selection based on node properties
-    let iconName = 'neutral_aircraft'; // default fallback
+    let iconName = 'neutral_aircraft'; 
     
-    // Find the mother aircraft using the same deterministic logic as the map component
     const getMotherAircraft = () => {
       if (allNodes.length === 0) return null;
       
@@ -327,55 +156,37 @@ export const useLayers = () => {
     }
 
     console.log(`Using auto-selected icon: ${iconName}.svg for node ${node.userId}`);
-    
-    // Special handling for rectangular icons to prevent cutting
-    // TODO: this check is happeninng twice in this function, why? Wrongly organized code I feel
+  
     const isRectangularIcon = ['ground_unit', 'command_post', 'naval_unit'].includes(iconName);
     
     return {
       url: `/icons/${iconName}.svg`,
-      width: isRectangularIcon ? 28 : 24, // Smaller width for rectangular icons
-      height: isRectangularIcon ? 20 : 24, // Smaller height for rectangular icons
-      anchorY: isRectangularIcon ? 10 : 12, // Adjust anchor for rectangular icons
-      anchorX: isRectangularIcon ? 14 : 12, // Adjust anchor for rectangular icons
+      width: isRectangularIcon ? 28 : 24, 
+      height: isRectangularIcon ? 20 : 24, 
+      anchorY: isRectangularIcon ? 10 : 12, 
+      anchorX: isRectangularIcon ? 14 : 12, 
       mask: false
     };
    }
 
-   // TODO: These are utility functions, don't depend on state, take it outside
    const getSignalColor = (snr: number, rssi: number): [number, number, number] => {
-    // Use SNR as primary indicator, RSSI as secondary
-    // SNR: Higher is better (typically 0-30 dB)
-    // RSSI: Higher is better (typically -100 to -30 dBm)
-    
-    // Normalize SNR to 0-1 scale (assuming 0-30 dB range)
     const normalizedSNR = Math.max(0, Math.min(1, snr / 30));
     
-    // Normalize RSSI to 0-1 scale (assuming -100 to -30 dBm range)
     const normalizedRSSI = Math.max(0, Math.min(1, (rssi + 100) / 70));
     
-    // Combine both metrics (70% SNR, 30% RSSI)
     const signalStrength = (normalizedSNR * 0.7) + (normalizedRSSI * 0.3);
     
-    // Color mapping: Green (strong) -> Orange (medium) -> Red (weak)
     if (signalStrength >= 0.7) {
-      // Strong signal - Green
-      return [0, 255, 0]; // Green
+      return [0, 255, 0]; 
     } else if (signalStrength >= 0.4) {
-      // Medium signal - Orange
-      return [255, 165, 0]; // Orange
+      return [255, 165, 0]; 
     } else {
-      // Weak signal - Red
-      return [255, 0, 0]; // Red
+      return [255, 0, 0]; 
     }
    }
 
-   // TODO: This and the below function are very confusing. No idea what they are doing. Clarify the names
-   // arguments and what they return
    const createConnectionsLayer = (connectionLines: [[number, number], [number, number]][], nodes: Node[], layerName?: string): LayerProps[] => {
-    // Create individual line layers for each connection with signal-based colors
     const connectionLayers: LayerProps[] = connectionLines.map((line, index) => {
-      // Find the source and target nodes for this connection 
       const sourceNode = nodes.find(n => 
         Math.abs(n.longitude - line[0][0]) < 0.0001 && 
         Math.abs(n.latitude - line[0][1]) < 0.0001
@@ -385,8 +196,7 @@ export const useLayers = () => {
         Math.abs(n.latitude - line[1][1]) < 0.0001
       );
 
-      // Calculate average signal strength between the two nodes
-      let signalColor: [number, number, number] = [128, 128, 128]; // Default grey
+      let signalColor: [number, number, number] = [128, 128, 128]; 
       
       if (sourceNode && targetNode) {
         const avgSNR = (sourceNode.snr + targetNode.snr) / 2;
@@ -410,13 +220,11 @@ export const useLayers = () => {
    }
 
    const addConnectionsToLayers = (nodes: Node[], newLayers: LayerProps[], layerName?: string) => {
-    // Create a map of userId to node for quick lookup
     const nodeMap = new Map<number, Node>();
     nodes.forEach(node => {
       nodeMap.set(node.userId, node);
     });
 
-    // Create connection lines between connected nodes
     const connectionLines: [[number, number], [number, number]][] = [];
     const processedConnections = new Set<string>();
     
@@ -428,7 +236,6 @@ export const useLayers = () => {
           const targetNode = nodeMap.get(targetUserId);
           
           if (targetNode) {
-            // Create a unique connection identifier to avoid duplicates
             const connectionId = [sourceNode.userId, targetUserId].sort().join('-');
             if (!processedConnections.has(connectionId)) {
               processedConnections.add(connectionId);
@@ -443,8 +250,6 @@ export const useLayers = () => {
       }
     });
 
-    // FORCE TEST CONNECTIONS - Always create them for debugging
-    // TODO: How does this debug?
     if (nodes.length >= 2) {
       for (let i = 0; i < Math.min(nodes.length - 1, 3); i++) {
         const testConnection: [[number, number], [number, number]] = [
@@ -455,30 +260,24 @@ export const useLayers = () => {
       }
     }
 
-    // Create connections layers if there are connections
     if (connectionLines.length > 0) {
       const connectionsLayers = createConnectionsLayer(connectionLines, nodes, layerName);
       newLayers.push(...connectionsLayers);
     }
    }
     
-   // TODO: Add prettier, why is this not formatted? Format on Save should be enabled
       const handleClick = (event: any) => {
-        console.log("handleClick called with:", { event, drawingMode, lngLat: event.lngLat });
         
         if (!event.lngLat || !drawingMode) {
-          console.log("handleClick early return:", { hasLngLat: !!event.lngLat, drawingMode });
           return;
         }
         
         const { lng: longitude, lat: latitude } = event.lngLat;
         const clickPoint: [number, number] = [longitude, latitude];
 
-        console.log("Click point:", clickPoint, "Drawing mode:", drawingMode);
     
         switch (drawingMode) {
           case "point":
-            console.log("Creating point layer at:", clickPoint);
             createPointLayer(clickPoint);
             break;
           case "line":
@@ -494,24 +293,7 @@ export const useLayers = () => {
       };
     
       const createPointLayer = (position: [number, number]) => {
-        console.log("createPointLayer called with position:", position);
-        
-        // Validate coordinates are within Mumbai bounds
-        // TODO: Why is this hardcoded here?
-        const mumbaiBounds = {
-          north: 19.3,
-          south: 18.9,
-          east: 73.0,
-          west: 72.7
-        };
-        
-        const [lng, lat] = position;
-        const isWithinBounds = lat >= mumbaiBounds.south && 
-                               lat <= mumbaiBounds.north && 
-                               lng >= mumbaiBounds.west && 
-                               lng <= mumbaiBounds.east;
-        
-        console.log("Point coordinates validation:", { lng, lat, isWithinBounds, mumbaiBounds });
+  
         
         const newLayer: LayerProps = {
           type: "point",
@@ -522,24 +304,20 @@ export const useLayers = () => {
           radius: 200,
           visible: true,
         };
-        console.log("Creating new point layer:", newLayer);
-        console.log("Current layers count:", layers.length);
         setLayers([...layers, newLayer]);
-        console.log("Point layer added, new layers count:", layers.length + 1);
       };
 
 
       const createGeoJsonLayer = (geojson: GeoJSON.FeatureCollection, fileName: string) => {
 
         
-        // Create a single layer that contains all the GeoJSON features
         const newLayer: LayerProps = {
           type: "geojson",
           id: generateLayerId(),
           name: fileName ? fileName.split('.')[0] : `GeoJSON Layer ${layers.filter((l) => l.type === "geojson").length + 1}`,
           geojson: geojson,
           color: [Math.floor(Math.random() * 255), Math.floor(Math.random() * 255), Math.floor(Math.random() * 255)],
-          pointRadius: 50000, // Default radius for point features
+          pointRadius: 50000, 
           visible: true,
         };
         
@@ -549,9 +327,6 @@ export const useLayers = () => {
 
       const uploadGeoJsonFile = async (file: File) => {
         try {
-          console.log("Uploading file:", file.name, "Size:", file.size);
-          
-          // Better extension detection (handle .geojson and multi-dot filenames)
           const fileName = file.name.toLowerCase();
           let ext = '';
           if (fileName.endsWith('.geojson')) {
@@ -563,7 +338,6 @@ export const useLayers = () => {
           
           const supportedFormats = ["geojson", "json", "shp", "zip", "csv", "gpx", "kml", "kmz"];
           
-          // Allow file if extension is supported OR if MIME type suggests it's JSON/GeoJSON
           const mimeType = file.type?.toLowerCase() || '';
           const isSupportedByExt = ext && supportedFormats.includes(ext);
           const isSupportedByMime = mimeType.includes('json') || mimeType.includes('geojson');
@@ -572,12 +346,8 @@ export const useLayers = () => {
             console.warn(`File extension .${ext} not in supported formats, but attempting to process anyway`);
           }
 
-          // Convert file to GeoJSON
-          console.log("Converting file to GeoJSON...");
           const geojson = await fileToGeoJSON(file);
-          console.log("GeoJSON conversion result:", geojson);
           
-          // Validate GeoJSON structure
           if (!geojson) {
             showMessage("Invalid vector file format. Could not convert to GeoJSON.", true);
             return;
@@ -598,8 +368,6 @@ export const useLayers = () => {
             return;
           }
 
-          console.log(`Creating layer from GeoJSON with ${geojson.features.length} features`);
-          // Create layer from GeoJSON
           createGeoJsonLayer(geojson, file.name);
           showMessage(`Successfully uploaded ${geojson.features.length} feature(s) from ${file.name}`);
         } catch (error) {
@@ -610,7 +378,6 @@ export const useLayers = () => {
 
       const uploadDemFile = async (file: File) => {
         try {
-          console.log("Uploading DEM file:", file.name);
           const dem = await fileToDEMRaster(file);
           
           const isDefaultBounds =
@@ -657,7 +424,6 @@ export const useLayers = () => {
         }
       };
 
-      // Capacitor Filesystem variants: read file and reuse uploaders
       const uploadGeoJsonFromFilesystem = async (path: string, fileName?: string) => {
         try {
           const name = fileName || path.split('/').pop() || 'data.geojson';
@@ -684,30 +450,23 @@ export const useLayers = () => {
         }
       };
 
-      // Import layers from JSON export file
       const importLayersFromJson = async (file: File) => {
         try {
           const text = await file.text();
           const importData = JSON.parse(text);
 
-          // Check if this is a layer export file (has version and layers)
           if (importData.version && Array.isArray(importData.layers)) {
-            // Validate the data structure
             if (!importData.layers || !Array.isArray(importData.layers)) {
               throw new Error('Invalid layers data format');
             }
 
-            // Use setTimeout to defer state updates and avoid OpenGL rendering conflicts
             setTimeout(() => {
-              // Combine state updates - set layers and icon mappings in a single render cycle
               setLayers(importData.layers);
               
-              // Import node icon mappings if available
               if (importData.nodeIconMappings) {
                 setNodeIconMappings(importData.nodeIconMappings);
               }
               
-              // Show success message after rendering completes
               setTimeout(() => {
                 showMessage(`Successfully imported ${importData.layers.length} layers from ${file.name}`);
               }, 500);
@@ -715,25 +474,18 @@ export const useLayers = () => {
 
             return true;
           } else {
-            // Not a layer export file, treat as regular GeoJSON
             return false;
           }
         } catch (error) {
           console.error('Error importing layers from JSON:', error);
-          // If parsing fails, it's not a valid JSON layer export
           return false;
         }
       };
 
-      // Function to upload annotation layer from file
       const uploadAnnotationFile = async (file: File) => {
         try {
-          console.log("Uploading annotation file:", file.name);
-          
-          // Convert file to GeoJSON first
           const geojson = await fileToGeoJSON(file);
           
-          // Validate GeoJSON structure
           if (!geojson || geojson.type !== "FeatureCollection" || !Array.isArray(geojson.features)) {
             showMessage("Invalid annotation file format. Could not convert to GeoJSON.", true);
             return;
@@ -744,7 +496,6 @@ export const useLayers = () => {
             return;
           }
 
-          // Extract annotations from GeoJSON features
           const annotations: Array<{
             position: [number, number];
             text: string;
@@ -753,7 +504,6 @@ export const useLayers = () => {
           }> = [];
 
           geojson.features.forEach((feature : any) => {
-            // Check if feature has text/annotation properties
             const text = feature.properties?.text || 
                         feature.properties?.label || 
                         feature.properties?.name || 
@@ -761,23 +511,18 @@ export const useLayers = () => {
                         feature.properties?.title ||
                         '';
             
-            // Only process features with text and valid geometry
             if (text && feature.geometry) {
               let position: [number, number] | null = null;
               
-              // Extract position based on geometry type
               if (feature.geometry.type === 'Point' && feature.geometry.coordinates) {
                 position = [feature.geometry.coordinates[0], feature.geometry.coordinates[1]];
               } else if (feature.geometry.type === 'LineString' && feature.geometry.coordinates.length > 0) {
-                // Use first point of line
                 position = [feature.geometry.coordinates[0][0], feature.geometry.coordinates[0][1]];
               } else if (feature.geometry.type === 'Polygon' && feature.geometry.coordinates.length > 0) {
-                // Use first point of first ring
                 position = [feature.geometry.coordinates[0][0][0], feature.geometry.coordinates[0][0][1]];
               }
 
               if (position) {
-                // Extract color from properties or use default
                 let color: [number, number, number] | undefined;
                 if (feature.properties?.color) {
                   if (Array.isArray(feature.properties.color)) {
@@ -800,12 +545,11 @@ export const useLayers = () => {
             return;
           }
 
-          // Create annotation layer
           const newLayer: LayerProps = {
             type: "annotation",
             id: generateLayerId(),
             name: file.name.split('.')[0],
-            color: [0, 0, 0], // Default black text
+            color: [0, 0, 0], 
             visible: true,
             annotations: annotations,
           };
@@ -818,27 +562,21 @@ export const useLayers = () => {
         }
       };
 
-      // Function to extract and process TIFF from ZIP
       const extractTiffFromZip = async (file: File): Promise<File | null> => {
         try {
-          // Dynamically import JSZip
           const JSZip = (await import('jszip')).default;
           const zip = await JSZip.loadAsync(file);
           
-          // Find TIFF files in the ZIP
           const tiffFiles = Object.keys(zip.files).filter(name => {
             const lowerName = name.toLowerCase();
             return lowerName.endsWith('.tif') || lowerName.endsWith('.tiff');
           });
           
           if (tiffFiles.length === 0) {
-            console.log('No TIFF files found in ZIP');
             return null;
           }
           
-          // Use the first TIFF file found
           const tiffFileName = tiffFiles[0];
-          console.log('Found TIFF file in ZIP:', tiffFileName);
           
           const tiffData = await zip.files[tiffFileName].async('blob');
           const tiffFile = new File([tiffData], tiffFileName, { type: 'image/tiff' });
@@ -850,77 +588,53 @@ export const useLayers = () => {
         }
       };
 
-      // Function to handle file import from input
       const handleFileImport = async (file: File) => {
         try {
           if (!file) {
             return;
           }
 
-          console.log('Importing file:', file.name, 'Type:', file.type, 'Size:', file.size);
-
-          // Determine file type from extension (handle multiple dots in filename)
           const fileName = file.name?.toLowerCase() || '';
           let ext = '';
           
-          // Handle special cases for multi-part extensions
           if (fileName.endsWith('.geojson')) {
             ext = 'geojson';
           } else if (fileName.endsWith('.tiff')) {
             ext = 'tiff';
           } else {
-            // Get last extension
             const parts = fileName.split('.');
             ext = parts.length > 1 ? parts[parts.length - 1] : '';
           }
           
-          console.log('Detected extension:', ext);
-          
-          // First, check if it's a JSON file that might be a layer export
           if (ext === 'json') {
             const isLayerExport = await importLayersFromJson(file);
             if (isLayerExport) {
-              // Successfully imported as layer export
               return;
             }
-            // If not a layer export, fall through to treat as vector file
           }
           
-          // Check if ZIP file contains TIFF files
           if (ext === 'zip') {
-            console.log('Checking if ZIP contains TIFF files...');
             const tiffFile = await extractTiffFromZip(file);
             if (tiffFile) {
               console.log('Found TIFF in ZIP, processing as DEM');
               await uploadDemFile(tiffFile);
               return;
             }
-            // If no TIFF found, fall through to process as shapefile
-            console.log('No TIFF in ZIP, processing as shapefile');
           }
           
-          // Vector file extensions
           const vectorExtensions = ['geojson', 'json', 'shp', 'zip', 'csv', 'gpx', 'kml', 'kmz'];
-          // Raster/DEM file extensions (currently only GeoTIFF is supported)
           const rasterExtensions = ['tif', 'tiff'];
 
-          // For GeoJSON/JSON files, try to detect if they contain annotations
-          // Check if file might be an annotation file (by filename or content)
           if (ext === 'geojson' || ext === 'json') {
             const isAnnotationFile = fileName.includes('annotation') || 
                                      fileName.includes('label') || 
                                      fileName.includes('text') ||
                                      fileName.includes('annot');
             
-            // Try annotation processing first (for files with annotation keywords or all GeoJSON files)
-            // This allows any GeoJSON with text properties to be processed as annotations
             try {
-              console.log('Attempting to process as annotation file...');
-              // Create a temporary file reader to check content
               const text = await file.text();
               const parsed = JSON.parse(text);
               
-              // Check if it has features with text/label/name/annotation properties
               if (parsed.type === 'FeatureCollection' && Array.isArray(parsed.features)) {
                 const hasTextProperties = parsed.features.some((f: any) => 
                   f.properties && (
@@ -932,8 +646,6 @@ export const useLayers = () => {
                 );
                 
                 if (hasTextProperties || isAnnotationFile) {
-                  console.log('Features contain text properties, processing as annotation layer');
-                  // Reset file position by creating a new File object
                   const fileBlob = new Blob([text], { type: file.type });
                   const newFile = new File([fileBlob], file.name, { type: file.type });
                   await uploadAnnotationFile(newFile);
@@ -941,27 +653,18 @@ export const useLayers = () => {
                 }
               }
             } catch (error) {
-              console.log('Annotation processing failed or not applicable, falling back to vector processing');
-              // Fall through to vector processing
             }
           }
 
           if (vectorExtensions.includes(ext)) {
-            // Handle as vector file
-            console.log('Processing as vector file');
             await uploadGeoJsonFile(file);
           } else if (rasterExtensions.includes(ext)) {
-            // Handle as DEM/raster file
-            console.log('Processing as raster/DEM file');
             await uploadDemFile(file);
           } else {
-            // Try to detect by MIME type as fallback
             const mimeType = file.type?.toLowerCase() || '';
             if (mimeType.includes('json') || mimeType.includes('geojson')) {
-              console.log('Detected by MIME type as JSON/GeoJSON');
               await uploadGeoJsonFile(file);
             } else if (mimeType.includes('tiff') || mimeType.includes('tif')) {
-              console.log('Detected by MIME type as TIFF');
               await uploadDemFile(file);
             } else {
               showMessage(
@@ -981,14 +684,11 @@ export const useLayers = () => {
       };
 
       const createNodeLayer = useCallback((nodes: Node[], layerName?: string) => {
-        console.log('createNodeLayer called with:', { nodes, layerName, nodeCount: nodes?.length });
         
         if (!nodes || !Array.isArray(nodes) || nodes.length === 0) {
-          console.warn('createNodeLayer: Invalid or empty nodes array');
           return;
         }
         
-        // Validate node structure
         const validNodes = nodes.filter(node => {
           const isValid = node && 
             typeof node.latitude === 'number' && 
@@ -1001,16 +701,11 @@ export const useLayers = () => {
           return isValid;
         });
         
-        console.log('createNodeLayer: Valid nodes:', validNodes.length, 'out of', nodes.length);
-        
         if (validNodes.length === 0) {
-          console.warn('createNodeLayer: No valid nodes to create layer');
           return;
         }
         
-        // Remove existing node layers and connection layers first to prevent duplicates
         setLayers(currentLayers => {
-          console.log('createNodeLayer: Current layers count:', currentLayers.length);
           
           const otherLayers = currentLayers.filter(layer => 
             layer.type !== "nodes" && 
@@ -1019,9 +714,6 @@ export const useLayers = () => {
             !layer.name?.includes("Connection ")
           );
           
-          console.log('createNodeLayer: Other layers count:', otherLayers.length);
-          
-          // Convert nodes to GeoJSON FeatureCollection
           const nodeFeatures: GeoJSON.Feature[] = validNodes.map((node, index) => ({
             type: "Feature",
             geometry: {
@@ -1039,31 +731,23 @@ export const useLayers = () => {
             features: nodeFeatures
           };
 
-          console.log('createNodeLayer: Created GeoJSON with', nodeFeatures.length, 'features');
-
-          // Create the layers to return
           const newLayers: LayerProps[] = [];
 
-          // Create the nodes layer
           const nodesLayer: LayerProps = {
             type: "nodes",
             id: generateLayerId(),
             name: layerName || `Nodes Layer ${currentLayers.filter((l) => l.type === "nodes").length + 1}`,
             geojson: nodeGeojson,
             nodes: validNodes,
-            color: [0, 150, 255], // Blue color for nodes
-            pointRadius: 30000, // Default radius for node features
+            color: [0, 150, 255], 
+            pointRadius: 30000, 
             visible: true,
           };
           newLayers.push(nodesLayer);
           
-          console.log('createNodeLayer: Created nodes layer:', nodesLayer);
-
-          // Add connections using the dedicated function
           addConnectionsToLayers(validNodes, newLayers, layerName);
           
           const finalLayers = [...otherLayers, ...newLayers];
-          console.log('createNodeLayer: Final layers count:', finalLayers.length);
           
           return finalLayers;
         });
@@ -1080,7 +764,7 @@ export const useLayers = () => {
             id: generateLayerId(),
             name: `Line ${layers.filter((l) => l.type === "line").length + 1}`,
             path: finalPath,
-            color: [96, 96, 96], // Dark grey for regular lines
+            color: [96, 96, 96], 
             lineWidth: 5,
             visible: true,
           };
@@ -1091,7 +775,6 @@ export const useLayers = () => {
       };
 
       const handleLayerVisibility = (layerId: string, visible: boolean) => {
-        // Find target layer to determine if it's a polygon
         const target = layers.find(l => l.id === layerId);
         const isPolygon = target?.type === "polygon";
 
@@ -1099,7 +782,6 @@ export const useLayers = () => {
           if (l.id === layerId) {
             return { ...l, visible };
           }
-          // If polygon visibility changes, also apply to its vertex point layers
           if (isPolygon && (l.name || "").startsWith("Polygon Point")) {
             return { ...l, visible };
           }
@@ -1139,23 +821,19 @@ export const useLayers = () => {
       //  console.log('All layers cleared');
       };
 
-      // Download all layers including network layers to JSON file
       const downloadAllLayers = async () => {
         try {
-          // Get current timestamp for filename
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
           const filename = `layers_export_${timestamp}.json`;
           
-          // Prepare the export data with all layers (including connection layers)
           const exportData = {
             version: "1.0",
             exportDate: new Date().toISOString(),
             totalLayers: layers.length,
-            layers: layers, // This includes ALL layers including network and connection layers
-            nodeIconMappings: nodeIconMappings, // Include icon mappings
+              layers: layers, 
+            nodeIconMappings: nodeIconMappings, 
           };
           
-          // Convert to JSON string with pretty formatting
           const jsonContent = JSON.stringify(exportData, null, 2);
           
           // Get configured storage directory
@@ -2088,7 +1766,7 @@ export const useLayers = () => {
           console.log('Creating IconLayer for layer:', layer.id);
           
           // Pre-load icon URLs to ensure they're available
-          const iconUrls = [...new Set(layer.nodes.map(node => getNodeIcon(node, layer.nodes).url))];
+          const iconUrls = [...new Set(layer.nodes.map(node => getNodeIcon(node).url))];
           console.log('Icon URLs to load:', iconUrls);
           
           layerInstances.push(new IconLayer({
