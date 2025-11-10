@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useLayers } from "@/hooks/use-layers";
-import type { LayerProps, Node } from "@/lib/definitions";
+import type { DrawingMode, LayerProps, Node } from "@/lib/definitions";
 import type { PickingInfo } from "@deck.gl/core";
 import { createContext, useContext } from "react";
 
@@ -19,12 +19,12 @@ interface LayersContextType {
   handleMouseMove: (event: any) => void;
   handleMouseUp: () => void;
   handleLayerVisibility: (layerId: string, visible: boolean) => void;
-  toggleDrawingMode: (
-    mode: "point" | "polygon" | "line" | "azimuthal" | null
-  ) => void;
-  drawingMode: "point" | "polygon" | "line" | "azimuthal" | null;
+  toggleDrawingMode: (mode: DrawingMode) => void;
+  drawingMode: DrawingMode;
   handleLayerName: (layerId: string, name: string) => void;
   handleLayerColor: (layerId: string, color: [number, number, number]) => void;
+  focusLayer: (layerId: string) => void;
+  handleLayerLineWidth: (layerId: string, lineWidth: number) => void;
   handleLayerRadius: (layerId: string, radius: number) => void;
   handleLayerPointRadius: (layerId: string, pointRadius: number) => void;
   clearAllLayers: () => void;
@@ -38,6 +38,14 @@ interface LayersContextType {
   nodeIconMappings: Record<string, string>;
   setNodeIcon: (nodeId: string, iconName: string) => void;
   getAvailableIcons: () => string[];
+  focusLayerRequest: {
+    layerId: string;
+    bounds: [number, number, number, number];
+    center: [number, number];
+    isSinglePoint: boolean;
+    timestamp: number;
+  } | null;
+  clearLayerFocusRequest: () => void;
   // New Capacitor Preferences functions
   getStoredUploadData: (fileName: string) => Promise<any>;
   getStoredDownloadData: (fileName: string) => Promise<any>;
@@ -97,6 +105,8 @@ export const LayersProvider = ({ children }: { children: React.ReactNode }) => {
     drawingMode,
     handleLayerName,
     handleLayerColor,
+    focusLayer,
+    handleLayerLineWidth,
     handleLayerRadius,
     handleLayerPointRadius,
     clearAllLayers,
@@ -109,6 +119,8 @@ export const LayersProvider = ({ children }: { children: React.ReactNode }) => {
     nodeIconMappings,
     setNodeIcon,
     getAvailableIcons,
+    focusLayerRequest,
+    clearLayerFocusRequest,
     getStoredUploadData,
     getStoredDownloadData,
     clearStoredUploadData,
@@ -151,6 +163,8 @@ export const LayersProvider = ({ children }: { children: React.ReactNode }) => {
         drawingMode,
         handleLayerName,
         handleLayerColor,
+        focusLayer,
+        handleLayerLineWidth,
         handleLayerRadius,
         handleLayerPointRadius,
         clearAllLayers,
@@ -163,6 +177,8 @@ export const LayersProvider = ({ children }: { children: React.ReactNode }) => {
         nodeIconMappings,
         setNodeIcon,
         getAvailableIcons,
+        focusLayerRequest,
+        clearLayerFocusRequest,
         getStoredUploadData,
         getStoredDownloadData,
         clearStoredUploadData,

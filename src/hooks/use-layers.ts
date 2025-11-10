@@ -1,6 +1,7 @@
 import type { LayerProps, Node } from "@/lib/definitions";
 import { useState, useCallback, useEffect } from "react";
 import { ScatterplotLayer, PolygonLayer, LineLayer, GeoJsonLayer, IconLayer } from "@deck.gl/layers";
+import { TerrainLayer } from "@deck.gl/geo-layers";
 import { showMessage, getUploadData, removeUploadData, getDownloadData, removeDownloadData, readFileFromFilesystem, deleteFileFromFilesystem, listFilesInDirectory, getFileInfo, getStorageDirectory, setStorageDirectory as setStorageDirectoryUtil, getStorageDirectoryName, getStorageDirectoryPath } from "@/lib/capacitor-utils";
 import  type {PickingInfo} from '@deck.gl/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
@@ -22,6 +23,161 @@ export const useLayers = () => {
       );
     const [networkLayersVisible, setNetworkLayersVisible] = useState(true);
     const [nodeIconMappings, setNodeIconMappings] = useState<Record<string, string>>({});
+    const [focusLayerRequest, setFocusLayerRequest] = useState<{
+      layerId: string;
+      bounds: [number, number, number, number];
+      center: [number, number];
+      isSinglePoint: boolean;
+      timestamp: number;
+    } | null>(null);
+
+    const collectCoordinates = (coordinates: any): [number, number][] => {
+      if (!coordinates) return [];
+
+      if (Array.isArray(coordinates)) {
+        if (
+          coordinates.length >= 2 &&
+          typeof coordinates[0] === "number" &&
+          typeof coordinates[1] === "number"
+        ) {
+          return [[coordinates[0], coordinates[1]]];
+        }
+
+        return coordinates.flatMap((coord) => collectCoordinates(coord));
+      }
+
+      return [];
+    };
+
+    const extractGeometryCoordinates = (geometry: GeoJSON.Geometry): [number, number][] => {
+      if (!geometry) return [];
+
+      switch (geometry.type) {
+        case "Point":
+          return collectCoordinates(geometry.coordinates);
+        case "MultiPoint":
+        case "LineString":
+          return collectCoordinates(geometry.coordinates);
+        case "MultiLineString":
+        case "Polygon":
+          return collectCoordinates(geometry.coordinates);
+        case "MultiPolygon":
+          return collectCoordinates(geometry.coordinates);
+        case "GeometryCollection":
+          return geometry.geometries.flatMap((child) => extractGeometryCoordinates(child));
+        default:
+          return [];
+      }
+    };
+
+    const computeLayerBounds = (layer: LayerProps) => {
+      const points: [number, number][] = [];
+
+      if (layer.type === "point" && layer.position) {
+        points.push(layer.position);
+      }
+
+      if (layer.type === "line" && layer.path) {
+        points.push(...layer.path);
+      }
+
+      if (layer.type === "polygon" && layer.polygon) {
+        layer.polygon.forEach((ring) => {
+          ring.forEach((coord) => {
+            points.push(coord);
+          });
+        });
+      }
+
+      if (layer.type === "geojson" && layer.geojson) {
+        layer.geojson.features.forEach((feature) => {
+          if (feature.geometry) {
+            points.push(...extractGeometryCoordinates(feature.geometry));
+          }
+        });
+      }
+
+      if (layer.type === "nodes" && layer.nodes) {
+        layer.nodes.forEach((node) => {
+          points.push([node.longitude, node.latitude]);
+        });
+      }
+
+      if (layer.bounds) {
+        const [[minLng, minLat], [maxLng, maxLat]] = layer.bounds;
+        points.push([minLng, minLat], [maxLng, maxLat]);
+      }
+
+      const validPoints = points.filter(
+        (point) =>
+          Array.isArray(point) &&
+          point.length >= 2 &&
+          typeof point[0] === "number" &&
+          typeof point[1] === "number" &&
+          !Number.isNaN(point[0]) &&
+          !Number.isNaN(point[1])
+      );
+
+      if (validPoints.length === 0) {
+        return null;
+      }
+
+      const longitudes = validPoints.map((point) => point[0]);
+      const latitudes = validPoints.map((point) => point[1]);
+
+      const minLng = Math.min(...longitudes);
+      const maxLng = Math.max(...longitudes);
+      const minLat = Math.min(...latitudes);
+      const maxLat = Math.max(...latitudes);
+
+      const isSinglePoint =
+        Math.abs(maxLng - minLng) < 1e-6 &&
+        Math.abs(maxLat - minLat) < 1e-6;
+
+      const center: [number, number] = [
+        (minLng + maxLng) / 2,
+        (minLat + maxLat) / 2,
+      ];
+
+      return {
+        bounds: [minLng, minLat, maxLng, maxLat] as [
+          number,
+          number,
+          number,
+          number
+        ],
+        center,
+        isSinglePoint,
+      };
+    };
+
+    const focusLayer = (layerId: string) => {
+      const targetLayer = layers.find((layer) => layer.id === layerId);
+
+      if (!targetLayer) {
+        showMessage(`Layer not found for focus request`, true);
+        return;
+      }
+
+      const boundsData = computeLayerBounds(targetLayer);
+
+      if (!boundsData) {
+        showMessage(`Layer "${targetLayer.name}" has no geometry to focus`, true);
+        return;
+      }
+
+      setFocusLayerRequest({
+        layerId,
+        bounds: boundsData.bounds,
+        center: boundsData.center,
+        isSinglePoint: boundsData.isSinglePoint,
+        timestamp: Date.now(),
+      });
+    };
+
+    const clearLayerFocusRequest = () => {
+      setFocusLayerRequest(null);
+    };
 
   // Helper: convert base64 string to File for reuse of existing upload logic
   // TODO: not using any state, so should be in a utils folder or the module scope
@@ -457,29 +613,47 @@ export const useLayers = () => {
           console.log("Uploading DEM file:", file.name);
           const dem = await fileToDEMRaster(file);
           
-          // Check if default bounds were used (India bounds)
-          const isDefaultBounds = dem.bounds[0] === 68.0 && dem.bounds[1] === 6.0 && 
-                                  dem.bounds[2] === 97.0 && dem.bounds[3] === 37.0;
+          const isDefaultBounds =
+            dem.bounds[0] === 68.0 &&
+            dem.bounds[1] === 6.0 &&
+            dem.bounds[2] === 97.0 &&
+            dem.bounds[3] === 37.0;
           
           const newLayer: LayerProps = {
             type: "dem",
             id: generateLayerId(),
-            name: file.name.split('.')[0],
+            name: file.name.split(".")[0],
             color: [255, 255, 255],
             visible: true,
-            bounds: [[dem.bounds[0], dem.bounds[1]], [dem.bounds[2], dem.bounds[3]]],
+            bounds: [
+              [dem.bounds[0], dem.bounds[1]],
+              [dem.bounds[2], dem.bounds[3]],
+            ],
             bitmap: dem.canvas,
+            texture: dem.canvas,
+            elevationData: {
+              data: dem.data,
+              width: dem.width,
+              height: dem.height,
+              min: dem.min,
+              max: dem.max,
+            },
           };
-          setLayers([...layers, newLayer]);
+          setLayers((prev) => [...prev, newLayer]);
           
           if (isDefaultBounds) {
-            showMessage(`DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.`);
+            showMessage(
+              `DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.`
+            );
           } else {
             showMessage(`Successfully uploaded DEM: ${file.name}`);
           }
         } catch (error) {
           console.error("Error uploading DEM file:", error);
-          showMessage(`Error uploading DEM: ${error instanceof Error ? error.message : 'Unknown error'}`, true);
+          showMessage(
+            `Error uploading DEM: ${error instanceof Error ? error.message : "Unknown error"}`,
+            true
+          );
         }
       };
 
@@ -940,9 +1114,19 @@ export const useLayers = () => {
         setLayers(layers.map((l) => l.id === layerId ? { ...l, name } : l));
       };
       const handleLayerColor = (layerId: string, color: [number, number, number]) => {
-        setLayers(layers.map((l) => l.id === layerId ? { ...l, color } : l));
+        setLayers((prevLayers) =>
+          prevLayers.map((l) => (l.id === layerId ? { ...l, color } : l))
+        );
       };
-      
+
+      const handleLayerLineWidth = (layerId: string, lineWidth: number) => {
+        setLayers((prevLayers) =>
+          prevLayers.map((l) =>
+            l.id === layerId ? { ...l, lineWidth } : l
+          )
+        );
+      };
+
       const handleLayerPointRadius = (layerId: string, pointRadius: number) => {
         setLayers(layers.map((l) => l.id === layerId ? { ...l, pointRadius } : l));
       };
@@ -1816,23 +2000,44 @@ export const useLayers = () => {
         });
       });
 
-      // DEM raster layers using BitmapLayer
+      // DEM raster layers using TerrainLayer
       const demLayers = layers.filter((l) => l.type === "dem" && isLayerVisible(l));
-      const demBitmapLayers = demLayers.map((layer) => {
-        return new (require('@deck.gl/layers').BitmapLayer)({
-          id: layer.id,
-          image: layer.bitmap as any,
-          bounds: [
-            layer.bounds![0][0],
-            layer.bounds![0][1],
-            layer.bounds![1][0],
-            layer.bounds![1][1],
-          ],
-          pickable: false,
-          visible: layer.visible !== false,
-          opacity: 0.9,
-        });
-      });
+      const demTerrainLayers = demLayers
+        .map((layer) => {
+          if (!layer.bounds || !layer.elevationData) {
+            console.warn("DEM layer missing bounds or elevation data:", layer.id);
+            return null;
+          }
+
+          const [minLng, minLat] = layer.bounds[0];
+          const [maxLng, maxLat] = layer.bounds[1];
+
+          return new TerrainLayer({
+            id: `${layer.id}-terrain`,
+            bounds: [minLng, minLat, maxLng, maxLat],
+            elevationData: {
+              data: layer.elevationData.data,
+              width: layer.elevationData.width,
+              height: layer.elevationData.height,
+            },
+            elevationRange: [
+              layer.elevationData.min ?? 0,
+              layer.elevationData.max ?? 1,
+            ],
+            texture: layer.texture ?? layer.bitmap ?? undefined,
+            meshMaxError: 2,
+            wireframe: false,
+            pickable: false,
+            visible: layer.visible !== false,
+            material: {
+              ambient: 0.4,
+              diffuse: 0.6,
+              shininess: 32,
+              specularColor: [255, 255, 255],
+            },
+          });
+        })
+        .filter(Boolean);
 
       // Annotation layers using TextLayer
       const annotationLayers = layers.filter((l) => l.type === "annotation" && isLayerVisible(l));
@@ -1987,7 +2192,7 @@ export const useLayers = () => {
         previewPathLayer,
         previewPolygonLayer,
         ...geoLayers,
-        ...demBitmapLayers,
+        ...demTerrainLayers,
         ...annotationTextLayers,
         ...nodeIconLayers,
       ].filter(Boolean) // Remove any null/undefined layers
@@ -2011,6 +2216,8 @@ export const useLayers = () => {
         drawingMode,
         handleLayerName,
         handleLayerColor,
+        focusLayer,
+        handleLayerLineWidth,
         handleLayerRadius,
         handleLayerPointRadius,
         clearAllLayers,
@@ -2031,6 +2238,8 @@ export const useLayers = () => {
         nodeIconMappings,
         setNodeIcon,
         getAvailableIcons,
+        focusLayerRequest,
+        clearLayerFocusRequest,
         // New Capacitor Preferences functions
         getStoredUploadData,
         getStoredDownloadData,

@@ -46,6 +46,26 @@ export function hexToRgb(hex: string): [number, number, number] | null {
 }
 
 
+export function formatDistance(meters: number): string {
+  if (meters < 1000) {
+    return `${meters.toFixed(1)} m`;
+  } else if (meters < 1000000) {
+    return `${(meters / 1000).toFixed(2)} km`;
+  } else {
+    return `${(meters / 1000000).toFixed(2)} Mm`;
+  }
+}
+
+export function formatArea(squareMeters: number): string {
+  if (squareMeters < 10000) {
+    return `${squareMeters.toFixed(1)} m²`;
+  } else if (squareMeters < 1000000) {
+    return `${(squareMeters / 10000).toFixed(2)} ha`;
+  } else {
+    return `${(squareMeters / 1000000).toFixed(2)} km²`;
+  }
+}
+
 export function getPolygonArea(polygon:  [number, number][][]) {
   const area =turf.area(turf.polygon(polygon));
   const areaInKm2 = turf.convertArea(area, 'meters', 'kilometers');
@@ -357,7 +377,17 @@ export async function fileToGeoJSON(file : File) {
   throw new Error(`Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, Shapefile, GPX, KML`);
 }
 
-export async function fileToDEMRaster(file: File): Promise<{ canvas: HTMLCanvasElement; bounds: [number, number, number, number] }>{
+export interface DemRasterResult {
+  canvas: HTMLCanvasElement;
+  bounds: [number, number, number, number];
+  width: number;
+  height: number;
+  data: Float32Array;
+  min: number;
+  max: number;
+}
+
+export async function fileToDEMRaster(file: File): Promise<DemRasterResult>{
   // Better extension detection (handle .tiff and multi-dot filenames)
   const fileName = file.name.toLowerCase();
   let ext = '';
@@ -484,5 +514,19 @@ export async function fileToDEMRaster(file: File): Promise<{ canvas: HTMLCanvasE
   // Return bounds as [minLng, minLat, maxLng, maxLat]
   // Note: GeoTIFF bounds might be in different coordinate systems
   // Ensure the order is correct for Mapbox (longitude, latitude)
-  return { canvas, bounds };
+  const elevationData = new Float32Array(width * height);
+  for (let i = 0; i < width * height; i++) {
+    const v = raster[i] as number;
+    elevationData[i] = Number.isFinite(v) ? v : minVal;
+  }
+
+  return {
+    canvas,
+    bounds,
+    width,
+    height,
+    data: elevationData,
+    min: minVal,
+    max: maxVal,
+  };
 }

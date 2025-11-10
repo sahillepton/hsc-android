@@ -29,6 +29,14 @@ export interface LayerProps {
     bounds?: [[number, number], [number, number]];
     // For raster/DEM overlays
     bitmap?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
+    texture?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
+    elevationData?: {
+      data: Float32Array;
+      width: number;
+      height: number;
+      min: number;
+      max: number;
+    };
     geojson?: GeoJSON.FeatureCollection;
     // For nodes
     nodes?: Node[];
@@ -40,3 +48,5 @@ export interface LayerProps {
       fontSize?: number;
     }>;
   }
+
+export type DrawingMode = "point" | "polygon" | "line" | "azimuthal" | null
