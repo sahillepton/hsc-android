@@ -13,21 +13,17 @@ export interface Node {
 
 export interface LayerProps {
     type: "point" | "polygon" | "line" | "geojson" | "nodes" | "connections" | "dem" | "annotation";
-    visible: boolean; // Default to true
+    visible: boolean; 
     id: string;
     name: string;
-    position?: [number, number]; // Optional for multi-point shapes
-    color: [number, number, number] | [number, number, number, number]; // RGB or RGBA
+    position?: [number, number]; 
+    color: [number, number, number] | [number, number, number, number]; 
     radius?: number;
-    pointRadius?: number; // For GeoJSON point features
-    // For lines
+    pointRadius?: number; 
     path?: [number, number][];
     lineWidth?: number;
-    // For polygons
     polygon?: [number, number][][];
-    // For rectangles
     bounds?: [[number, number], [number, number]];
-    // For raster/DEM overlays
     bitmap?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
     texture?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
     elevationData?: {
@@ -38,9 +34,7 @@ export interface LayerProps {
       max: number;
     };
     geojson?: GeoJSON.FeatureCollection;
-    // For nodes
     nodes?: Node[];
-    // For annotation layers
     annotations?: Array<{
       position: [number, number];
       text: string;

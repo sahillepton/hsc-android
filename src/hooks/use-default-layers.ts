@@ -5,6 +5,32 @@ import { useMemo } from "react";
 
 export const useDefaultLayers = (mapZoom: number) => {
 
+  const stateTextSize = Math.max(12, Math.min(28, 12 + (mapZoom - 0) * 1.33));
+  const stateNamesLayer = new TextLayer({
+    id: "state-names-layer",
+    data: indianStatesData,
+    pickable: false,
+    getPosition: (d: any) => d.coordinates,
+    getText: (d: any) => d.name,
+    getSize: stateTextSize,
+    getAngle: 0,
+    getTextAnchor: "middle",
+    getAlignmentBaseline: "center",
+    getColor: [255, 0, 0, 255], // Bright red for states
+    fontFamily: "Arial, sans-serif",
+    fontWeight: "bold",
+    outlineWidth: Math.max(1.2, Math.min(3, 1.2 + (mapZoom - 0) * 0.15)), // Scale outline with zoom
+    outlineColor: [0, 0, 0, 255], // Black outline for better visibility
+    billboard: true,
+    sizeScale: 1,
+    sizeMinPixels: Math.max(10, 10 + (mapZoom - 0) * 1.2), // Dynamic min based on zoom
+    sizeMaxPixels: Math.max(20, 20 + (mapZoom - 0) * 2), // Dynamic max based on zoom
+    // Avoid label overlaps
+    collisionEnabled: true,
+    collisionPadding: Math.max(2, 2 + (mapZoom - 0) * 0.35), // Scale padding with zoom
+    visible: true, // Always visible
+  });
+
     const cityLabelData = useMemo(() => {
         if (!Array.isArray(placesData)) {
           return [];
@@ -160,5 +186,6 @@ export const useDefaultLayers = (mapZoom: number) => {
     cityNamesLayer,
     indiaPlacesLayer,
     indiaDistrictsLayer,
+    stateNamesLayer
   };
 }

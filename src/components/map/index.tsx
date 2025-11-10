@@ -11,6 +11,24 @@ import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useProgressiveNodes } from "@/hooks/use-progressive-nodes";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
+import {
+  useCurrentPath,
+  useDragStart,
+  useDrawingMode,
+  useFocusLayerRequest,
+  useIsDrawing,
+  useLayers,
+  useMousePosition,
+  useNetworkLayersVisible,
+} from "@/store/layers-store";
+import {
+  calculateBearingDegrees,
+  calculateDistanceMeters,
+  generateLayerId,
+  isPointNearFirstPoint,
+  makeSectorPolygon,
+} from "@/lib/layers";
+import type { LayerProps } from "@/lib/definitions";
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
@@ -27,34 +45,22 @@ const MapComponent = () => {
     (window as any).mapRef = mapRef;
   }, []);
 
-  const {
-    allLayers,
-    layers,
-    handleClick,
-    handleMouseMove,
-    handleMouseUp,
-    hoverInfo,
-    createNodeLayer,
-    networkLayersVisible,
-    nodeIconMappings,
-    setNodeIcon,
-    getAvailableIcons,
-    focusLayerRequest,
-    clearLayerFocusRequest,
-  } = useLayersContext();
-  const { nodeCoordinatesData, setNodeCoordinatesData } = useProgressiveNodes(
-    networkLayersVisible,
-    createNodeLayer
-  );
+  const { networkLayersVisible } = useNetworkLayersVisible();
+  const { dragStart, setDragStart } = useDragStart();
+  const { mousePosition, setMousePosition } = useMousePosition();
+  const { layers, addLayer } = useLayers();
+  const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
+  const { drawingMode, setDrawingMode } = useDrawingMode();
+  const { isDrawing, setIsDrawing } = useIsDrawing();
+  const { currentPath, setCurrentPath } = useCurrentPath();
+  const { nodeCoordinatesData, setNodeCoordinatesData } =
+    useProgressiveNodes(networkLayersVisible);
   const [isMapEnabled, setIsMapEnabled] = useState(true);
   const [pitch, setPitch] = useState(0);
 
   const [selectedNodeForIcon, setSelectedNodeForIcon] = useState<string | null>(
     null
   );
-  const [motherAircraftPosition, setMotherAircraftPosition] = useState<
-    [number, number] | null
-  >(null);
   const [mapZoom, setMapZoom] = useState(4);
 
   useEffect(() => {
@@ -105,8 +111,176 @@ const MapComponent = () => {
     loadNodeData();
   }, []);
 
-  const getLayerInfo = (layerId: string) => {
-    return layers.find((layer) => layer.id === layerId);
+  const createPointLayer = (position: [number, number]) => {
+    const newLayer: LayerProps = {
+      type: "point",
+      id: generateLayerId(),
+      name: `Point ${layers.filter((l) => l.type === "point").length + 1}`,
+      position,
+      color: [255, 0, 0],
+      radius: 200,
+      visible: true,
+    };
+    addLayer(newLayer);
+  };
+
+  const handleLineDrawing = (point: [number, number]) => {
+    if (!isDrawing) {
+      setCurrentPath([point]);
+      setIsDrawing(true);
+    } else {
+      const finalPath = [currentPath[0], point];
+      const newLayer: LayerProps = {
+        type: "line",
+        id: generateLayerId(),
+        name: `Line ${layers.filter((l) => l.type === "line").length + 1}`,
+        path: finalPath,
+        color: [96, 96, 96],
+        lineWidth: 5,
+        visible: true,
+      };
+      addLayer(newLayer);
+      setCurrentPath([]);
+      setIsDrawing(false);
+    }
+  };
+
+  const handlePolygonDrawing = (point: [number, number]) => {
+    //   console.log("handlePolygonDrawing called with:", { point, isDrawing, currentPathLength: currentPath.length });
+
+    if (!isDrawing) {
+      //  console.log("Starting new polygon at:", point);
+      setCurrentPath([point]);
+      setIsDrawing(true);
+      // Add persistent point marker at first click
+      const pointLayer: LayerProps = {
+        type: "point",
+        id: generateLayerId(),
+        name: `Polygon Point ${
+          layers.filter((l) => l.type === "point").length + 1
+        }`,
+        position: point,
+        color: [32, 32, 32],
+        radius: 5000,
+        visible: true,
+      };
+      addLayer(pointLayer);
+    } else {
+      //  console.log("Adding point to polygon. Current path length:", currentPath.length);
+
+      if (
+        currentPath.length >= 3 &&
+        isPointNearFirstPoint(point, currentPath[0])
+      ) {
+        //    console.log("Closing polygon with", currentPath.length, "points");
+        const closedPath = [...currentPath, currentPath[0]];
+        const newLayer: LayerProps = {
+          type: "polygon",
+          id: generateLayerId(),
+          name: `Polygon ${
+            layers.filter((l) => l.type === "polygon").length + 1
+          }`,
+          polygon: [closedPath],
+          color: [32, 32, 32, 180], // Default to dark, higher-opacity fill
+          visible: true,
+        };
+        //    console.log("Creating polygon layer:", newLayer);
+        addLayer(newLayer);
+        setCurrentPath([]);
+        setIsDrawing(false);
+      } else {
+        //    console.log("Adding point to current path");
+        // Add persistent point marker on each subsequent click
+        const pointLayer: LayerProps = {
+          type: "point",
+          id: generateLayerId(),
+          name: `Polygon Point ${
+            layers.filter((l) => l.type === "point").length + 1
+          }`,
+          position: point,
+          color: [32, 32, 32],
+          radius: 5000,
+          visible: true,
+        };
+        addLayer(pointLayer);
+        setCurrentPath([...currentPath, point]);
+      }
+    }
+  };
+
+  const handleAzimuthalDrawing = (point: [number, number]) => {
+    if (!isDrawing) {
+      // First click sets the center
+      setCurrentPath([point]);
+      setIsDrawing(true);
+      return;
+    }
+
+    // Second click sets the azimuth and radius
+    const center = currentPath[0];
+    const end = point;
+    const radiusMeters = calculateDistanceMeters(center, end);
+    const bearing = calculateBearingDegrees(center, end);
+
+    const sectorAngleDeg = 60; // default sector width
+    const sector = makeSectorPolygon(
+      center,
+      radiusMeters,
+      bearing,
+      sectorAngleDeg
+    );
+
+    // Build GeoJSON with only the sector polygon (no point or azimuth line)
+    const featureCollection: GeoJSON.FeatureCollection = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [sector] },
+          properties: { kind: "sector", radiusMeters, bearing, sectorAngleDeg },
+        },
+      ],
+    };
+
+    const newLayer: LayerProps = {
+      type: "geojson",
+      id: generateLayerId(),
+      name: `Azimuthal ${
+        layers.filter((l) => l.name?.startsWith("Azimuthal")).length + 1
+      }`,
+      geojson: featureCollection,
+      color: [32, 32, 32, 180],
+      pointRadius: 40000,
+      visible: true,
+    };
+
+    addLayer(newLayer);
+    setCurrentPath([]);
+    setIsDrawing(false);
+  };
+
+  const handleClick = (event: any) => {
+    if (!event.lngLat || !drawingMode) {
+      return;
+    }
+
+    const { lng: longitude, lat: latitude } = event.lngLat;
+    const clickPoint: [number, number] = [longitude, latitude];
+
+    switch (drawingMode) {
+      case "point":
+        createPointLayer(clickPoint);
+        break;
+      case "line":
+        handleLineDrawing(clickPoint);
+        break;
+      case "polygon":
+        handlePolygonDrawing(clickPoint);
+        break;
+      case "azimuthal":
+        handleAzimuthalDrawing(clickPoint);
+        break;
+    }
   };
 
   const handleMapClick = (event: any) => {
@@ -121,78 +295,6 @@ const MapComponent = () => {
     // For other clicks, use the default handler
     handleClick(event);
   };
-  const stateTextSize = Math.max(12, Math.min(28, 12 + (mapZoom - 0) * 1.33));
-  const stateNamesLayer = new TextLayer({
-    id: "state-names-layer",
-    data: indianStatesData,
-    pickable: false,
-    getPosition: (d: any) => d.coordinates,
-    getText: (d: any) => d.name,
-    getSize: stateTextSize,
-    getAngle: 0,
-    getTextAnchor: "middle",
-    getAlignmentBaseline: "center",
-    getColor: [255, 0, 0, 255], // Bright red for states
-    fontFamily: "Arial, sans-serif",
-    fontWeight: "bold",
-    outlineWidth: Math.max(1.2, Math.min(3, 1.2 + (mapZoom - 0) * 0.15)), // Scale outline with zoom
-    outlineColor: [0, 0, 0, 255], // Black outline for better visibility
-    billboard: true,
-    sizeScale: 1,
-    sizeMinPixels: Math.max(10, 10 + (mapZoom - 0) * 1.2), // Dynamic min based on zoom
-    sizeMaxPixels: Math.max(20, 20 + (mapZoom - 0) * 2), // Dynamic max based on zoom
-    // Avoid label overlaps
-    collisionEnabled: true,
-    collisionPadding: Math.max(2, 2 + (mapZoom - 0) * 0.35), // Scale padding with zoom
-    visible: true, // Always visible
-  });
-
-  const findMotherAircraft = () => {
-    const nodeLayers = layers.filter(
-      (layer) => layer.type === "nodes" && layer.nodes
-    );
-
-    if (nodeLayers.length === 0) return null;
-
-    let allNodes: any[] = [];
-
-    // Collect all nodes from all layers
-    nodeLayers.forEach((layer) => {
-      if (layer.nodes) {
-        allNodes.push(...layer.nodes);
-      }
-    });
-
-    if (allNodes.length === 0) return null;
-
-    // Sort nodes by SNR (descending), then by userId (ascending) for deterministic tie-breaking
-    const sortedNodes = allNodes
-      .filter((node) => node.snr !== undefined && node.snr !== null)
-      .sort((a, b) => {
-        // Primary sort: SNR (highest first)
-        if (b.snr !== a.snr) {
-          return b.snr - a.snr;
-        }
-        // Secondary sort: userId (lowest first) for deterministic tie-breaking
-        return a.userId - b.userId;
-      });
-
-    // Return the first node (highest SNR, or lowest userId if SNR is tied)
-    return sortedNodes.length > 0 ? sortedNodes[0] : null;
-  };
-
-  useEffect(() => {
-    const motherAircraft = findMotherAircraft();
-    if (motherAircraft) {
-      const newPosition: [number, number] = [
-        motherAircraft.longitude,
-        motherAircraft.latitude,
-      ];
-      setMotherAircraftPosition(newPosition);
-      // Removed automatic centering - map will stay at current position
-    }
-  }, [layers]);
-
   useEffect(() => {
     if (!focusLayerRequest || !mapRef.current) {
       return;
@@ -225,12 +327,31 @@ const MapComponent = () => {
     } catch (error) {
       console.error("Failed to focus layer:", error);
     } finally {
-      clearLayerFocusRequest();
+      setFocusLayerRequest(null);
     }
-  }, [focusLayerRequest, clearLayerFocusRequest]);
+  }, [focusLayerRequest]);
 
-  const { cityNamesLayer, indiaPlacesLayer, indiaDistrictsLayer } =
-    useDefaultLayers(mapZoom);
+  const {
+    cityNamesLayer,
+    indiaPlacesLayer,
+    indiaDistrictsLayer,
+    stateNamesLayer,
+  } = useDefaultLayers(mapZoom);
+
+  const handleMouseMove = (event: any) => {
+    if (!event.lngLat) return;
+
+    const { lng: longitude, lat: latitude } = event.lngLat;
+    const currentPoint: [number, number] = [longitude, latitude];
+    setMousePosition(currentPoint);
+  };
+
+  const handleMouseUp = () => {
+    if (!isDrawing || !dragStart) return;
+
+    setIsDrawing(false);
+    setDragStart(null);
+  };
 
   return (
     <div
@@ -243,9 +364,6 @@ const MapComponent = () => {
         <IconSelection
           selectedNodeForIcon={selectedNodeForIcon}
           setSelectedNodeForIcon={setSelectedNodeForIcon}
-          getAvailableIcons={getAvailableIcons}
-          setNodeIcon={setNodeIcon}
-          nodeIconMappings={nodeIconMappings}
         />
       )}
 
@@ -314,7 +432,7 @@ const MapComponent = () => {
       >
         <DeckGLOverlay
           layers={[
-            ...allLayers,
+            ...layers,
             stateNamesLayer,
             cityNamesLayer,
             indiaPlacesLayer,
@@ -328,7 +446,7 @@ const MapComponent = () => {
         />
       </Map>
 
-      <Tooltip hoverInfo={hoverInfo} getLayerInfo={getLayerInfo} />
+      <Tooltip />
       <ZoomControls mapRef={mapRef} />
     </div>
   );

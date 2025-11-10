@@ -7,19 +7,16 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "../ui/sidebar";
-import type { DrawingMode } from "@/lib/definitions";
+import { useDrawingMode } from "@/store/layers-store";
 
 const ToolsGroup = ({
   setIsDrawingToolsOpen,
   isDrawingToolsOpen,
-  drawingMode,
-  toggleDrawingMode,
 }: {
   setIsDrawingToolsOpen: (isOpen: boolean) => void;
   isDrawingToolsOpen: boolean;
-  drawingMode: DrawingMode;
-  toggleDrawingMode: (mode: DrawingMode) => void;
 }) => {
+  const { drawingMode, setDrawingMode } = useDrawingMode();
   return (
     <SidebarGroup className="space-y-3">
       <SidebarGroupLabel
@@ -41,7 +38,7 @@ const ToolsGroup = ({
               <SidebarMenuButton
                 isActive={drawingMode === "point"}
                 asChild
-                onClick={() => toggleDrawingMode("point")}
+                onClick={() => setDrawingMode("point")}
                 className="h-10 px-3 rounded-lg font-medium"
               >
                 <p>Point</p>
@@ -51,7 +48,7 @@ const ToolsGroup = ({
               <SidebarMenuButton
                 isActive={drawingMode === "line"}
                 asChild
-                onClick={() => toggleDrawingMode("line")}
+                onClick={() => setDrawingMode("line")}
                 className="h-10 px-3 rounded-lg font-medium"
               >
                 <p>Line</p>
@@ -61,7 +58,7 @@ const ToolsGroup = ({
               <SidebarMenuButton
                 isActive={drawingMode === "polygon"}
                 asChild
-                onClick={() => toggleDrawingMode("polygon")}
+                onClick={() => setDrawingMode("polygon")}
                 className="h-10 px-3 rounded-lg font-medium"
               >
                 <p>Polygon</p>
@@ -72,7 +69,7 @@ const ToolsGroup = ({
               <SidebarMenuButton
                 isActive={drawingMode === "azimuthal"}
                 asChild
-                onClick={() => toggleDrawingMode("azimuthal")}
+                onClick={() => setDrawingMode("azimuthal")}
                 className="h-10 px-3 rounded-lg font-medium"
               >
                 <p>Azimuthal</p>
@@ -84,7 +81,7 @@ const ToolsGroup = ({
               <SidebarMenuItem key="exit-drawing">
                 <SidebarMenuButton
                   asChild
-                  onClick={() => toggleDrawingMode(null)}
+                  onClick={() => setDrawingMode(null)}
                   className="h-10 px-3 rounded-lg font-medium bg-red-100 text-red-700 hover:bg-red-200 border border-red-300"
                 >
                   <p>Exit Drawing Mode</p>

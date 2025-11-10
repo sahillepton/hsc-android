@@ -1,5 +1,5 @@
 import type { LayerProps, Node } from "@/lib/definitions";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { ScatterplotLayer, PolygonLayer, LineLayer, GeoJsonLayer, IconLayer } from "@deck.gl/layers";
 import { TerrainLayer } from "@deck.gl/geo-layers";
 import { showMessage, getUploadData, removeUploadData, getDownloadData, removeDownloadData, readFileFromFilesystem, deleteFileFromFilesystem, listFilesInDirectory, getFileInfo, getStorageDirectory, setStorageDirectory as setStorageDirectoryUtil, getStorageDirectoryName, getStorageDirectoryPath } from "@/lib/capacitor-utils";
@@ -293,8 +293,6 @@ export const useLayers = () => {
       };
     
       const createPointLayer = (position: [number, number]) => {
-  
-        
         const newLayer: LayerProps = {
           type: "point",
           id: generateLayerId(),
@@ -836,21 +834,18 @@ export const useLayers = () => {
           
           const jsonContent = JSON.stringify(exportData, null, 2);
           
-          // Get configured storage directory
           const storageDir = await getStorageDirectory();
           const dirName = getStorageDirectoryName(storageDir);
           const dirPath = getStorageDirectoryPath(storageDir);
           
-          // Save file using Capacitor Filesystem
           const result = await Filesystem.writeFile({
             path: `HSC_Layers/${filename}`,
             data: jsonContent,
             directory: storageDir,
             encoding: Encoding.UTF8,
-            recursive: true, // Create folder if it doesn't exist
+            recursive: true, 
           });
           
-          console.log('File saved successfully at:', result.uri);
           const fullPath = `${dirName}${dirPath}HSC_Layers/${filename}`;
           showMessage(`Successfully downloaded ${layers.length} layers to Android device:\n\n📁 Path: ${fullPath}\n\n📍 Full URI: ${result.uri}\n\n💡 Tip: Files are saved to your Android device's storage. You can access them using a file manager app.`);
           
@@ -862,7 +857,6 @@ export const useLayers = () => {
         }
       };
 
-      // New functions for managing stored upload/download data
       const getStoredUploadData = async (fileName: string) => {
         try {
           const data = await getUploadData(fileName);
@@ -960,7 +954,6 @@ export const useLayers = () => {
           const data = JSON.parse(content as string);
           
           if (fileName.startsWith('upload_') && data.layerData) {
-            // Load upload data
             createGeoJsonLayer(data.layerData, data.fileName);
             showMessage(`Loaded file from filesystem: ${data.fileName}`);
             return true;
@@ -1126,21 +1119,14 @@ export const useLayers = () => {
           Math.pow(point[0] - firstPoint[0], 2) +
             Math.pow(point[1] - firstPoint[1], 2)
         );
-        console.log("Checking if point is near first point:", {
-          point,
-          firstPoint,
-          distance,
-          threshold,
-          isNear: distance < threshold
-        });
         return distance < threshold;
       };
     
       const handlePolygonDrawing = (point: [number, number]) => {
-        console.log("handlePolygonDrawing called with:", { point, isDrawing, currentPathLength: currentPath.length });
+     //   console.log("handlePolygonDrawing called with:", { point, isDrawing, currentPathLength: currentPath.length });
         
         if (!isDrawing) {
-          console.log("Starting new polygon at:", point);
+        //  console.log("Starting new polygon at:", point);
           setCurrentPath([point]);
           setIsDrawing(true);
           // Add persistent point marker at first click
@@ -1155,13 +1141,13 @@ export const useLayers = () => {
           };
           setLayers([...layers, pointLayer]);
         } else {
-          console.log("Adding point to polygon. Current path length:", currentPath.length);
+        //  console.log("Adding point to polygon. Current path length:", currentPath.length);
           
           if (
             currentPath.length >= 3 &&
             isPointNearFirstPoint(point, currentPath[0])
           ) {
-            console.log("Closing polygon with", currentPath.length, "points");
+        //    console.log("Closing polygon with", currentPath.length, "points");
             const closedPath = [...currentPath, currentPath[0]];
             const newLayer: LayerProps = {
               type: "polygon",
@@ -1173,12 +1159,12 @@ export const useLayers = () => {
               color: [32, 32, 32, 180], // Default to dark, higher-opacity fill
               visible: true,
             };
-            console.log("Creating polygon layer:", newLayer);
+        //    console.log("Creating polygon layer:", newLayer);
             setLayers([...layers, newLayer]);
             setCurrentPath([]);
             setIsDrawing(false);
           } else {
-            console.log("Adding point to current path");
+        //    console.log("Adding point to current path");
             // Add persistent point marker on each subsequent click
             const pointLayer: LayerProps = {
               type: "point",

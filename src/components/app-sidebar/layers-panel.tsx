@@ -25,32 +25,17 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import type { LayerProps } from "@/lib/definitions";
 import { getDistance, getPolygonArea, hexToRgb, rgbToHex } from "@/lib/utils";
+import { useFocusLayerRequest, useLayers } from "@/store/layers-store";
 
 const LayersPanel = ({
   setIsLayersOpen,
   isLayersOpen,
-  layers,
-  focusLayer,
-  handleLayerVisibility,
-  deleteLayer,
-  handleLayerName,
-  handleLayerColor,
-  handleLayerLineWidth,
-  handleLayerRadius,
-  handleLayerPointRadius,
 }: {
   setIsLayersOpen: (isOpen: boolean) => void;
   isLayersOpen: boolean;
-  layers: LayerProps[];
-  focusLayer: (layerId: string) => void;
-  handleLayerVisibility: (layerId: string, visible: boolean) => void;
-  deleteLayer: (layerId: string) => void;
-  handleLayerName: (layerId: string, name: string) => void;
-  handleLayerColor: (layerId: string, color: [number, number, number]) => void;
-  handleLayerLineWidth: (layerId: string, lineWidth: number) => void;
-  handleLayerRadius: (layerId: string, radius: number) => void;
-  handleLayerPointRadius: (layerId: string, pointRadius: number) => void;
 }) => {
+  const { layers } = useLayers();
+  const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
   return (
     <SidebarGroup className="space-y-3">
       <SidebarGroupLabel
@@ -116,10 +101,10 @@ const LayersPanel = ({
                         onClick={(e) => {
                           e.stopPropagation();
                           e.preventDefault();
-                          handleLayerVisibility(
-                            layer.id,
-                            layer.visible !== false ? false : true
-                          );
+                          updateLayer(layer.id, {
+                            ...layer,
+                            visible: layer.visible !== false ? false : true,
+                          });
                         }}
                       >
                         {layer.visible !== false ? (
@@ -156,7 +141,10 @@ const LayersPanel = ({
                         onBlur={(e) => {
                           const newName = e.target.value.trim();
                           if (newName && newName !== layer.name) {
-                            handleLayerName(layer.id, newName);
+                            updateLayer(layer.id, {
+                              ...layer,
+                              name: newName,
+                            });
                           }
                         }}
                         onKeyDown={(e) => {
@@ -179,7 +167,10 @@ const LayersPanel = ({
                         onChange={(e) => {
                           const color = hexToRgb(e.target.value);
                           if (color) {
-                            handleLayerColor(layer.id, color);
+                            updateLayer(layer.id, {
+                              ...layer,
+                              color: color,
+                            });
                           }
                         }}
                       />
@@ -203,10 +194,10 @@ const LayersPanel = ({
                                 step={1}
                                 className="w-full"
                                 onChange={(e) => {
-                                  handleLayerLineWidth(
-                                    layer.id,
-                                    parseInt(e.target.value, 10)
-                                  );
+                                  updateLayer(layer.id, {
+                                    ...layer,
+                                    lineWidth: parseInt(e.target.value, 10),
+                                  });
                                 }}
                               />
                               <div className="flex justify-between text-xs text-muted-foreground">
@@ -235,10 +226,10 @@ const LayersPanel = ({
                             step={1000}
                             className="w-full"
                             onChange={(e) => {
-                              handleLayerRadius(
-                                layer.id,
-                                parseInt(e.target.value)
-                              );
+                              updateLayer(layer.id, {
+                                ...layer,
+                                radius: parseInt(e.target.value),
+                              });
                             }}
                           />
                           <div className="flex justify-between text-xs text-muted-foreground">
@@ -265,10 +256,10 @@ const LayersPanel = ({
                             step={1000}
                             className="w-full"
                             onChange={(e) => {
-                              handleLayerPointRadius(
-                                layer.id,
-                                parseInt(e.target.value)
-                              );
+                              updateLayer(layer.id, {
+                                ...layer,
+                                pointRadius: parseInt(e.target.value),
+                              });
                             }}
                           />
                           <div className="flex justify-between text-xs text-muted-foreground">

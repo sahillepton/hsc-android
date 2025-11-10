@@ -1,24 +1,20 @@
-import type { LayerProps } from "@/lib/definitions";
 import {
   formatArea,
   formatDistance,
   getDistance,
   getPolygonArea,
 } from "@/lib/utils";
+import { useHoverInfo, useLayers } from "@/store/layers-store";
 
-const Tooltip = ({
-  hoverInfo,
-  getLayerInfo,
-}: {
-  hoverInfo: any;
-  getLayerInfo?: (layerId: string) => LayerProps | undefined;
-}) => {
+const Tooltip = () => {
+  const { hoverInfo } = useHoverInfo();
+  const { layers } = useLayers();
   if (!hoverInfo || !hoverInfo.object || !hoverInfo.x || !hoverInfo.y) {
     return null;
   }
 
   const { object, x, y, layer } = hoverInfo;
-  const layerInfo = layer?.id && getLayerInfo ? getLayerInfo(layer.id) : null;
+  const layerInfo = layer?.id ? layers.find((l) => l.id === layer.id) : null;
 
   const getTooltipContent = () => {
     const isDirectNodeObject =

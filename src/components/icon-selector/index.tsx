@@ -1,5 +1,6 @@
+import { availableIcons } from "@/lib/layers";
+import { useNodeIconMappings } from "@/store/layers-store";
 import React, { useState } from "react";
-import { useLayersContext } from "@/layers-provider";
 
 interface IconSelectorProps {
   nodeId: string;
@@ -12,9 +13,8 @@ export const IconSelector: React.FC<IconSelectorProps> = ({
   currentIcon,
   onIconChange,
 }) => {
-  const { getAvailableIcons, setNodeIcon } = useLayersContext();
   const [isOpen, setIsOpen] = useState(false);
-  const availableIcons = getAvailableIcons();
+  const { setNodeIcon } = useNodeIconMappings();
 
   const handleIconSelect = (iconName: string) => {
     setNodeIcon(nodeId, iconName);

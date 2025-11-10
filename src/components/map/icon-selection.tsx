@@ -1,16 +1,26 @@
+import { useLayers, useNodeIconMappings } from "@/store/layers-store";
+
+const availableIcons = [
+  "alert",
+  "command_post",
+  "friendly_aircraft",
+  "ground_unit",
+  "hostile_aircraft",
+  "mother-aircraft",
+  "naval_unit",
+  "neutral_aircraft",
+  "sam_site",
+  "unknown_aircraft",
+];
+
 const IconSelection = ({
   selectedNodeForIcon,
   setSelectedNodeForIcon,
-  getAvailableIcons,
-  setNodeIcon,
-  nodeIconMappings,
 }: {
   selectedNodeForIcon: string;
   setSelectedNodeForIcon: (nodeForIcon: string | null) => void;
-  getAvailableIcons: () => string[];
-  setNodeIcon: (nodeForIcon: string, iconName: string) => void;
-  nodeIconMappings: Record<string, string>;
 }) => {
+  const { getNodeIcon, nodeIconMappings, setNodeIcon } = useNodeIconMappings();
   return (
     <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-3 max-w-xs">
       <div className="flex items-center justify-between mb-2">
@@ -38,7 +48,7 @@ const IconSelection = ({
       </div>
 
       <div className="grid grid-cols-5 gap-1 mb-2">
-        {getAvailableIcons().map((iconName) => (
+        {availableIcons.map((iconName) => (
           <button
             key={iconName}
             onClick={() => {

@@ -7,18 +7,17 @@ import {
   SidebarMenuItem,
 } from "../ui/sidebar";
 import { Button } from "../ui/button";
+import { useNetworkLayersVisible } from "@/store/layers-store";
 
 const NetworkControls = ({
   setIsNetworkControlsOpen,
   isNetworkControlsOpen,
-  networkLayersVisible,
-  toggleNetworkLayersVisibility,
 }: {
   setIsNetworkControlsOpen: (isOpen: boolean) => void;
   isNetworkControlsOpen: boolean;
-  networkLayersVisible: boolean;
-  toggleNetworkLayersVisibility: () => void;
 }) => {
+  const { networkLayersVisible, setNetworkLayersVisible } =
+    useNetworkLayersVisible();
   return (
     <SidebarGroup className="space-y-3">
       <SidebarGroupLabel
@@ -42,7 +41,7 @@ const NetworkControls = ({
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={toggleNetworkLayersVisibility}
+                  onClick={() => setNetworkLayersVisible(!networkLayersVisible)}
                   className={`h-8 w-14 px-1 ${
                     networkLayersVisible
                       ? "bg-blue-500 hover:bg-blue-600 text-white"

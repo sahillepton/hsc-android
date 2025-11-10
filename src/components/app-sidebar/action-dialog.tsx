@@ -1,27 +1,29 @@
 import { MessageSquare, Phone, Upload, Video } from "lucide-react";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import { useNodeDialog, useSelectedNode } from "@/store/layers-store";
 import type { Node } from "@/lib/definitions";
 
-const ActionDialog = ({
-  isNodeDialogOpen,
-  closeNodeDialog,
-  selectedNode,
-  handleVoiceCall,
-  handleVideoCall,
-  handleSendMessage,
-  handleFtp,
-}: {
-  isNodeDialogOpen: boolean;
-  closeNodeDialog: () => void;
-  selectedNode: Node;
-  handleVoiceCall: (node: Node) => void;
-  handleVideoCall: (node: Node) => void;
-  handleSendMessage: (node: Node) => void;
-  handleFtp: (node: Node) => void;
-}) => {
+const ActionDialog = () => {
+  const { isNodeDialogOpen, setIsNodeDialogOpen } = useNodeDialog();
+  const { selectedNode } = useSelectedNode();
+  const handleVoiceCall = (node: Node) => {
+    alert(`Voice call with Node ${node.userId} - Feature coming soon!`);
+  };
+
+  const handleVideoCall = (node: Node) => {
+    alert(`Video call with Node ${node.userId} - Feature coming soon!`);
+  };
+
+  const handleSendMessage = (node: Node) => {
+    alert(`Send message to Node ${node.userId} - Feature coming soon!`);
+  };
+
+  const handleFtp = (node: Node) => {
+    alert(`FTP transfer with Node ${node.userId} - Feature coming soon!`);
+  };
   return (
-    <Dialog open={isNodeDialogOpen} onOpenChange={closeNodeDialog}>
+    <Dialog open={isNodeDialogOpen} onOpenChange={setIsNodeDialogOpen}>
       <DialogContent className="max-w-lg">
         <DialogHeader className="pb-4">
           <DialogTitle className="flex items-center gap-3 text-lg">
@@ -67,7 +69,7 @@ const ActionDialog = ({
               <Button
                 onClick={() => {
                   handleVoiceCall(selectedNode);
-                  closeNodeDialog();
+                  setIsNodeDialogOpen(false);
                 }}
                 className="flex-1 bg-green-500 hover:bg-green-600 h-11"
                 size="default"
@@ -79,7 +81,7 @@ const ActionDialog = ({
               <Button
                 onClick={() => {
                   handleVideoCall(selectedNode);
-                  closeNodeDialog();
+                  setIsNodeDialogOpen(false);
                 }}
                 className="flex-1 bg-blue-500 hover:bg-blue-600 h-11"
                 size="default"
@@ -91,7 +93,7 @@ const ActionDialog = ({
               <Button
                 onClick={() => {
                   handleSendMessage(selectedNode);
-                  closeNodeDialog();
+                  setIsNodeDialogOpen(false);
                 }}
                 className="flex-1 bg-purple-500 hover:bg-purple-600 h-11"
                 size="default"
@@ -103,7 +105,7 @@ const ActionDialog = ({
               <Button
                 onClick={() => {
                   handleFtp(selectedNode);
-                  closeNodeDialog();
+                  setIsNodeDialogOpen(false);
                 }}
                 className="flex-1 bg-orange-500 hover:bg-orange-600 h-11"
                 size="default"
