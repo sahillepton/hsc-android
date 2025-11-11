@@ -9,6 +9,15 @@ import {
   SidebarGroupLabel,
 } from "../ui/sidebar";
 import { Directory } from "@capacitor/filesystem";
+import { Label } from "../ui/label";
+import { Card, CardContent } from "../ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 
 const StorageLayer = ({
   currentStorageDir,
@@ -17,62 +26,65 @@ const StorageLayer = ({
   currentStorageDir: Directory;
   setCurrentStorageDir: (dir: Directory) => void;
 }) => {
+  const handleChange = async (value: Directory) => {
+    try {
+      await setStorageDirectory(value);
+      setCurrentStorageDir(value);
+    } catch (error) {
+      console.error("Failed to change storage location:", error);
+    }
+  };
+
   return (
     <SidebarGroup className="space-y-3">
       <SidebarGroupLabel className="px-3 py-2 text-sm font-semibold">
         Storage Location
       </SidebarGroupLabel>
+
       <SidebarGroupContent className="space-y-4">
-        <div className="space-y-2">
-          <label className="text-xs text-muted-foreground block">
+        {/* <div className="space-y-2">
+          <Label className="text-xs text-muted-foreground">
             Current Storage Location (Android Device)
-          </label>
-          <div className="px-3 py-2 bg-muted rounded-md text-xs text-foreground break-all">
-            {getStorageDirectoryPath(currentStorageDir)}
-          </div>
+          </Label>
+
+          <Card className="bg-muted/50 border-border/50">
+            <CardContent className="p-3 text-xs break-all text-foreground">
+              {getStorageDirectoryPath(currentStorageDir)}
+            </CardContent>
+          </Card>
+
           <p className="text-xs text-muted-foreground">
             Files will be saved to:{" "}
             <strong>{getStorageDirectoryName(currentStorageDir)}</strong>
           </p>
-          <p className="text-xs text-blue-600 dark:text-blue-400">
-            📱 On Android, files are saved to your device's internal storage.
-            Use a file manager app to access them.
-          </p>
-        </div>
+        </div> */}
         <div className="space-y-2">
-          <label className="text-xs text-muted-foreground block">
+          <Label className="text-xs text-muted-foreground">
             Change Storage Location
-          </label>
-          <select
+          </Label>
+          <Select
             value={currentStorageDir}
-            onChange={async (e) => {
-              try {
-                const value = e.target.value as Directory;
-                await setStorageDirectory(value);
-                setCurrentStorageDir(value);
-              } catch (error) {
-                console.error("Failed to change storage location:", error);
-              }
-            }}
-            className="w-full px-3 py-2 text-sm border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+            onValueChange={(value) => handleChange(value as Directory)}
           >
-            <option value={Directory.Documents}>
-              Documents (Recommended for Android)
-            </option>
-            <option value={Directory.Data}>Data (App Internal)</option>
-            <option value={Directory.Cache}>Cache (Temporary)</option>
-            <option value={Directory.External}>
-              External Storage (Public)
-            </option>
-            <option value={Directory.ExternalStorage}>
-              External Storage (Public - Alt)
-            </option>
-          </select>
-          <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-            ⚠️ Note: On Android, "Documents" is the recommended location for
-            user-accessible files. Files saved here can be accessed via file
-            manager apps.
-          </p>
+            <SelectTrigger className="w-full text-sm">
+              <SelectValue placeholder="Select storage location" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={Directory.Documents}>
+                Documents (Recommended for Android)
+              </SelectItem>
+              <SelectItem value={Directory.Data}>
+                Data (App Internal)
+              </SelectItem>
+              <SelectItem value={Directory.Cache}>Cache (Temporary)</SelectItem>
+              <SelectItem value={Directory.External}>
+                External Storage (Public)
+              </SelectItem>
+              <SelectItem value={Directory.ExternalStorage}>
+                External Storage (Public - Alt)
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </SidebarGroupContent>
     </SidebarGroup>

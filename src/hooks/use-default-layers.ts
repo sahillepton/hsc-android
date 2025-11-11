@@ -75,7 +75,7 @@ export const useDefaultLayers = (mapZoom: number) => {
   const roundedZoom = Math.floor(mapZoom * 10) / 10;
 
   const stateTextSize = useMemo(
-    () => Math.max(12, Math.min(28, 12 + (roundedZoom - 0) * 1.33)),
+    () => Math.max(10, Math.min(20, 10 + roundedZoom * 1)),
     [roundedZoom]
   );
 
@@ -91,15 +91,15 @@ export const useDefaultLayers = (mapZoom: number) => {
         getAngle: 0,
         getTextAnchor: "middle",
         getAlignmentBaseline: "center",
-        getColor: [255, 0, 0, 255], // Bright red for states
+        getColor: [255, 255, 255, 255], // White to improve contrast
         fontFamily: "Arial, sans-serif",
-        fontWeight: "bold",
-        outlineWidth: Math.max(1.2, Math.min(3, 1.2 + (roundedZoom - 0) * 0.15)), // Scale outline with zoom
+        fontWeight: "600", // Semibold appearance
+        outlineWidth: Math.max(1, Math.min(2.2, 1 + roundedZoom * 0.12)), // Scale outline with zoom
         outlineColor: [0, 0, 0, 255], // Black outline for better visibility
         billboard: true,
         sizeScale: 1,
-        sizeMinPixels: Math.max(10, 10 + (roundedZoom - 0) * 1.2), // Dynamic min based on zoom
-        sizeMaxPixels: Math.max(20, 20 + (roundedZoom - 0) * 2), // Dynamic max based on zoom
+        sizeMinPixels: Math.max(8, 8 + roundedZoom * 0.9), // Dynamic min based on zoom
+        sizeMaxPixels: Math.max(16, 16 + roundedZoom * 1.4), // Dynamic max based on zoom
         // Avoid label overlaps
         collisionEnabled: true,
         collisionPadding: Math.max(2, 2 + (roundedZoom - 0) * 0.35), // Scale padding with zoom

@@ -5,9 +5,12 @@ import {
   SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuItem,
+  SidebarMenuButton,
 } from "../ui/sidebar";
-import { Button } from "../ui/button";
 import { useNetworkLayersVisible } from "@/store/layers-store";
+import { Button } from "../ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "../ui/label";
 
 const NetworkControls = ({
   setIsNetworkControlsOpen,
@@ -18,58 +21,43 @@ const NetworkControls = ({
 }) => {
   const { networkLayersVisible, setNetworkLayersVisible } =
     useNetworkLayersVisible();
+
   return (
-    <SidebarGroup className="space-y-3">
+    <SidebarGroup>
+      {/* Group Label */}
       <SidebarGroupLabel
-        className="cursor-pointer hover:bg-accent rounded-lg px-3 py-2.5 flex items-center justify-between text-sm font-semibold transition-colors"
+        className="flex items-center justify-between cursor-pointer select-none font-semibold px-3 py-2.5 rounded-lg hover:bg-accent transition-colors"
         onClick={() => setIsNetworkControlsOpen(!isNetworkControlsOpen)}
       >
-        Network Controls
+        <span>Network Controls</span>
         {isNetworkControlsOpen ? (
-          <ChevronDown size={16} />
+          <ChevronDown size={16} className="text-muted-foreground" />
         ) : (
-          <ChevronRight size={16} />
+          <ChevronRight size={16} className="text-muted-foreground" />
         )}
       </SidebarGroupLabel>
 
-      {isNetworkControlsOpen && (
-        <SidebarGroupContent>
-          <SidebarMenu className="space-y-2">
-            <SidebarMenuItem>
-              <div className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-accent">
-                <span className="text-sm font-medium">Show Network Layers</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setNetworkLayersVisible(!networkLayersVisible)}
-                  className={`h-8 w-14 px-1 ${
-                    networkLayersVisible
-                      ? "bg-blue-500 hover:bg-blue-600 text-white"
-                      : "bg-gray-200 hover:bg-gray-300 text-gray-600"
-                  }`}
-                  style={{
-                    borderRadius: "12px",
-                    position: "relative",
-                    transition: "all 0.2s ease-in-out",
-                  }}
-                >
-                  <div
-                    className="w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-200 ease-in-out"
-                    style={{
-                      transform: networkLayersVisible
-                        ? "translateX(24px)"
-                        : "translateX(0)",
-                      position: "absolute",
-                      left: "2px",
-                      top: "2px",
-                    }}
-                  />
-                </Button>
+      {/* Collapsible Content */}
+      <SidebarGroupContent
+        className={`${
+          isNetworkControlsOpen ? "block" : "hidden"
+        } transition-all`}
+      >
+        <SidebarMenu className="space-y-2 mt-2">
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild>
+              <div className="flex items-center space-x-2">
+                <Switch
+                  id="show-network-layers"
+                  checked={networkLayersVisible}
+                  onCheckedChange={setNetworkLayersVisible}
+                />
+                <Label htmlFor="show-network-layers">Show Network Layers</Label>
               </div>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroupContent>
-      )}
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarGroupContent>
     </SidebarGroup>
   );
 };

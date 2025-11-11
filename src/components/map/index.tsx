@@ -1,9 +1,6 @@
 import Map, { useControl, NavigationControl } from "react-map-gl/mapbox";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { PickingInfo } from "@deck.gl/core";
-import { fromUrl } from "geotiff";
-import proj4 from "proj4";
-import GeoTIFF from "geotiff";
 import {
   GeoJsonLayer,
   IconLayer,
@@ -20,6 +17,7 @@ import IconSelection from "./icon-selection";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
+import { useProgressiveNodes } from "@/hooks/use-progressive-nodes";
 import {
   useCurrentPath,
   useDragStart,

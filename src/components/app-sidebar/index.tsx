@@ -12,6 +12,7 @@ import StorageLayer from "./storage-layer";
 import FileSection from "./file-section";
 import ActionDialog from "./action-dialog";
 import { getStorageDirectory } from "@/lib/capacitor-utils";
+import SidebarDrawHeader from "./sidebar-header";
 export function AppSidebar() {
   const [isDrawingToolsOpen, setIsDrawingToolsOpen] = useState(true);
   const [currentStorageDir, setCurrentStorageDir] = useState<Directory>(
@@ -29,7 +30,8 @@ export function AppSidebar() {
 
   return (
     <div className="flex">
-      <Sidebar variant="floating" collapsible={"offcanvas"} className="w-80">
+      <Sidebar variant="floating" collapsible={"offcanvas"}>
+        <SidebarDrawHeader />
         <SidebarContent className="px-4 py-3 space-y-4">
           <ToolsGroup
             setIsDrawingToolsOpen={setIsDrawingToolsOpen}

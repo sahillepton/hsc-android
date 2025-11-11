@@ -1,4 +1,4 @@
-import { useLayers, useNodeIconMappings } from "@/store/layers-store";
+import { useNodeIconMappings } from "@/store/layers-store";
 
 const availableIcons = [
   "alert",
@@ -20,7 +20,7 @@ const IconSelection = ({
   selectedNodeForIcon: string;
   setSelectedNodeForIcon: (nodeForIcon: string | null) => void;
 }) => {
-  const { getNodeIcon, nodeIconMappings, setNodeIcon } = useNodeIconMappings();
+  const { nodeIconMappings, setNodeIcon } = useNodeIconMappings();
   return (
     <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-3 max-w-xs">
       <div className="flex items-center justify-between mb-2">

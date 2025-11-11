@@ -1,13 +1,19 @@
 import type { LayerProps, Node } from "@/lib/definitions";
 import { generateLayerId } from "@/lib/layers";
 import { useLayers } from "@/store/layers-store";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export const useProgressiveNodes = (networkLayersVisible: boolean) => {
   const [nodeCoordinatesData, setNodeCoordinatesData] = useState<
     Array<Array<{ lat: number; lng: number }>>
   >([]);
   const { layers, setLayers } = useLayers();
+  const layersRef = useRef(layers);
+
+  // Keep ref in sync with layers
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
 
   const getSignalColor = (
     snr: number,
@@ -59,7 +65,7 @@ export const useProgressiveNodes = (networkLayersVisible: boolean) => {
           id: generateLayerId(),
           name: `${layerName || "Nodes"} Connection ${index + 1}`,
           path: [line[0], line[1]],
-          color: signalColor,
+          color: [...signalColor] as [number, number, number], // Create a copy to avoid reference sharing
           lineWidth: 5,
           visible: true,
         };
@@ -127,163 +133,169 @@ export const useProgressiveNodes = (networkLayersVisible: boolean) => {
     }
   };
 
-  const createNodeLayer = useCallback((nodes: Node[], layerName?: string) => {
-    if (!nodes || !Array.isArray(nodes) || nodes.length === 0) {
-      return;
-    }
-
-    const validNodes = nodes.filter((node) => {
-      const isValid =
-        node &&
-        typeof node.latitude === "number" &&
-        typeof node.longitude === "number" &&
-        typeof node.userId === "number";
-
-      if (!isValid) {
-        console.warn("createNodeLayer: Invalid node structure:", node);
+  const createNodeLayer = useCallback(
+    (nodes: Node[], layerName?: string) => {
+      if (!nodes || !Array.isArray(nodes) || nodes.length === 0) {
+        return;
       }
-      return isValid;
-    });
 
-    if (validNodes.length === 0) {
-      return;
-    }
+      const validNodes = nodes.filter((node) => {
+        const isValid =
+          node &&
+          typeof node.latitude === "number" &&
+          typeof node.longitude === "number" &&
+          typeof node.userId === "number";
 
-    const otherLayers = layers.filter(
-      (layer) =>
-        layer.type !== "nodes" &&
-        !layer.name?.includes("Connections") &&
-        !layer.name?.includes("Connection:") &&
-        !layer.name?.includes("Connection ")
-    );
-
-    const nodeFeatures: GeoJSON.Feature[] = validNodes.map((node, index) => ({
-      type: "Feature",
-      geometry: {
-        type: "Point",
-        coordinates: [node.longitude, node.latitude],
-      },
-      properties: {
-        ...node,
-        id: index,
-      },
-    }));
-
-    const nodeGeojson: GeoJSON.FeatureCollection = {
-      type: "FeatureCollection",
-      features: nodeFeatures,
-    };
-
-    const newLayers: LayerProps[] = [];
-
-    const nodesLayer: LayerProps = {
-      type: "nodes",
-      id: generateLayerId(),
-      name:
-        layerName ||
-        `Nodes Layer ${layers.filter((l) => l.type === "nodes").length + 1}`,
-      geojson: nodeGeojson,
-      nodes: validNodes,
-      color: [0, 150, 255],
-      pointRadius: 30000,
-      visible: true,
-    };
-
-    newLayers.push(nodesLayer);
-    addConnectionsToLayers(validNodes, newLayers, layerName);
-
-    setLayers([...otherLayers, ...newLayers]);
-  }, []);
-
-  const [currentRowIndex, setCurrentRowIndex] = useState(0);
-  const generateProgressiveNodes = () => {
-    const nodes: any[] = [];
-    const time = Date.now() / 1000;
-
-    if (nodeCoordinatesData.length === 8) {
-      for (let i = 0; i < 8; i++) {
-        const tabData = nodeCoordinatesData[i];
-        if (!tabData || tabData.length === 0) continue;
-
-        const rowIndex = currentRowIndex % tabData.length;
-        const coord = tabData[rowIndex];
-
-        const snr = Math.sin(time / 10 + i) * 5 + 15 + Math.random() * 5; // 10-25 dB range
-        const rssi = Math.cos(time / 8 + i) * 20 - 60 + Math.random() * 10; // -80 to -40 dBm range
-        const distance = Math.abs(Math.sin(time / 15 + i)) * 100000 + 50000;
-        const hopCount = i === 0 ? 0 : Math.floor(Math.random() * 4) + 1;
-
-        const connectedNodeIds = [];
-        const connectionCount = Math.min(Math.floor(Math.random() * 3) + 1, 7);
-        for (let j = 0; j < connectionCount; j++) {
-          const connectedId = Math.floor(Math.random() * 8) + 1;
-          if (
-            connectedId !== i + 1 &&
-            !connectedNodeIds.includes(connectedId)
-          ) {
-            connectedNodeIds.push(connectedId);
-          }
+        if (!isValid) {
+          console.warn("createNodeLayer: Invalid node structure:", node);
         }
+        return isValid;
+      });
 
-        nodes.push({
-          userId: i + 1,
-          latitude: coord.lat,
-          longitude: coord.lng,
-          snr: parseFloat(snr.toFixed(1)),
-          rssi: parseFloat(rssi.toFixed(1)),
-          distance: parseFloat(distance.toFixed(2)),
-          hopCount: hopCount,
-          connectedNodeIds: connectedNodeIds,
-          lastSeen: new Date().toISOString(),
-          batteryLevel: Math.floor(Math.random() * 100),
-          status: Math.random() > 0.1 ? "online" : "offline",
-          isCenterNode: i === 0, // First node is center
-        });
+      if (validNodes.length === 0) {
+        return;
       }
-    } else {
-      for (let i = 1; i <= 8; i++) {
-        nodes.push({
-          userId: i,
-          latitude: 10.8505 + i * 0.1,
-          longitude: 76.2711 + i * 0.1,
-          snr: 20,
-          rssi: -50,
-          distance: 10000 * i,
-          hopCount: i === 1 ? 0 : 1,
-          connectedNodeIds: [],
-          lastSeen: new Date().toISOString(),
-          batteryLevel: 100,
-          status: "online",
-          isCenterNode: i === 1,
-        });
-      }
-    }
 
-    return nodes;
-  };
+      // Use ref to get current layers without causing dependency issues
+      const currentLayers = layersRef.current;
+      const progressiveName = layerName ?? "Progressive Network";
+
+      const otherLayers = currentLayers.filter((layer) => {
+        const name = layer.name ?? "";
+        const isProgressiveNodeLayer =
+          layer.type === "nodes" && name === progressiveName;
+        const isProgressiveConnectionLayer = name.startsWith(
+          `${progressiveName} Connection`
+        );
+        return !isProgressiveNodeLayer && !isProgressiveConnectionLayer;
+      });
+
+      const nodeFeatures: GeoJSON.Feature[] = validNodes.map((node, index) => ({
+        type: "Feature",
+        geometry: {
+          type: "Point",
+          coordinates: [node.longitude, node.latitude],
+        },
+        properties: {
+          ...node,
+          id: index,
+        },
+      }));
+
+      const nodeGeojson: GeoJSON.FeatureCollection = {
+        type: "FeatureCollection",
+        features: nodeFeatures,
+      };
+
+      const newLayers: LayerProps[] = [];
+
+      const nodesLayer: LayerProps = {
+        type: "nodes",
+        id: generateLayerId(),
+        name:
+          layerName ||
+          `Nodes Layer ${
+            currentLayers.filter((l) => l.type === "nodes").length + 1
+          }`,
+        geojson: nodeGeojson,
+        nodes: validNodes,
+        color: [0, 150, 255],
+        pointRadius: 30000,
+        visible: true,
+      };
+
+      newLayers.push(nodesLayer);
+      addConnectionsToLayers(validNodes, newLayers, layerName);
+
+      setLayers([...otherLayers, ...newLayers]);
+    },
+    [setLayers]
+  );
 
   useEffect(() => {
     if (!networkLayersVisible) return;
-    if (nodeCoordinatesData.length === 0) return;
+    // Allow progressive nodes to work even without coordinate data (uses default positions)
 
-    const interval = setInterval(() => {
-      setCurrentRowIndex((prev) => prev + 1);
+    let rowIndex = 0; // Track row index in closure
 
-      const progressiveNodes = generateProgressiveNodes();
-      createNodeLayer(progressiveNodes, "Progressive Network");
-    }, 1000); // Update every 1 second
+    // Helper function to generate nodes with a specific row index
+    const generateNodesWithIndex = (rowIndex: number): Node[] => {
+      const nodes: Node[] = [];
+      const time = Date.now() / 1000;
+
+      if (nodeCoordinatesData.length === 8) {
+        for (let i = 0; i < 8; i++) {
+          const tabData = nodeCoordinatesData[i];
+          if (!tabData || tabData.length === 0) continue;
+          const coordIndex = rowIndex % tabData.length;
+          const coord = tabData[coordIndex];
+          const snr = Math.sin(time / 10 + i) * 5 + 15 + Math.random() * 5;
+          const rssi = Math.cos(time / 8 + i) * 20 - 60 + Math.random() * 10;
+          const distance = Math.abs(Math.sin(time / 15 + i)) * 100000 + 50000;
+          const hopCount = i === 0 ? 0 : Math.floor(Math.random() * 4) + 1;
+          const connectedNodeIds: number[] = [];
+          const connectionCount = Math.min(
+            Math.floor(Math.random() * 3) + 1,
+            7
+          );
+          for (let j = 0; j < connectionCount; j++) {
+            const connectedId = Math.floor(Math.random() * 8) + 1;
+            if (
+              connectedId !== i + 1 &&
+              !connectedNodeIds.includes(connectedId)
+            ) {
+              connectedNodeIds.push(connectedId);
+            }
+          }
+          nodes.push({
+            userId: i + 1,
+            latitude: coord.lat,
+            longitude: coord.lng,
+            snr: parseFloat(snr.toFixed(1)),
+            rssi: parseFloat(rssi.toFixed(1)),
+            distance: parseFloat(distance.toFixed(2)),
+            hopCount: hopCount,
+            connectedNodeIds: connectedNodeIds,
+            lastSeen: new Date().toISOString(),
+            batteryLevel: Math.floor(Math.random() * 100),
+            status: Math.random() > 0.1 ? "online" : "offline",
+            isCenterNode: i === 0,
+          } as Node);
+        }
+      } else {
+        for (let i = 1; i <= 8; i++) {
+          nodes.push({
+            userId: i,
+            latitude: 10.8505 + i * 0.1,
+            longitude: 76.2711 + i * 0.1,
+            snr: 20,
+            rssi: -50,
+            distance: 10000 * i,
+            hopCount: i === 1 ? 0 : 1,
+            connectedNodeIds: [],
+            lastSeen: new Date().toISOString(),
+            batteryLevel: 100,
+            status: "online",
+            isCenterNode: i === 1,
+          } as Node);
+        }
+      }
+
+      return nodes;
+    };
 
     // Initial load
-    const initialNodes = generateProgressiveNodes();
+    const initialNodes = generateNodesWithIndex(0);
     createNodeLayer(initialNodes, "Progressive Network");
 
+    const interval = setInterval(() => {
+      rowIndex += 1;
+      const nodes = generateNodesWithIndex(rowIndex);
+      createNodeLayer(nodes, "Progressive Network");
+    }, 1000); // Update every 1 second
+
     return () => clearInterval(interval);
-  }, [
-    createNodeLayer,
-    networkLayersVisible,
-    nodeCoordinatesData,
-    currentRowIndex,
-  ]);
+  }, [createNodeLayer, networkLayersVisible, nodeCoordinatesData]);
 
   return {
     nodeCoordinatesData,

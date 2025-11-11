@@ -1,4 +1,12 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  LineChart,
+  Hexagon,
+  Compass,
+  XCircle,
+} from "lucide-react";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -19,112 +27,101 @@ const ToolsGroup = ({
 }) => {
   const { drawingMode, setDrawingMode } = useDrawingMode();
   const { azimuthalAngle, setAzimuthalAngle } = useAzimuthalAngle();
+
+  const tools = [
+    { key: "point", label: "Point", icon: <Circle size={16} /> },
+    { key: "line", label: "Line", icon: <LineChart size={16} /> },
+    { key: "polygon", label: "Polygon", icon: <Hexagon size={16} /> },
+    { key: "azimuthal", label: "Azimuthal", icon: <Compass size={16} /> },
+  ];
+
   return (
-    <SidebarGroup className="space-y-3">
+    <SidebarGroup>
+      {/* Group Label */}
       <SidebarGroupLabel
-        className="cursor-pointer hover:bg-accent rounded-lg px-3 py-2.5 flex items-center justify-between text-sm font-semibold transition-colors"
+        className="flex items-center justify-between cursor-pointer select-none"
         onClick={() => setIsDrawingToolsOpen(!isDrawingToolsOpen)}
       >
-        Drawing Tools
+        <span>Drawing Tools</span>
         {isDrawingToolsOpen ? (
-          <ChevronDown size={16} />
+          <ChevronDown size={16} className="text-muted-foreground" />
         ) : (
-          <ChevronRight size={16} />
+          <ChevronRight size={16} className="text-muted-foreground" />
         )}
       </SidebarGroupLabel>
 
-      {isDrawingToolsOpen && (
-        <SidebarGroupContent>
-          <SidebarMenu className="space-y-2">
-            <SidebarMenuItem key="point">
+      {/* Collapsible Content */}
+      <SidebarGroupContent
+        className={`${isDrawingToolsOpen ? "block" : "hidden"} transition-all`}
+      >
+        <SidebarMenu className="space-y-2 mt-2">
+          {tools.map((tool) => (
+            <SidebarMenuItem key={tool.key}>
               <SidebarMenuButton
-                isActive={drawingMode === "point"}
-                asChild
-                onClick={() => setDrawingMode("point")}
-                className="h-10 px-3 rounded-lg font-medium"
+                isActive={drawingMode === tool.key}
+                onClick={() => setDrawingMode(tool.key as any)}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium border border-transparent hover:bg-accent hover:text-accent-foreground ${
+                  drawingMode === tool.key
+                    ? "bg-accent text-accent-foreground border-border"
+                    : ""
+                }`}
               >
-                <p>Point</p>
+                {tool.icon}
+                <span>{tool.label}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
-            <SidebarMenuItem key="line">
-              <SidebarMenuButton
-                isActive={drawingMode === "line"}
-                asChild
-                onClick={() => setDrawingMode("line")}
-                className="h-10 px-3 rounded-lg font-medium"
-              >
-                <p>Line</p>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem key="polygon">
-              <SidebarMenuButton
-                isActive={drawingMode === "polygon"}
-                asChild
-                onClick={() => setDrawingMode("polygon")}
-                className="h-10 px-3 rounded-lg font-medium"
-              >
-                <p>Polygon</p>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+          ))}
 
-            <SidebarMenuItem key="azimuthal">
-              <SidebarMenuButton
-                isActive={drawingMode === "azimuthal"}
-                asChild
-                onClick={() => setDrawingMode("azimuthal")}
-                className="h-10 px-3 rounded-lg font-medium"
-              >
-                <p>Azimuthal</p>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            {drawingMode === "azimuthal" && (
-              <div className="px-3 pb-3 space-y-2">
-                <label className="text-xs font-medium text-muted-foreground block">
-                  Sector Angle (degrees)
-                </label>
+          {/* Azimuthal Controls */}
+          {drawingMode === "azimuthal" && (
+            <div className="px-3 pb-3 mt-3 space-y-2 border-t border-border pt-3">
+              <label className="text-xs font-medium text-muted-foreground block">
+                Sector Angle (degrees)
+              </label>
+
+              <Input
+                type="range"
+                min={10}
+                max={360}
+                step={5}
+                value={azimuthalAngle}
+                onChange={(e) => setAzimuthalAngle(Number(e.target.value))}
+              />
+
+              <div className="flex items-center gap-2">
                 <Input
-                  type="range"
-                  min={10}
+                  type="number"
+                  min={1}
                   max={360}
-                  step={5}
                   value={azimuthalAngle}
-                  onChange={(e) => setAzimuthalAngle(Number(e.target.value))}
+                  onChange={(e) =>
+                    setAzimuthalAngle(
+                      Number.isNaN(Number(e.target.value))
+                        ? 60
+                        : Number(e.target.value)
+                    )
+                  }
+                  className="w-20 h-8"
                 />
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={360}
-                    value={azimuthalAngle}
-                    onChange={(e) =>
-                      setAzimuthalAngle(
-                        Number.isNaN(Number(e.target.value))
-                          ? 60
-                          : Number(e.target.value)
-                      )
-                    }
-                    className="w-24"
-                  />
-                  <span className="text-sm text-muted-foreground">degrees</span>
-                </div>
+                <span className="text-sm text-muted-foreground">°</span>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Exit Drawing Mode Button - only show when a drawing mode is active */}
-            {drawingMode && (
-              <SidebarMenuItem key="exit-drawing">
-                <SidebarMenuButton
-                  asChild
-                  onClick={() => setDrawingMode(null)}
-                  className="h-10 px-3 rounded-lg font-medium bg-red-100 text-red-700 hover:bg-red-200 border border-red-300"
-                >
-                  <p>Exit Drawing Mode</p>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            )}
-          </SidebarMenu>
-        </SidebarGroupContent>
-      )}
+          {/* Exit Drawing Mode */}
+          {drawingMode && (
+            <SidebarMenuItem key="exit-drawing">
+              <SidebarMenuButton
+                onClick={() => setDrawingMode(null)}
+                className="h-10 px-3 rounded-lg font-medium flex items-center gap-2 bg-red-100 text-red-700 hover:bg-red-200 border border-red-300 mt-2"
+              >
+                <XCircle size={16} />
+                <span>Exit Drawing Mode</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
+        </SidebarMenu>
+      </SidebarGroupContent>
     </SidebarGroup>
   );
 };

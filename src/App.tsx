@@ -6,7 +6,6 @@ import { AppSidebar } from "./components/app-sidebar";
 const App = () => {
   return (
     <SidebarProvider>
-      <SidebarTrigger className="absolute top-4 left-4 z-99 h-8 w-8 p-0" />
       <div className="absolute z-50">
         <AppSidebar />
       </div>
