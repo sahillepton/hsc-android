@@ -1,15 +1,21 @@
 import Map, { useControl, NavigationControl } from "react-map-gl/mapbox";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { useEffect, useRef, useState } from "react";
-import { useLayersContext } from "@/layers-provider";
-import { TextLayer } from "@deck.gl/layers";
-import { indianStatesData } from "@/data/indian-states";
+import type { PickingInfo } from "@deck.gl/core";
+import {
+  GeoJsonLayer,
+  IconLayer,
+  LineLayer,
+  PolygonLayer,
+  ScatterplotLayer,
+  TextLayer,
+} from "@deck.gl/layers";
+import { TerrainLayer } from "@deck.gl/geo-layers";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import TiltControl from "./tilt-control";
 import IconSelection from "./icon-selection";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
-import { useProgressiveNodes } from "@/hooks/use-progressive-nodes";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
   useCurrentPath,
@@ -20,6 +26,10 @@ import {
   useLayers,
   useMousePosition,
   useNetworkLayersVisible,
+  useNodeIconMappings,
+  useAzimuthalAngle,
+  useHoverInfo,
+  usePendingPolygon,
 } from "@/store/layers-store";
 import {
   calculateBearingDegrees,
@@ -28,7 +38,7 @@ import {
   isPointNearFirstPoint,
   makeSectorPolygon,
 } from "@/lib/layers";
-import type { LayerProps } from "@/lib/definitions";
+import type { LayerProps, Node } from "@/lib/definitions";
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
@@ -50,12 +60,18 @@ const MapComponent = () => {
   const { mousePosition, setMousePosition } = useMousePosition();
   const { layers, addLayer } = useLayers();
   const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
-  const { drawingMode, setDrawingMode } = useDrawingMode();
+  const { drawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
-  const { nodeCoordinatesData, setNodeCoordinatesData } =
-    useProgressiveNodes(networkLayersVisible);
-  const [isMapEnabled, setIsMapEnabled] = useState(true);
+  const { nodeIconMappings } = useNodeIconMappings();
+  const { azimuthalAngle } = useAzimuthalAngle();
+  const { setHoverInfo } = useHoverInfo();
+  const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
+  const previousDrawingModeRef = useRef(drawingMode);
+
+  // const { nodeCoordinatesData, setNodeCoordinatesData } =
+  //   useProgressiveNodes(networkLayersVisible);
+  const [isMapEnabled] = useState(true);
   const [pitch, setPitch] = useState(0);
 
   const [selectedNodeForIcon, setSelectedNodeForIcon] = useState<string | null>(
@@ -63,53 +79,53 @@ const MapComponent = () => {
   );
   const [mapZoom, setMapZoom] = useState(4);
 
-  useEffect(() => {
-    const loadNodeData = async () => {
-      try {
-        const coordinates: Array<{ lat: number; lng: number }[]> = [];
+  // useEffect(() => {
+  //   const loadNodeData = async () => {
+  //     try {
+  //       const coordinates: Array<{ lat: number; lng: number }[]> = [];
 
-        // Load JSON files for each of the 8 nodes
-        for (let i = 1; i <= 8; i++) {
-          try {
-            const response = await fetch(`/node-data/node-${i}.json`);
-            if (!response.ok) {
-              console.warn(
-                `Failed to load node-${i}.json:`,
-                response.statusText
-              );
-              continue;
-            }
-            const data = await response.json();
-            if (Array.isArray(data) && data.length > 0) {
-              coordinates.push(data);
-              console.log(`Loaded node-${i}.json: ${data.length} coordinates`);
-            }
-          } catch (error) {
-            console.error(`Error loading node-${i}.json:`, error);
-          }
-        }
+  //       // Load JSON files for each of the 8 nodes
+  //       for (let i = 1; i <= 8; i++) {
+  //         try {
+  //           const response = await fetch(`/node-data/node-${i}.json`);
+  //           if (!response.ok) {
+  //             console.warn(
+  //               `Failed to load node-${i}.json:`,
+  //               response.statusText
+  //             );
+  //             continue;
+  //           }
+  //           const data = await response.json();
+  //           if (Array.isArray(data) && data.length > 0) {
+  //             coordinates.push(data);
+  //             console.log(`Loaded node-${i}.json: ${data.length} coordinates`);
+  //           }
+  //         } catch (error) {
+  //           console.error(`Error loading node-${i}.json:`, error);
+  //         }
+  //       }
 
-        // Store all coordinates for each node
-        if (coordinates.length === 8) {
-          setNodeCoordinatesData(coordinates);
-          console.log(
-            "Loaded coordinates from JSON files:",
-            coordinates.map((tab, idx) => `Node ${idx + 1}: ${tab.length} rows`)
-          );
-        } else {
-          console.warn("Expected 8 node files, found:", coordinates.length);
-          if (coordinates.length > 0) {
-            // Use what we have
-            setNodeCoordinatesData(coordinates);
-          }
-        }
-      } catch (error) {
-        console.error("Error loading node data files:", error);
-      }
-    };
+  //       // Store all coordinates for each node
+  //       if (coordinates.length === 8) {
+  //         setNodeCoordinatesData(coordinates);
+  //         console.log(
+  //           "Loaded coordinates from JSON files:",
+  //           coordinates.map((tab, idx) => `Node ${idx + 1}: ${tab.length} rows`)
+  //         );
+  //       } else {
+  //         console.warn("Expected 8 node files, found:", coordinates.length);
+  //         if (coordinates.length > 0) {
+  //           // Use what we have
+  //           setNodeCoordinatesData(coordinates);
+  //         }
+  //       }
+  //     } catch (error) {
+  //       console.error("Error loading node data files:", error);
+  //     }
+  //   };
 
-    loadNodeData();
-  }, []);
+  //   loadNodeData();
+  // }, []);
 
   const createPointLayer = (position: [number, number]) => {
     const newLayer: LayerProps = {
@@ -149,62 +165,35 @@ const MapComponent = () => {
     //   console.log("handlePolygonDrawing called with:", { point, isDrawing, currentPathLength: currentPath.length });
 
     if (!isDrawing) {
-      //  console.log("Starting new polygon at:", point);
       setCurrentPath([point]);
+      setPendingPolygonPoints([point]);
       setIsDrawing(true);
-      // Add persistent point marker at first click
-      const pointLayer: LayerProps = {
-        type: "point",
+      return;
+    }
+
+    const updatedPath = [...pendingPolygonPoints, point];
+    setPendingPolygonPoints(updatedPath);
+    setCurrentPath(updatedPath);
+
+    if (
+      updatedPath.length >= 3 &&
+      isPointNearFirstPoint(point, updatedPath[0])
+    ) {
+      const closedPath = [...updatedPath.slice(0, -1), updatedPath[0]];
+      const newLayer: LayerProps = {
+        type: "polygon",
         id: generateLayerId(),
-        name: `Polygon Point ${
-          layers.filter((l) => l.type === "point").length + 1
+        name: `Polygon ${
+          layers.filter((l) => l.type === "polygon").length + 1
         }`,
-        position: point,
-        color: [32, 32, 32],
-        radius: 5000,
+        polygon: [closedPath],
+        color: [32, 32, 32, 180],
         visible: true,
       };
-      addLayer(pointLayer);
-    } else {
-      //  console.log("Adding point to polygon. Current path length:", currentPath.length);
-
-      if (
-        currentPath.length >= 3 &&
-        isPointNearFirstPoint(point, currentPath[0])
-      ) {
-        //    console.log("Closing polygon with", currentPath.length, "points");
-        const closedPath = [...currentPath, currentPath[0]];
-        const newLayer: LayerProps = {
-          type: "polygon",
-          id: generateLayerId(),
-          name: `Polygon ${
-            layers.filter((l) => l.type === "polygon").length + 1
-          }`,
-          polygon: [closedPath],
-          color: [32, 32, 32, 180], // Default to dark, higher-opacity fill
-          visible: true,
-        };
-        //    console.log("Creating polygon layer:", newLayer);
-        addLayer(newLayer);
-        setCurrentPath([]);
-        setIsDrawing(false);
-      } else {
-        //    console.log("Adding point to current path");
-        // Add persistent point marker on each subsequent click
-        const pointLayer: LayerProps = {
-          type: "point",
-          id: generateLayerId(),
-          name: `Polygon Point ${
-            layers.filter((l) => l.type === "point").length + 1
-          }`,
-          position: point,
-          color: [32, 32, 32],
-          radius: 5000,
-          visible: true,
-        };
-        addLayer(pointLayer);
-        setCurrentPath([...currentPath, point]);
-      }
+      addLayer(newLayer);
+      setCurrentPath([]);
+      setPendingPolygonPoints([]);
+      setIsDrawing(false);
     }
   };
 
@@ -222,7 +211,7 @@ const MapComponent = () => {
     const radiusMeters = calculateDistanceMeters(center, end);
     const bearing = calculateBearingDegrees(center, end);
 
-    const sectorAngleDeg = 60; // default sector width
+    const sectorAngleDeg = azimuthalAngle || 60; // default sector width
     const sector = makeSectorPolygon(
       center,
       radiusMeters,
@@ -231,33 +220,63 @@ const MapComponent = () => {
     );
 
     // Build GeoJSON with only the sector polygon (no point or azimuth line)
-    const featureCollection: GeoJSON.FeatureCollection = {
-      type: "FeatureCollection",
-      features: [
-        {
-          type: "Feature",
-          geometry: { type: "Polygon", coordinates: [sector] },
-          properties: { kind: "sector", radiusMeters, bearing, sectorAngleDeg },
-        },
-      ],
-    };
-
     const newLayer: LayerProps = {
-      type: "geojson",
+      type: "polygon",
       id: generateLayerId(),
       name: `Azimuthal ${
         layers.filter((l) => l.name?.startsWith("Azimuthal")).length + 1
       }`,
-      geojson: featureCollection,
+      polygon: [sector],
       color: [32, 32, 32, 180],
-      pointRadius: 40000,
       visible: true,
+      sectorAngleDeg,
+      radiusMeters,
+      bearing,
     };
 
     addLayer(newLayer);
     setCurrentPath([]);
     setIsDrawing(false);
   };
+
+  useEffect(() => {
+    const previousMode = previousDrawingModeRef.current;
+    if (
+      previousMode === "polygon" &&
+      drawingMode !== "polygon" &&
+      pendingPolygonPoints.length >= 3
+    ) {
+      const closedPath = [...pendingPolygonPoints, pendingPolygonPoints[0]];
+      const newLayer: LayerProps = {
+        type: "polygon",
+        id: generateLayerId(),
+        name: `Polygon ${
+          layers.filter((l) => l.type === "polygon").length + 1
+        }`,
+        polygon: [closedPath],
+        color: [32, 32, 32, 180],
+        visible: true,
+      };
+      addLayer(newLayer);
+      setPendingPolygonPoints([]);
+      setCurrentPath([]);
+      setIsDrawing(false);
+    }
+
+    if (drawingMode !== "polygon" && pendingPolygonPoints.length === 0) {
+      setCurrentPath([]);
+    }
+
+    previousDrawingModeRef.current = drawingMode;
+  }, [
+    drawingMode,
+    pendingPolygonPoints,
+    addLayer,
+    layers,
+    setPendingPolygonPoints,
+    setCurrentPath,
+    setIsDrawing,
+  ]);
 
   const handleClick = (event: any) => {
     if (!event.lngLat || !drawingMode) {
@@ -353,6 +372,534 @@ const MapComponent = () => {
     setDragStart(null);
   };
 
+  const handleLayerHover = useCallback(
+    (info: PickingInfo<unknown>) => {
+      if (info && info.object) {
+        setHoverInfo(info);
+      } else {
+        setHoverInfo(undefined);
+      }
+    },
+    [setHoverInfo]
+  );
+
+  const handleNodeIconClick = useCallback(
+    (info: PickingInfo<unknown>) => {
+      if (!info || !info.object) {
+        return;
+      }
+
+      const node = info.object as Node;
+      const nodeId = node?.userId?.toString();
+      if (nodeId) {
+        setSelectedNodeForIcon(nodeId);
+      }
+      setHoverInfo(undefined);
+    },
+    [setHoverInfo]
+  );
+
+  const deckGlLayers = useMemo(() => {
+    const isLayerVisible = (layer: LayerProps) => {
+      if (layer.visible === false) return false;
+      const name = layer.name || "";
+      const isNetworkLayer =
+        name.includes("Network") ||
+        name.includes("Connection") ||
+        layer.type === "nodes";
+      if (isNetworkLayer && !networkLayersVisible) {
+        return false;
+      }
+      return true;
+    };
+
+    const guardColor = (color: number[] = [0, 0, 0]) =>
+      color.length === 4 ? color : [...color, 255];
+
+    const getSignalColor = (
+      snr: number | undefined,
+      rssi: number | undefined
+    ): [number, number, number] => {
+      if (
+        typeof snr !== "number" ||
+        Number.isNaN(snr) ||
+        typeof rssi !== "number" ||
+        Number.isNaN(rssi)
+      ) {
+        return [128, 128, 128];
+      }
+      const normalizedSNR = Math.max(0, Math.min(1, snr / 30));
+      const normalizedRSSI = Math.max(0, Math.min(1, (rssi + 100) / 70));
+      const signalStrength = normalizedSNR * 0.7 + normalizedRSSI * 0.3;
+      if (signalStrength >= 0.7) return [0, 255, 0];
+      if (signalStrength >= 0.4) return [255, 165, 0];
+      return [255, 0, 0];
+    };
+
+    const getNodeIcon = (node: Node, allNodes: Node[] = []) => {
+      const nodeId = node.userId?.toString();
+      if (nodeId && nodeIconMappings[nodeId]) {
+        const iconName = nodeIconMappings[nodeId];
+        const isRectangularIcon = [
+          "ground_unit",
+          "command_post",
+          "naval_unit",
+        ].includes(iconName);
+        return {
+          url: `/icons/${iconName}.svg`,
+          width: isRectangularIcon ? 28 : 24,
+          height: isRectangularIcon ? 20 : 24,
+          anchorY: isRectangularIcon ? 10 : 12,
+          anchorX: isRectangularIcon ? 14 : 12,
+          mask: false,
+        };
+      }
+
+      let iconName = "neutral_aircraft";
+
+      const getMotherAircraft = () => {
+        if (!allNodes.length) return null;
+        const sortedNodes = allNodes
+          .filter((n) => typeof n.snr === "number")
+          .sort((a, b) => {
+            const snrA = a.snr ?? -Infinity;
+            const snrB = b.snr ?? -Infinity;
+            if (snrB !== snrA) return snrB - snrA;
+            return a.userId - b.userId;
+          });
+        return sortedNodes[0] ?? null;
+      };
+
+      const motherAircraft = getMotherAircraft();
+
+      if (motherAircraft && node.userId === motherAircraft.userId) {
+        iconName = "mother-aircraft";
+      } else if (node.hopCount === 0) {
+        iconName = "command_post";
+      } else if ((node.snr ?? 0) > 20) {
+        iconName = "friendly_aircraft";
+      } else if ((node.snr ?? 0) > 10) {
+        iconName = "ground_unit";
+      } else if ((node.snr ?? 0) > 0) {
+        iconName = "neutral_aircraft";
+      } else {
+        iconName = "unknown_aircraft";
+      }
+
+      const isRectangularIcon = [
+        "ground_unit",
+        "command_post",
+        "naval_unit",
+      ].includes(iconName);
+      return {
+        url: `/icons/${iconName}.svg`,
+        width: isRectangularIcon ? 28 : 24,
+        height: isRectangularIcon ? 20 : 24,
+        anchorY: isRectangularIcon ? 10 : 12,
+        anchorX: isRectangularIcon ? 14 : 12,
+        mask: false,
+      };
+    };
+
+    const visibleLayers = layers
+      .filter(isLayerVisible)
+      .filter(
+        (layer) =>
+          !(layer.type === "point" && layer.name?.startsWith("Polygon Point"))
+      );
+    const pointLayers = visibleLayers.filter((l) => l.type === "point");
+    const lineLayers = visibleLayers.filter(
+      (l) => l.type === "line" && !(l.name || "").includes("Connection")
+    );
+    const connectionLayers = visibleLayers.filter(
+      (l) => l.type === "line" && (l.name || "").includes("Connection")
+    );
+    const polygonLayers = visibleLayers.filter((l) => l.type === "polygon");
+    const geoJsonLayers = visibleLayers.filter((l) => l.type === "geojson");
+    const demLayers = visibleLayers.filter((l) => l.type === "dem");
+    const annotationLayers = visibleLayers.filter(
+      (l) => l.type === "annotation"
+    );
+    const nodeLayers = visibleLayers.filter((l) => l.type === "nodes");
+
+    const deckLayers: any[] = [];
+
+    if (pointLayers.length) {
+      deckLayers.push(
+        new ScatterplotLayer({
+          id: "point-layer",
+          data: pointLayers,
+          getPosition: (d: LayerProps) => d.position!,
+          getRadius: (d: LayerProps) => d.radius ?? 200,
+          getFillColor: (d: LayerProps) => d.color ?? [255, 0, 0],
+          pickable: true,
+          radiusMinPixels: 4,
+          onHover: handleLayerHover,
+        })
+      );
+    }
+
+    if (lineLayers.length) {
+      const pathData = lineLayers.flatMap((layer) =>
+        (layer.path ?? []).slice(0, -1).map((point, index) => ({
+          sourcePosition: point,
+          targetPosition: layer.path![index + 1],
+          color: layer.color ?? [96, 96, 96],
+          width: layer.lineWidth ?? 5,
+        }))
+      );
+
+      if (pathData.length) {
+        deckLayers.push(
+          new LineLayer({
+            id: "line-layer",
+            data: pathData,
+            getSourcePosition: (d: any) => d.sourcePosition,
+            getTargetPosition: (d: any) => d.targetPosition,
+            getColor: (d: any) => d.color,
+            getWidth: (d: any) => d.width,
+            pickable: true,
+            onHover: handleLayerHover,
+          })
+        );
+      }
+    }
+
+    if (connectionLayers.length) {
+      const connectionPathData = connectionLayers.flatMap((layer) =>
+        (layer.path ?? []).slice(0, -1).map((point, index) => ({
+          sourcePosition: point,
+          targetPosition: layer.path![index + 1],
+          color: layer.color ?? [128, 128, 128],
+          width: layer.lineWidth ?? 5,
+        }))
+      );
+
+      if (connectionPathData.length) {
+        deckLayers.push(
+          new LineLayer({
+            id: "connection-line-layer",
+            data: connectionPathData,
+            getSourcePosition: (d: any) => d.sourcePosition,
+            getTargetPosition: (d: any) => d.targetPosition,
+            getColor: (d: any) => d.color,
+            getWidth: (d: any) => d.width,
+            pickable: true,
+            onHover: handleLayerHover,
+          })
+        );
+      }
+    }
+
+    if (polygonLayers.length) {
+      deckLayers.push(
+        new PolygonLayer({
+          id: "polygon-layer",
+          data: polygonLayers,
+          getPolygon: (d: LayerProps) => d.polygon?.[0] ?? [],
+          getFillColor: (d: LayerProps) =>
+            d.color && d.color.length === 4
+              ? d.color
+              : [...(d.color ?? [32, 32, 32]), 100],
+          getLineColor: (d: LayerProps) =>
+            (d.color ?? [32, 32, 32]).slice(0, 3) as [number, number, number],
+          getLineWidth: 2,
+          pickable: true,
+          onHover: handleLayerHover,
+        })
+      );
+    }
+
+    geoJsonLayers.forEach((layer) => {
+      if (!layer.geojson) return;
+      const lineWidth = layer.lineWidth ?? 5;
+      deckLayers.push(
+        new GeoJsonLayer({
+          id: layer.id,
+          data: layer.geojson,
+          pickable: true,
+          stroked: true,
+          filled: true,
+          getFillColor: (f: any) =>
+            f.properties?.color ?? [...(layer.color ?? [0, 150, 255]), 120],
+          getLineColor: (f: any) =>
+            f.properties?.lineColor ?? guardColor(layer.color ?? [0, 150, 255]),
+          getPointRadius: (f: any) =>
+            f.geometry?.type === "Point" ? layer.pointRadius ?? 50000 : 0,
+          getLineWidth: (f: any) => {
+            const type = f.geometry?.type;
+            if (type === "LineString" || type === "MultiLineString") {
+              return lineWidth;
+            }
+            return 2;
+          },
+          updateTriggers: {
+            getFillColor: [layer.color],
+            getLineColor: [layer.color],
+            getPointRadius: [layer.pointRadius],
+            getLineWidth: [layer.lineWidth],
+          },
+          onHover: handleLayerHover,
+        })
+      );
+    });
+
+    demLayers.forEach((layer) => {
+      if (!layer.bounds || !layer.elevationData) return;
+      const [minLng, minLat] = layer.bounds[0];
+      const [maxLng, maxLat] = layer.bounds[1];
+      const elevationData: any = {
+        data: layer.elevationData.data,
+        width: layer.elevationData.width,
+        height: layer.elevationData.height,
+      };
+      const texture: any = layer.texture ?? layer.bitmap ?? undefined;
+      deckLayers.push(
+        new TerrainLayer({
+          id: `${layer.id}-terrain`,
+          bounds: [minLng, minLat, maxLng, maxLat],
+          elevationData,
+          elevationRange: [
+            layer.elevationData.min ?? 0,
+            layer.elevationData.max ?? 1,
+          ],
+          texture,
+          meshMaxError: 2,
+          wireframe: false,
+          pickable: false,
+          visible: layer.visible !== false,
+          material: {
+            ambient: 0.4,
+            diffuse: 0.6,
+            shininess: 32,
+            specularColor: [255, 255, 255],
+          },
+        })
+      );
+    });
+
+    annotationLayers.forEach((layer) => {
+      if (!layer.annotations?.length) return;
+      deckLayers.push(
+        new TextLayer({
+          id: layer.id,
+          data: layer.annotations,
+          getPosition: (d: any) => d.position,
+          getText: (d: any) => d.text,
+          getColor: (d: any) => d.color ?? layer.color ?? [0, 0, 0],
+          getSize: (d: any) => d.fontSize ?? 14,
+          getAngle: 0,
+          getTextAnchor: "middle",
+          getAlignmentBaseline: "center",
+          pickable: true,
+          sizeScale: 1,
+          fontFamily: "Arial, sans-serif",
+          fontWeight: "normal",
+          onHover: handleLayerHover,
+        })
+      );
+    });
+
+    nodeLayers.forEach((layer) => {
+      if (!layer.nodes?.length) return;
+      const nodes = [...layer.nodes];
+
+      deckLayers.push(
+        new IconLayer({
+          id: `${layer.id}-icon-layer`,
+          data: nodes,
+          pickable: true,
+          getIcon: (node: Node) => getNodeIcon(node, nodes),
+          getPosition: (node: Node) => [node.longitude, node.latitude],
+          getSize: 24,
+          sizeScale: 1,
+          getPixelOffset: [0, -10],
+          alphaCutoff: 0.001,
+          billboard: true,
+          sizeUnits: "pixels",
+          sizeMinPixels: 16,
+          sizeMaxPixels: 32,
+          updateTriggers: {
+            getIcon: [nodes.length, Object.values(nodeIconMappings).join(",")],
+          },
+          onHover: handleLayerHover,
+          onClick: handleNodeIconClick,
+        })
+      );
+
+      deckLayers.push(
+        new ScatterplotLayer({
+          id: `${layer.id}-signal-overlay`,
+          data: nodes,
+          getPosition: (node: Node) => [node.longitude, node.latitude],
+          getRadius: 12000,
+          getFillColor: (node: Node) => getSignalColor(node.snr, node.rssi),
+          getLineColor: [255, 255, 255, 200],
+          getLineWidth: 2,
+          radiusMinPixels: 8,
+          radiusMaxPixels: 32,
+          pickable: true,
+          onHover: handleLayerHover,
+          onClick: handleNodeIconClick,
+        })
+      );
+    });
+
+    // --- Preview layers ---
+    const previewLayers: any[] = [];
+
+    if (
+      isDrawing &&
+      drawingMode === "line" &&
+      currentPath.length === 1 &&
+      mousePosition
+    ) {
+      const previewLineData = [
+        {
+          sourcePosition: currentPath[0],
+          targetPosition: mousePosition,
+          color: [160, 160, 160],
+          width: 3,
+        },
+      ];
+      previewLayers.push(
+        new LineLayer({
+          id: "preview-line-layer",
+          data: previewLineData,
+          getSourcePosition: (d: any) => d.sourcePosition,
+          getTargetPosition: (d: any) => d.targetPosition,
+          getColor: (d: any) => d.color,
+          getWidth: (d: any) => d.width,
+          pickable: false,
+        })
+      );
+    }
+
+    if (
+      isDrawing &&
+      drawingMode === "polygon" &&
+      currentPath.length >= 1 &&
+      mousePosition
+    ) {
+      if (currentPath.length === 1) {
+        const previewLineData = [
+          {
+            sourcePosition: currentPath[0],
+            targetPosition: mousePosition,
+            color: [160, 160, 160],
+            width: 2,
+          },
+        ];
+        previewLayers.push(
+          new LineLayer({
+            id: "preview-polygon-edge",
+            data: previewLineData,
+            getSourcePosition: (d: any) => d.sourcePosition,
+            getTargetPosition: (d: any) => d.targetPosition,
+            getColor: (d: any) => d.color,
+            getWidth: (d: any) => d.width,
+            pickable: false,
+          })
+        );
+      } else {
+        const previewPath = [...currentPath, mousePosition];
+        previewLayers.push(
+          new PolygonLayer({
+            id: "preview-polygon-layer",
+            data: [previewPath],
+            getPolygon: (d: [number, number][]) => d,
+            getFillColor: [32, 32, 32, 100],
+            getLineColor: [32, 32, 32],
+            getLineWidth: 2,
+            pickable: false,
+          })
+        );
+
+        if (isPointNearFirstPoint(mousePosition, currentPath[0])) {
+          const closingLineData = [
+            {
+              sourcePosition: mousePosition,
+              targetPosition: currentPath[0],
+              color: [255, 255, 0],
+              width: 3,
+            },
+          ];
+          previewLayers.push(
+            new LineLayer({
+              id: "preview-polygon-closing",
+              data: closingLineData,
+              getSourcePosition: (d: any) => d.sourcePosition,
+              getTargetPosition: (d: any) => d.targetPosition,
+              getColor: (d: any) => d.color,
+              getWidth: (d: any) => d.width,
+              pickable: false,
+            })
+          );
+        }
+      }
+    }
+
+    if (
+      isDrawing &&
+      drawingMode === "azimuthal" &&
+      currentPath.length === 1 &&
+      mousePosition
+    ) {
+      const center = currentPath[0];
+      const radiusMeters = calculateDistanceMeters(center, mousePosition);
+      const bearing = calculateBearingDegrees(center, mousePosition);
+      const sector = makeSectorPolygon(
+        center,
+        radiusMeters,
+        bearing,
+        azimuthalAngle || 60
+      );
+      previewLayers.push(
+        new PolygonLayer({
+          id: "preview-azimuthal-layer",
+          data: [sector],
+          getPolygon: (d: [number, number][]) => d,
+          getFillColor: [32, 32, 32, 100],
+          getLineColor: [32, 32, 32],
+          getLineWidth: 2,
+          pickable: false,
+        })
+      );
+    }
+
+    if (isDrawing && currentPath.length > 0) {
+      const previewPointData = currentPath.map((point, index) => ({
+        position: point,
+        radius: 150,
+        color: index === 0 ? [255, 255, 0] : [255, 0, 255],
+      }));
+      previewLayers.push(
+        new ScatterplotLayer({
+          id: "preview-point-layer",
+          data: previewPointData,
+          getPosition: (d: any) => d.position,
+          getRadius: (d: any) => d.radius,
+          getFillColor: (d: any) => d.color,
+          pickable: false,
+          radiusMinPixels: 4,
+        })
+      );
+    }
+
+    return [...deckLayers, ...previewLayers];
+  }, [
+    layers,
+    networkLayersVisible,
+    nodeIconMappings,
+    isDrawing,
+    drawingMode,
+    currentPath,
+    mousePosition,
+    azimuthalAngle,
+    handleLayerHover,
+    handleNodeIconClick,
+  ]);
+
   return (
     <div
       className={`relative h-screen w-screen overflow-hidden ${
@@ -432,7 +979,7 @@ const MapComponent = () => {
       >
         <DeckGLOverlay
           layers={[
-            ...layers,
+            ...deckGlLayers,
             stateNamesLayer,
             cityNamesLayer,
             indiaPlacesLayer,

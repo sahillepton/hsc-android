@@ -117,10 +117,46 @@ export function formatArea(squareMeters: number): string {
   }
 }
 
-export function getPolygonArea(polygon:  [number, number][][]) {
-  const area =turf.area(turf.polygon(polygon));
-  const areaInKm2 = turf.convertArea(area, 'meters', 'kilometers');
-  return areaInKm2.toFixed(2);
+export function getPolygonArea(polygon: [number, number][][]) {
+  if (!Array.isArray(polygon) || polygon.length === 0) {
+    return "0.00";
+  }
+
+  const EARTH_RADIUS = 6378137; // meters (WGS84 semimajor axis)
+  const toRadians = (deg: number) => (deg * Math.PI) / 180;
+
+  const ringArea = (ring: [number, number][]) => {
+    if (!ring || ring.length < 3) return 0;
+
+    let area = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const [lon1, lat1] = ring[i];
+      const [lon2, lat2] = ring[(i + 1) % ring.length];
+
+      const lon1Rad = toRadians(lon1);
+      const lon2Rad = toRadians(lon2);
+      const lat1Rad = toRadians(lat1);
+      const lat2Rad = toRadians(lat2);
+
+      area += (lon2Rad - lon1Rad) * (Math.sin(lat1Rad) + Math.sin(lat2Rad));
+    }
+
+    return (area * EARTH_RADIUS * EARTH_RADIUS) / 2;
+  };
+
+  let totalArea = 0;
+
+  polygon.forEach((ring, index) => {
+    const ringAreaMeters = ringArea(ring);
+    if (index === 0) {
+      totalArea += Math.abs(ringAreaMeters); // outer ring
+    } else {
+      totalArea -= Math.abs(ringAreaMeters); // holes
+    }
+  });
+
+  const areaKm2 = Math.abs(totalArea) / 1_000_000;
+  return areaKm2.toFixed(2);
 }
 
 

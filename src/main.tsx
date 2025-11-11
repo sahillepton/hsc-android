@@ -2,7 +2,6 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
-import { LayersProvider } from "./layers-provider/index.tsx";
 
 // Suppress harmless OpenGL warnings that occur during file operations
 // These are Android rendering warnings that don't affect functionality
@@ -22,8 +21,6 @@ import { LayersProvider } from "./layers-provider/index.tsx";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <LayersProvider>
-      <App />
-    </LayersProvider>
+    <App />
   </StrictMode>
 );

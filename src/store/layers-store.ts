@@ -47,6 +47,10 @@ interface LayerState {
     } | null) => void
     focusLayer : (layerId : string) => void
     clearLayerFocusRequest : () => void
+    azimuthalAngle: number
+    setAzimuthalAngle: (angle: number) => void
+    pendingPolygonPoints: [number, number][]
+    setPendingPolygonPoints: (points: [number, number][]) => void
 }
 
 const useLayerStore = create<LayerState>()((set, get) => ({
@@ -54,7 +58,12 @@ const useLayerStore = create<LayerState>()((set, get) => ({
     setLayers: (layers) => set({ layers }),
     addLayer: (layer) => set((state) => ({ layers: [...state.layers, layer] })),
     deleteLayer: (layerId: string) => set((state) => ({ layers: state.layers.filter((layer) => layer.id !== layerId) })),
-    updateLayer: (layerId: string) => set((state) => ({ layers: state.layers.map((layer) => layer.id === layerId ? layer : layer) })),
+    updateLayer: (layerId: string, updatedLayer: LayerProps) =>
+        set((state) => ({
+            layers: state.layers.map((layer) =>
+                layer.id === layerId ? updatedLayer : layer
+            ),
+        })),
     isDrawing: false,
     setIsDrawing: (isDrawing) => set({ isDrawing }),
     currentPath: [],
@@ -97,6 +106,10 @@ const useLayerStore = create<LayerState>()((set, get) => ({
         } })
     },
     clearLayerFocusRequest: () => set({ focusLayerRequest: null }),
+    azimuthalAngle: 60,
+    setAzimuthalAngle: (angle) => set({ azimuthalAngle: Math.max(1, Math.min(angle, 360)) }),
+    pendingPolygonPoints: [],
+    setPendingPolygonPoints: (points) => set({ pendingPolygonPoints: points }),
 }))
 
 export const useLayers = () => {
@@ -189,4 +202,16 @@ export const useFocusLayerRequest = () => {
     const deleteLayer = useLayerStore((state) => state.deleteLayer)
     const updateLayer = useLayerStore((state) => state.updateLayer)
     return { focusLayerRequest, setFocusLayerRequest, focusLayer, clearLayerFocusRequest, deleteLayer, updateLayer }
+}
+
+export const useAzimuthalAngle = () => {
+    const azimuthalAngle = useLayerStore((state) => state.azimuthalAngle)
+    const setAzimuthalAngle = useLayerStore((state) => state.setAzimuthalAngle)
+    return { azimuthalAngle, setAzimuthalAngle }
+}
+
+export const usePendingPolygon = () => {
+    const pendingPolygonPoints = useLayerStore((state) => state.pendingPolygonPoints)
+    const setPendingPolygonPoints = useLayerStore((state) => state.setPendingPolygonPoints)
+    return { pendingPolygonPoints, setPendingPolygonPoints }
 }

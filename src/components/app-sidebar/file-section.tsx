@@ -286,9 +286,9 @@ const FileSection = () => {
         );
       }
 
-      const geojson = await fileToGeoJSON(file);
+      const rawGeojson = await fileToGeoJSON(file);
 
-      if (!geojson) {
+      if (!rawGeojson) {
         showMessage(
           "Invalid vector file format. Could not convert to GeoJSON.",
           true
@@ -296,21 +296,60 @@ const FileSection = () => {
         return;
       }
 
-      if (geojson.type !== "FeatureCollection") {
+      let featureCollection: GeoJSON.FeatureCollection | null = null;
+
+      if (rawGeojson.type === "FeatureCollection") {
+        featureCollection = rawGeojson as GeoJSON.FeatureCollection;
+      } else if (rawGeojson.type === "Feature") {
+        featureCollection = {
+          type: "FeatureCollection",
+          features: [rawGeojson as GeoJSON.Feature],
+        };
+      } else if (
+        (rawGeojson as any).features &&
+        Array.isArray((rawGeojson as any).features)
+      ) {
+        featureCollection = {
+          type: "FeatureCollection",
+          features: (rawGeojson as any).features,
+        };
+      } else if ((rawGeojson as any).geometry) {
+        featureCollection = {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: (rawGeojson as any).geometry,
+              properties: (rawGeojson as any).properties ?? {},
+            },
+          ],
+        };
+      }
+
+      if (!featureCollection) {
         showMessage(
-          `Invalid GeoJSON format: expected FeatureCollection, got ${geojson.type}`,
+          `Unsupported GeoJSON structure: ${rawGeojson.type ?? "Unknown type"}`,
           true
         );
         return;
       }
 
-      if (!Array.isArray(geojson.features)) {
+      if (!Array.isArray(featureCollection.features)) {
         showMessage("Invalid GeoJSON format: features is not an array.", true);
         return;
       }
 
-      if (geojson.features.length === 0) {
+      if (featureCollection.features.length === 0) {
         showMessage("Vector file contains no features.", true);
+        return;
+      }
+
+      const validFeatures = featureCollection.features.filter(
+        (feature) => feature && feature.geometry
+      );
+
+      if (validFeatures.length === 0) {
+        showMessage("Vector file contains no valid geometries.", true);
         return;
       }
 
@@ -318,18 +357,22 @@ const FileSection = () => {
         type: "geojson",
         id: generateLayerId(),
         name: file.name.split(".")[0],
-        geojson: geojson,
+        geojson: {
+          type: "FeatureCollection",
+          features: validFeatures,
+        },
         color: [
           Math.floor(Math.random() * 255),
           Math.floor(Math.random() * 255),
           Math.floor(Math.random() * 255),
         ],
         pointRadius: 50000,
+        lineWidth: 5,
         visible: true,
       };
       setLayers([...layers, newLayer]);
       showMessage(
-        `Successfully uploaded ${geojson.features.length} feature(s) from ${file.name}`
+        `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`
       );
     } catch (error) {
       console.error("Error uploading file:", error);

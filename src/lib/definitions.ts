@@ -41,6 +41,9 @@ export interface LayerProps {
       color?: [number, number, number];
       fontSize?: number;
     }>;
+    sectorAngleDeg?: number;
+    radiusMeters?: number;
+    bearing?: number;
   }
 
 export type DrawingMode = "point" | "polygon" | "line" | "azimuthal" | null

@@ -149,56 +149,50 @@ export const useProgressiveNodes = (networkLayersVisible: boolean) => {
       return;
     }
 
-    setLayers((currentLayers) => {
-      const otherLayers = currentLayers.filter(
-        (layer) =>
-          layer.type !== "nodes" &&
-          !layer.name?.includes("Connections") &&
-          !layer.name?.includes("Connection:") &&
-          !layer.name?.includes("Connection ")
-      );
+    const otherLayers = layers.filter(
+      (layer) =>
+        layer.type !== "nodes" &&
+        !layer.name?.includes("Connections") &&
+        !layer.name?.includes("Connection:") &&
+        !layer.name?.includes("Connection ")
+    );
 
-      const nodeFeatures: GeoJSON.Feature[] = validNodes.map((node, index) => ({
-        type: "Feature",
-        geometry: {
-          type: "Point",
-          coordinates: [node.longitude, node.latitude],
-        },
-        properties: {
-          ...node,
-          id: index,
-        },
-      }));
+    const nodeFeatures: GeoJSON.Feature[] = validNodes.map((node, index) => ({
+      type: "Feature",
+      geometry: {
+        type: "Point",
+        coordinates: [node.longitude, node.latitude],
+      },
+      properties: {
+        ...node,
+        id: index,
+      },
+    }));
 
-      const nodeGeojson: GeoJSON.FeatureCollection = {
-        type: "FeatureCollection",
-        features: nodeFeatures,
-      };
+    const nodeGeojson: GeoJSON.FeatureCollection = {
+      type: "FeatureCollection",
+      features: nodeFeatures,
+    };
 
-      const newLayers: LayerProps[] = [];
+    const newLayers: LayerProps[] = [];
 
-      const nodesLayer: LayerProps = {
-        type: "nodes",
-        id: generateLayerId(),
-        name:
-          layerName ||
-          `Nodes Layer ${
-            currentLayers.filter((l) => l.type === "nodes").length + 1
-          }`,
-        geojson: nodeGeojson,
-        nodes: validNodes,
-        color: [0, 150, 255],
-        pointRadius: 30000,
-        visible: true,
-      };
-      newLayers.push(nodesLayer);
+    const nodesLayer: LayerProps = {
+      type: "nodes",
+      id: generateLayerId(),
+      name:
+        layerName ||
+        `Nodes Layer ${layers.filter((l) => l.type === "nodes").length + 1}`,
+      geojson: nodeGeojson,
+      nodes: validNodes,
+      color: [0, 150, 255],
+      pointRadius: 30000,
+      visible: true,
+    };
 
-      addConnectionsToLayers(validNodes, newLayers, layerName);
+    newLayers.push(nodesLayer);
+    addConnectionsToLayers(validNodes, newLayers, layerName);
 
-      const finalLayers = [...otherLayers, ...newLayers];
-
-      return finalLayers;
-    });
+    setLayers([...otherLayers, ...newLayers]);
   }, []);
 
   const [currentRowIndex, setCurrentRowIndex] = useState(0);

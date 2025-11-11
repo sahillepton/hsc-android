@@ -2,9 +2,6 @@
 import MapComponent from "./components/map";
 import { SidebarProvider, SidebarTrigger } from "./components/ui/sidebar";
 import { AppSidebar } from "./components/app-sidebar";
-import { useSocket } from "./hooks/use-socket";
-import { useLayersContext } from "./layers-provider";
-import { useEffect } from "react";
 
 const App = () => {
   return (

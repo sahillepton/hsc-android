@@ -192,10 +192,13 @@ const Tooltip = () => {
         object.geometry.coordinates &&
         object.geometry.coordinates[0]
       ) {
-        const area = getPolygonArea(object.geometry.coordinates[0]);
+        const areaKm2 = parseFloat(
+          getPolygonArea(object.geometry.coordinates[0])
+        );
+        const areaMeters = areaKm2 * 1_000_000;
         geometryInfo = (
           <div className="text-orange-300 font-medium">
-            Area: {formatArea(parseFloat(area))}
+            Area: {formatArea(areaMeters)}
           </div>
         );
       }
@@ -287,7 +290,8 @@ const Tooltip = () => {
     }
 
     if (object.polygon) {
-      const area = getPolygonArea(object.polygon[0] || []);
+      const areaKm2 = parseFloat(getPolygonArea(object.polygon[0] || []));
+      const areaMeters = areaKm2 * 1_000_000;
 
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
@@ -298,7 +302,7 @@ const Tooltip = () => {
           )}
           <div className="font-semibold">Polygon</div>
           <div className="text-orange-300 font-medium">
-            Area: {formatArea(parseFloat(area))}
+            Area: {formatArea(areaMeters)}
           </div>
           <div>Vertices: {object.polygon[0]?.length || 0}</div>
         </div>

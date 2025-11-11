@@ -13,40 +13,6 @@ import FileSection from "./file-section";
 import ActionDialog from "./action-dialog";
 import { getStorageDirectory } from "@/lib/capacitor-utils";
 export function AppSidebar() {
-  // const {
-  //   layers,
-  //   handleLayerVisibility,
-  //   toggleDrawingMode,
-  //   drawingMode,
-  //   handleLayerName,
-  //   handleLayerColor,
-  //   focusLayer,
-  //   handleLayerLineWidth,
-  //   handleLayerRadius,
-  //   handleLayerPointRadius,
-  //   clearAllLayers,
-  //   downloadAllLayers,
-  //   deleteLayer,
-  //   createNodeLayer,
-  //   selectedNode,
-  //   isNodeDialogOpen,
-  //   handleVoiceCall,
-  //   handleVideoCall,
-  //   handleSendMessage,
-  //   handleFtp,
-  //   closeNodeDialog,
-  //   networkLayersVisible,
-  //   toggleNetworkLayersVisibility,
-  //   downloadLayersToDevice,
-  //   importLayersFromDevice,
-  //   uploadGeoJsonFile,
-  //   uploadDemFile,
-  //   handleFileImport,
-  //   getStorageDirectory,
-  //   setStorageDirectory,
-  //   getStorageDirectoryName,
-  //   getStorageDirectoryPath,
-  // } = useLayersContext();
   const [isDrawingToolsOpen, setIsDrawingToolsOpen] = useState(true);
   const [currentStorageDir, setCurrentStorageDir] = useState<Directory>(
     Directory.Documents
