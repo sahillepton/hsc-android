@@ -193,9 +193,77 @@ export function csvToGeoJSON(csvString: string, latField = "latitude", lonField 
 }
 
 export async function shpToGeoJSON(file: File) {
-  const arrayBuffer = await file.arrayBuffer();
-  const geojson = await shp(arrayBuffer);
-  return geojson;
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    
+    // Check if file is a ZIP by checking magic bytes
+    const uint8Array = new Uint8Array(arrayBuffer);
+    const isZip = uint8Array[0] === 0x50 && uint8Array[1] === 0x4B; // PK (ZIP signature)
+    
+    if (!isZip && file.name.toLowerCase().endsWith('.shp')) {
+      throw new Error(
+        'Shapefile must be uploaded as a ZIP archive containing .shp, .shx, and .dbf files. ' +
+        'Please compress all shapefile components into a ZIP file and upload that instead.'
+      );
+    }
+    
+    const geojson = await shp(arrayBuffer);
+    
+    // Ensure we return a FeatureCollection
+    // shpjs can return FeatureCollection, Feature[], or Feature
+    if (Array.isArray(geojson)) {
+      return {
+        type: 'FeatureCollection',
+        features: geojson.map((f: any) => ({
+          type: 'Feature',
+          geometry: f.geometry,
+          properties: f.properties || {},
+        })),
+      } as GeoJSON.FeatureCollection;
+    }
+    
+    if (typeof geojson === 'object' && geojson !== null && 'type' in geojson) {
+      const typedGeojson = geojson as any;
+      if (typedGeojson.type === 'FeatureCollection') {
+        return {
+          type: 'FeatureCollection',
+          features: (typedGeojson.features || []).map((f: any) => ({
+            type: 'Feature',
+            geometry: f.geometry,
+            properties: f.properties || {},
+          })),
+        } as GeoJSON.FeatureCollection;
+      } else if (typedGeojson.type === 'Feature') {
+        return {
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            geometry: typedGeojson.geometry,
+            properties: typedGeojson.properties || {},
+          }],
+        } as GeoJSON.FeatureCollection;
+      }
+    }
+    
+    // Fallback: try to convert whatever we got
+    return {
+      type: 'FeatureCollection',
+      features: [],
+    } as GeoJSON.FeatureCollection;
+  } catch (error) {
+    if (error instanceof Error) {
+      // Provide more helpful error messages
+      if (error.message.includes('unzip') || error.message.includes('but-unzip')) {
+        throw new Error(
+          'Failed to process shapefile. Please ensure the file is a valid ZIP archive containing ' +
+          'all required shapefile components (.shp, .shx, .dbf). If uploading a single .shp file, ' +
+          'please compress all related files into a ZIP archive first.'
+        );
+      }
+      throw error;
+    }
+    throw new Error('Failed to process shapefile. Please ensure it is a valid ZIP archive.');
+  }
 }
 
 // Parse GPX to GeoJSON
@@ -439,7 +507,19 @@ export async function fileToGeoJSON(file : File) {
   }
 
   if (ext === "shp" || ext === "zip") {
-    return await shpToGeoJSON(file);
+    // For shapefiles, try to process as shapefile first
+    // If it fails and it's a ZIP, it might contain other formats
+    try {
+      return await shpToGeoJSON(file);
+    } catch (error) {
+      // If shapefile processing fails and it's a ZIP, 
+      // it might be a ZIP containing other formats (like TIFF for DEM)
+      // Let the caller handle it
+      if (ext === "zip") {
+        throw error; // Re-throw to let handleFileImport check for TIFF
+      }
+      throw error;
+    }
   }
 
   if (ext === "geojson" || ext === "json") {

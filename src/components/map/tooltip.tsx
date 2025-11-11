@@ -3,6 +3,7 @@ import {
   formatDistance,
   getDistance,
   getPolygonArea,
+  rgbToHex,
 } from "@/lib/utils";
 import { useHoverInfo, useLayers } from "@/store/layers-store";
 
@@ -192,8 +193,9 @@ const Tooltip = () => {
         object.geometry.coordinates &&
         object.geometry.coordinates[0]
       ) {
+        // object.geometry.coordinates is already [number, number][][] (array of rings)
         const areaKm2 = parseFloat(
-          getPolygonArea(object.geometry.coordinates[0])
+          getPolygonArea(object.geometry.coordinates)
         );
         const areaMeters = areaKm2 * 1_000_000;
         geometryInfo = (
@@ -203,6 +205,10 @@ const Tooltip = () => {
         );
       }
 
+      const colorDisplay = layerInfo?.color
+        ? rgbToHex(layerInfo.color.slice(0, 3) as [number, number, number])
+        : null;
+
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm max-w-xs">
           {layerInfo && (
@@ -211,6 +217,28 @@ const Tooltip = () => {
             </div>
           )}
           <div className="font-semibold">{geometryType} Feature</div>
+          {colorDisplay && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-gray-300">Color:</span>
+              <div
+                className="w-4 h-4 rounded border border-gray-500"
+                style={{ backgroundColor: colorDisplay }}
+              />
+              <span className="font-mono text-xs">{colorDisplay}</span>
+            </div>
+          )}
+          {geometryType === "Point" && layerInfo?.pointRadius && (
+            <div className="mt-1">
+              <span className="text-gray-300">Radius: </span>
+              <span>{layerInfo.pointRadius.toLocaleString()}</span>
+            </div>
+          )}
+          {geometryType === "LineString" && layerInfo?.lineWidth && (
+            <div className="mt-1">
+              <span className="text-gray-300">Width: </span>
+              <span>{layerInfo.lineWidth}</span>
+            </div>
+          )}
           {properties.name && <div>Name: {properties.name}</div>}
           {geometryInfo}
           {geometryType === "Point" && object.geometry.coordinates && (
@@ -246,6 +274,9 @@ const Tooltip = () => {
         [object.sourcePosition[0], object.sourcePosition[1]],
         [object.targetPosition[0], object.targetPosition[1]]
       );
+      const colorDisplay = layerInfo?.color
+        ? rgbToHex(layerInfo.color.slice(0, 3) as [number, number, number])
+        : null;
 
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
@@ -255,6 +286,22 @@ const Tooltip = () => {
             </div>
           )}
           <div className="font-semibold">Line Segment</div>
+          {colorDisplay && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-gray-300">Color:</span>
+              <div
+                className="w-4 h-4 rounded border border-gray-500"
+                style={{ backgroundColor: colorDisplay }}
+              />
+              <span className="font-mono text-xs">{colorDisplay}</span>
+            </div>
+          )}
+          {(layerInfo?.lineWidth || object.width) && (
+            <div className="mt-1">
+              <span className="text-gray-300">Width: </span>
+              <span>{layerInfo?.lineWidth || object.width}</span>
+            </div>
+          )}
           <div className="text-yellow-300 font-medium">
             Distance: {formatDistance(parseFloat(distance))}
           </div>
@@ -266,12 +313,15 @@ const Tooltip = () => {
             To (lat, lng): [{object.targetPosition[1].toFixed(4)},{" "}
             {object.targetPosition[0].toFixed(4)}]
           </div>
-          {object.width && <div>Width: {object.width}</div>}
         </div>
       );
     }
 
     if (object.position) {
+      const colorDisplay = layerInfo?.color
+        ? rgbToHex(layerInfo.color.slice(0, 3) as [number, number, number])
+        : null;
+
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
           {layerInfo && (
@@ -280,18 +330,44 @@ const Tooltip = () => {
             </div>
           )}
           <div className="font-semibold">Point</div>
+          {colorDisplay && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-gray-300">Color:</span>
+              <div
+                className="w-4 h-4 rounded border border-gray-500"
+                style={{ backgroundColor: colorDisplay }}
+              />
+              <span className="font-mono text-xs">{colorDisplay}</span>
+            </div>
+          )}
+          {(layerInfo?.radius || object.radius) && (
+            <div className="mt-1">
+              <span className="text-gray-300">Radius: </span>
+              <span>
+                {(layerInfo?.radius || object.radius).toLocaleString()}
+              </span>
+            </div>
+          )}
           <div>
             Coordinates (lat, lng): [{object.position[1].toFixed(4)},{" "}
             {object.position[0].toFixed(4)}]
           </div>
-          {object.radius && <div>Radius: {object.radius.toLocaleString()}</div>}
         </div>
       );
     }
 
     if (object.polygon) {
-      const areaKm2 = parseFloat(getPolygonArea(object.polygon[0] || []));
+      // object.polygon from deck.gl PolygonLayer is a single ring [number, number][]
+      // getPolygonArea expects [number, number][][] (array of rings), so wrap it
+      const polygonRings = Array.isArray(object.polygon[0]) && 
+                          Array.isArray(object.polygon[0][0])
+        ? object.polygon  // Already array of rings [[[lng, lat], ...], ...]
+        : [object.polygon]; // Single ring [[lng, lat], ...], wrap it
+      const areaKm2 = parseFloat(getPolygonArea(polygonRings));
       const areaMeters = areaKm2 * 1_000_000;
+      const colorDisplay = layerInfo?.color
+        ? rgbToHex(layerInfo.color.slice(0, 3) as [number, number, number])
+        : null;
 
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
@@ -301,6 +377,16 @@ const Tooltip = () => {
             </div>
           )}
           <div className="font-semibold">Polygon</div>
+          {colorDisplay && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-gray-300">Color:</span>
+              <div
+                className="w-4 h-4 rounded border border-gray-500"
+                style={{ backgroundColor: colorDisplay }}
+              />
+              <span className="font-mono text-xs">{colorDisplay}</span>
+            </div>
+          )}
           <div className="text-orange-300 font-medium">
             Area: {formatArea(areaMeters)}
           </div>

@@ -51,8 +51,17 @@ function DeckGLOverlay({ layers }: { layers: any[] }) {
 
 const MapComponent = () => {
   const mapRef = useRef<any>(null);
+  const zoomUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     (window as any).mapRef = mapRef;
+
+    // Cleanup timeout on unmount
+    return () => {
+      if (zoomUpdateTimeoutRef.current) {
+        clearTimeout(zoomUpdateTimeoutRef.current);
+      }
+    };
   }, []);
 
   const { networkLayersVisible } = useNetworkLayersVisible();
@@ -546,6 +555,8 @@ const MapComponent = () => {
           targetPosition: layer.path![index + 1],
           color: layer.color ?? [96, 96, 96],
           width: layer.lineWidth ?? 5,
+          layerId: layer.id,
+          layer: layer,
         }))
       );
 
@@ -973,7 +984,13 @@ const MapComponent = () => {
         onMouseUp={handleMouseUp}
         onMove={(e: any) => {
           if (e && e.viewState && typeof e.viewState.zoom === "number") {
-            setMapZoom(e.viewState.zoom);
+            // Throttle zoom updates to reduce re-renders during zoom operations
+            if (zoomUpdateTimeoutRef.current) {
+              clearTimeout(zoomUpdateTimeoutRef.current);
+            }
+            zoomUpdateTimeoutRef.current = setTimeout(() => {
+              setMapZoom(e.viewState.zoom);
+            }, 100); // Update zoom at most every 100ms
           }
         }}
       >
