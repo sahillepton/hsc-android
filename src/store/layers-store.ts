@@ -60,9 +60,14 @@ const useLayerStore = create<LayerState>()((set, get) => ({
     deleteLayer: (layerId: string) => set((state) => ({ layers: state.layers.filter((layer) => layer.id !== layerId) })),
     updateLayer: (layerId: string, updatedLayer: LayerProps) =>
         set((state) => ({
-            layers: state.layers.map((layer) =>
-                layer.id === layerId ? updatedLayer : layer
-            ),
+            layers: state.layers.map((layer) => {
+                if (layer.id === layerId) {
+                    // Ensure color array is a new reference to avoid sharing
+                    const newColor = updatedLayer.color ? [...updatedLayer.color] as typeof updatedLayer.color : updatedLayer.color;
+                    return { ...updatedLayer, color: newColor };
+                }
+                return layer;
+            }),
         })),
     isDrawing: false,
     setIsDrawing: (isDrawing) => set({ isDrawing }),

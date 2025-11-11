@@ -40,6 +40,7 @@
     "mapbox-gl": "^3.14.0",
     "milsymbol": "^3.0.3",
     "papaparse": "^5.5.3",
+    "proj4": "^2.19.10",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-map-gl": "^8.0.4",

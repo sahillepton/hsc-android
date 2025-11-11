@@ -188,9 +188,13 @@ const LayersPanel = ({
                           onChange={(e) => {
                             const color = hexToRgb(e.target.value);
                             if (color) {
+                              // Create a new array to avoid reference sharing issues
+                              const newColor: [number, number, number] = [
+                                ...color,
+                              ];
                               updateLayer(layer.id, {
                                 ...layer,
-                                color: color,
+                                color: newColor,
                               });
                             }
                           }}

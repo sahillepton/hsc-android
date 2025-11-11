@@ -1,6 +1,9 @@
 import Map, { useControl, NavigationControl } from "react-map-gl/mapbox";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { PickingInfo } from "@deck.gl/core";
+import { fromUrl } from "geotiff";
+import proj4 from "proj4";
+import GeoTIFF from "geotiff";
 import {
   GeoJsonLayer,
   IconLayer,
@@ -540,7 +543,8 @@ const MapComponent = () => {
           data: pointLayers,
           getPosition: (d: LayerProps) => d.position!,
           getRadius: (d: LayerProps) => d.radius ?? 200,
-          getFillColor: (d: LayerProps) => d.color ?? [255, 0, 0],
+          getFillColor: (d: LayerProps) =>
+            d.color ? [...d.color] : [255, 0, 0], // Create a copy to avoid reference sharing
           pickable: true,
           radiusMinPixels: 4,
           onHover: handleLayerHover,
@@ -553,7 +557,7 @@ const MapComponent = () => {
         (layer.path ?? []).slice(0, -1).map((point, index) => ({
           sourcePosition: point,
           targetPosition: layer.path![index + 1],
-          color: layer.color ?? [96, 96, 96],
+          color: layer.color ? [...layer.color] : [96, 96, 96], // Create a copy of the color array
           width: layer.lineWidth ?? 5,
           layerId: layer.id,
           layer: layer,
@@ -581,7 +585,7 @@ const MapComponent = () => {
         (layer.path ?? []).slice(0, -1).map((point, index) => ({
           sourcePosition: point,
           targetPosition: layer.path![index + 1],
-          color: layer.color ?? [128, 128, 128],
+          color: layer.color ? [...layer.color] : [128, 128, 128], // Create a copy of the color array
           width: layer.lineWidth ?? 5,
         }))
       );
@@ -610,10 +614,12 @@ const MapComponent = () => {
           getPolygon: (d: LayerProps) => d.polygon?.[0] ?? [],
           getFillColor: (d: LayerProps) =>
             d.color && d.color.length === 4
-              ? d.color
+              ? [...d.color] // Create a copy to avoid reference sharing
               : [...(d.color ?? [32, 32, 32]), 100],
           getLineColor: (d: LayerProps) =>
-            (d.color ?? [32, 32, 32]).slice(0, 3) as [number, number, number],
+            d.color
+              ? ([...d.color.slice(0, 3)] as [number, number, number])
+              : [32, 32, 32], // Create a copy
           getLineWidth: 2,
           pickable: true,
           onHover: handleLayerHover,
@@ -944,7 +950,7 @@ const MapComponent = () => {
         minZoom={0}
         maxZoom={12}
         maxPitch={85}
-        onLoad={(map: any) => {
+        onLoad={async (map: any) => {
           if (!map.target.getSource("offline-tiles")) {
             map.target.addSource("offline-tiles", {
               type: "raster",
@@ -977,6 +983,7 @@ const MapComponent = () => {
               },
             });
           }
+
           map.target.setMaxBounds(null);
         }}
         onClick={handleMapClick}
