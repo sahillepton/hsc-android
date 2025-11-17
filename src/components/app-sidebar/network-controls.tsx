@@ -8,7 +8,6 @@ import {
   SidebarMenuButton,
 } from "../ui/sidebar";
 import { useNetworkLayersVisible } from "@/store/layers-store";
-import { Button } from "../ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "../ui/label";
 

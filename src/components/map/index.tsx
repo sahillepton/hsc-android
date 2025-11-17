@@ -17,7 +17,6 @@ import IconSelection from "./icon-selection";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
-import { useProgressiveNodes } from "@/hooks/use-progressive-nodes";
 import {
   useCurrentPath,
   useDragStart,
@@ -535,17 +534,28 @@ const MapComponent = () => {
     const deckLayers: any[] = [];
 
     if (pointLayers.length) {
+      // Create a unique key based on all radius values to force update
+      const radiusKey = pointLayers
+        .map((l) => `${l.id}:${l.radius ?? 200}`)
+        .join("|");
+
       deckLayers.push(
         new ScatterplotLayer({
           id: "point-layer",
           data: pointLayers,
           getPosition: (d: LayerProps) => d.position!,
-          getRadius: (d: LayerProps) => d.radius ?? 200,
+          getRadius: (d: LayerProps) => d.radius ?? 200, // Use radius for point layers
           getFillColor: (d: LayerProps) =>
             d.color ? [...d.color] : [255, 0, 0], // Create a copy to avoid reference sharing
           pickable: true,
           radiusMinPixels: 4,
           onHover: handleLayerHover,
+          updateTriggers: {
+            getRadius: [radiusKey], // Update when any radius changes
+            getFillColor: [
+              pointLayers.map((l) => l.color?.join(",")).join("|"),
+            ],
+          },
         })
       );
     }

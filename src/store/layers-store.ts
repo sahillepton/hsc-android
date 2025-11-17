@@ -64,7 +64,14 @@ const useLayerStore = create<LayerState>()((set, get) => ({
                 if (layer.id === layerId) {
                     // Ensure color array is a new reference to avoid sharing
                     const newColor = updatedLayer.color ? [...updatedLayer.color] as typeof updatedLayer.color : updatedLayer.color;
-                    return { ...updatedLayer, color: newColor };
+                    // Create a completely new layer object to ensure React/deck.gl detects the change
+                    return { 
+                        ...updatedLayer, 
+                        color: newColor,
+                        // Explicitly include radius to ensure it's updated
+                        radius: updatedLayer.radius,
+                        pointRadius: updatedLayer.pointRadius,
+                    };
                 }
                 return layer;
             }),

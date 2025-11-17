@@ -1,4 +1,4 @@
-import { GalleryVerticalEnd, Map } from "lucide-react";
+import { Map } from "lucide-react";
 import {
   SidebarHeader,
   SidebarMenu,

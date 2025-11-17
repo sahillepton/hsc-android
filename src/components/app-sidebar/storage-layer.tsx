@@ -1,8 +1,4 @@
-import {
-  getStorageDirectoryName,
-  getStorageDirectoryPath,
-  setStorageDirectory,
-} from "@/lib/capacitor-utils";
+import { setStorageDirectory } from "@/lib/capacitor-utils";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -10,7 +6,7 @@ import {
 } from "../ui/sidebar";
 import { Directory } from "@capacitor/filesystem";
 import { Label } from "../ui/label";
-import { Card, CardContent } from "../ui/card";
+
 import {
   Select,
   SelectContent,

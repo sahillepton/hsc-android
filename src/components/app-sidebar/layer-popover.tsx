@@ -119,17 +119,33 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                 min={100}
                 max={100000}
                 step={1000}
-                value={layer.pointRadius || 50000}
-                onChange={(e) =>
-                  updateLayer(layer.id, {
-                    ...layer,
-                    pointRadius: parseInt(e.target.value),
-                  })
+                value={
+                  layer.type === "point"
+                    ? layer.radius || 200
+                    : layer.pointRadius || 50000
                 }
+                onChange={(e) => {
+                  const value = parseInt(e.target.value);
+                  if (layer.type === "point") {
+                    updateLayer(layer.id, {
+                      ...layer,
+                      radius: value,
+                    });
+                  } else {
+                    updateLayer(layer.id, {
+                      ...layer,
+                      pointRadius: value,
+                    });
+                  }
+                }}
               />
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span>100</span>
-                <span>{layer.pointRadius || 50000}</span>
+                <span>
+                  {layer.type === "point"
+                    ? layer.radius || 200
+                    : layer.pointRadius || 50000}
+                </span>
                 <span>100k</span>
               </div>
             </div>
