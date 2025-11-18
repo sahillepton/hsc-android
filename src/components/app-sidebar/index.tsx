@@ -14,12 +14,12 @@ import ActionDialog from "./action-dialog";
 import { getStorageDirectory } from "@/lib/capacitor-utils";
 import SidebarDrawHeader from "./sidebar-header";
 export function AppSidebar() {
-  const [isDrawingToolsOpen, setIsDrawingToolsOpen] = useState(true);
+  const [isDrawingToolsOpen, setIsDrawingToolsOpen] = useState(false);
   const [currentStorageDir, setCurrentStorageDir] = useState<Directory>(
     Directory.Documents
   );
-  const [isLayersOpen, setIsLayersOpen] = useState(true);
-  const [isNetworkControlsOpen, setIsNetworkControlsOpen] = useState(true);
+  const [isLayersOpen, setIsLayersOpen] = useState(false);
+  const [isNetworkControlsOpen, setIsNetworkControlsOpen] = useState(false);
 
   // Load current storage directory on mount
   useEffect(() => {
@@ -32,7 +32,7 @@ export function AppSidebar() {
     <div className="flex">
       <Sidebar variant="floating" collapsible={"offcanvas"}>
         <SidebarDrawHeader />
-        <SidebarContent className="px-4 py-3 space-y-4">
+        <SidebarContent className="px-2 py-0 space-y-0 gap-0">
           <ToolsGroup
             setIsDrawingToolsOpen={setIsDrawingToolsOpen}
             isDrawingToolsOpen={isDrawingToolsOpen}
@@ -52,7 +52,7 @@ export function AppSidebar() {
           />
           <FileSection />
         </SidebarContent>
-        <SidebarFooter className="px-4 py-4" />
+        <SidebarFooter className="p-2" />
       </Sidebar>
 
       {/* Node Action Dialog */}

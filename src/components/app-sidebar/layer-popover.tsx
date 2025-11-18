@@ -41,13 +41,14 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent className="w-72 p-3 space-y-4" align="end">
         {/* Name Field */}
-        <div>
+        <div className="mb-2">
           <label className="text-xs font-medium text-muted-foreground">
             Layer Name
           </label>
           <Input
             defaultValue={layer.name}
             className="mt-1 h-8 text-sm"
+            tabIndex={-1}
             onBlur={(e) => {
               const newName = e.target.value.trim();
               if (newName && newName !== layer.name) {
@@ -58,16 +59,15 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
           />
         </div>
 
-        <Separator />
-
         {/* Color */}
-        <div>
+        <div className="mb-2">
           <label className="text-xs font-medium text-muted-foreground">
             Color
           </label>
           <Input
             type="color"
             value={rgbToHex(layer.color)}
+            tabIndex={-1}
             className="mt-1 h-10 w-full rounded-lg cursor-pointer"
             onChange={(e) => {
               const color = hexToRgb(e.target.value);
@@ -79,8 +79,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
         {/* Line Width */}
         {isLine && (
           <>
-            <Separator />
-            <div>
+            <div className="mb-2">
               <label className="text-xs font-medium text-muted-foreground">
                 Line Width
               </label>
@@ -89,6 +88,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                 min={1}
                 max={20}
                 step={1}
+                tabIndex={-1}
                 value={layer.lineWidth ?? 5}
                 onChange={(e) =>
                   updateLayer(layer.id, {
@@ -109,7 +109,6 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
         {/* Point Radius */}
         {isPoint && (
           <>
-            <Separator />
             <div>
               <label className="text-xs font-medium text-muted-foreground">
                 Point Radius

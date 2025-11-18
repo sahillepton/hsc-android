@@ -25,10 +25,10 @@ const NetworkControls = ({
     <SidebarGroup>
       {/* Group Label */}
       <SidebarGroupLabel
-        className="flex items-center justify-between cursor-pointer select-none font-semibold px-3 py-2.5 rounded-lg hover:bg-accent transition-colors"
+        className="flex items-center justify-between p-0 cursor-pointer select-none font-semibold px-2 py-2.5 rounded-lg hover:bg-accent transition-colors"
         onClick={() => setIsNetworkControlsOpen(!isNetworkControlsOpen)}
       >
-        <span>Network Controls</span>
+        <span className="text-sm">Network Controls</span>
         {isNetworkControlsOpen ? (
           <ChevronDown size={16} className="text-muted-foreground" />
         ) : (
@@ -42,7 +42,7 @@ const NetworkControls = ({
           isNetworkControlsOpen ? "block" : "hidden"
         } transition-all`}
       >
-        <SidebarMenu className="space-y-2 mt-2">
+        <SidebarMenu className="space-y-2 mt-2 px-3">
           <SidebarMenuItem>
             <SidebarMenuButton asChild>
               <div className="flex items-center space-x-2">

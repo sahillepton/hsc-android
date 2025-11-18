@@ -6,6 +6,7 @@ import {
   Hexagon,
   Compass,
   XCircle,
+  LogOut,
 } from "lucide-react";
 import {
   SidebarGroup,
@@ -29,10 +30,10 @@ const ToolsGroup = ({
   const { azimuthalAngle, setAzimuthalAngle } = useAzimuthalAngle();
 
   const tools = [
-    { key: "point", label: "Point", icon: <Circle size={16} /> },
-    { key: "line", label: "Line", icon: <LineChart size={16} /> },
-    { key: "polygon", label: "Polygon", icon: <Hexagon size={16} /> },
-    { key: "azimuthal", label: "Azimuthal", icon: <Compass size={16} /> },
+    { key: "point", label: "Point", icon: <Circle size={8} /> },
+    { key: "line", label: "Line", icon: <LineChart size={8} /> },
+    { key: "polygon", label: "Polygon", icon: <Hexagon size={8} /> },
+    { key: "azimuthal", label: "Azimuthal", icon: <Compass size={8} /> },
   ];
 
   return (
@@ -42,7 +43,7 @@ const ToolsGroup = ({
         className="flex items-center justify-between cursor-pointer select-none"
         onClick={() => setIsDrawingToolsOpen(!isDrawingToolsOpen)}
       >
-        <span>Drawing Tools</span>
+        <span className="text-sm">Drawing Tools</span>
         {isDrawingToolsOpen ? (
           <ChevronDown size={16} className="text-muted-foreground" />
         ) : (
@@ -74,7 +75,7 @@ const ToolsGroup = ({
 
           {/* Azimuthal Controls */}
           {drawingMode === "azimuthal" && (
-            <div className="px-3 pb-3 mt-3 space-y-2 border-t border-border pt-3">
+            <div className="px-3 pb-3 space-y-2 pt-3">
               <label className="text-xs font-medium text-muted-foreground block">
                 Sector Angle (degrees)
               </label>
@@ -113,9 +114,9 @@ const ToolsGroup = ({
             <SidebarMenuItem key="exit-drawing">
               <SidebarMenuButton
                 onClick={() => setDrawingMode(null)}
-                className="h-10 px-3 rounded-lg font-medium flex items-center gap-2 bg-red-100 text-red-700 hover:bg-red-200 border border-red-300 mt-2"
+                className="text-red-600 hover:text-red-700 font-medium hover:bg-transparent cursor-pointer"
               >
-                <XCircle size={16} />
+                <LogOut size={16} />
                 <span>Exit Drawing Mode</span>
               </SidebarMenuButton>
             </SidebarMenuItem>

@@ -1,3 +1,4 @@
+import { CameraIcon } from "lucide-react";
 import { useState } from "react";
 
 const TiltControl = ({
@@ -14,43 +15,23 @@ const TiltControl = ({
   const [isOfflineMode, setIsOfflineMode] = useState(true);
 
   return (
-    <div className="absolute top-4 right-4 z-50 bg-white rounded-lg shadow-lg p-3">
-      <div className="text-xs font-medium text-gray-700 mb-3">
-        Camera Controls
+    <div
+      className="absolute top-4 left-2 z-50 bg-white rounded-lg shadow-lg p-5"
+      style={{ width: "25rem" }}
+    >
+      <div className="font-medium text-gray-700 mb-2 flex flex-row items-center justify-start text-base gap-2">
+        <CameraIcon className="size-5 mr-1" /> Camera Controls
       </div>
 
       {/* Reset to North Button */}
-      <div className="mb-4">
-        <button
-          onClick={() => {
-            if (mapRef.current) {
-              mapRef.current.getMap().easeTo({ bearing: 0, duration: 500 });
-            }
-          }}
-          className="w-full px-3 py-2 text-xs rounded transition-colors bg-indigo-500 text-white hover:bg-indigo-600 flex items-center justify-center gap-2"
-          title="Reset map rotation to north"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 2v20M2 12h20" />
-            <path d="M12 2l3 3-3 3M12 2L9 5l3 3" />
-          </svg>
-          Reset to North
-        </button>
-      </div>
+      <div className="mb-4"></div>
 
       {/* Tilt Angle Controls */}
       <div className="mb-4">
-        <div className="text-xs text-gray-600 mb-2">Tilt Angle</div>
-        <div className="flex flex-col space-y-1">
+        <div className="text-sm font-medium mb-2 text-sidebar-foreground/70">
+          Tilt Angle
+        </div>
+        <div className="space-y-1 flex flex-row w-full justify-between">
           {angles.map((angle) => (
             <button
               key={angle}
@@ -60,21 +41,20 @@ const TiltControl = ({
                   mapRef.current.getMap().easeTo({ pitch: angle });
                 }
               }}
-              className={`px-3 py-1 text-xs rounded transition-colors ${
+              className={`px-3 py-1 flex-1 text-xs rounded transition-colors h-6 ${
                 pitch === angle
                   ? "bg-blue-500 text-white"
                   : "bg-gray-100 text-gray-700 hover:bg-gray-200"
               }`}
             >
-              {angle}°{angle === 85 && <span className="ml-1">🏔️</span>}
+              {angle}°
             </button>
           ))}
         </div>
       </div>
 
       {/* Offline Mode Toggle */}
-      <div className="border-t pt-3">
-        <div className="text-xs text-gray-600 mb-2">Map Mode</div>
+      <div className="pt-1 flex flex-row gap-2">
         <button
           onClick={() => {
             setIsOfflineMode(!isOfflineMode);
@@ -113,54 +93,79 @@ const TiltControl = ({
         >
           📱 {isOfflineMode ? "Offline Mode" : "Online Mode"}
         </button>
+        <button
+          onClick={() => {
+            if (mapRef.current) {
+              mapRef.current.getMap().easeTo({ bearing: 0, duration: 500 });
+            }
+          }}
+          className="w-full px-3 py-2 text-xs rounded transition-colors bg-indigo-500 text-white hover:bg-indigo-600 flex items-center justify-center gap-2"
+          title="Reset map rotation to north"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 2v20M2 12h20" />
+            <path d="M12 2l3 3-3 3M12 2L9 5l3 3" />
+          </svg>
+          Reset to North
+        </button>
       </div>
 
       {/* 3D Terrain Mode */}
       <div className="border-t pt-3">
-        <div className="text-xs text-gray-600 mb-2">3D Terrain Mode</div>
-        <button
-          onClick={() => {
-            setIs3DTerrainMode(!is3DTerrainMode);
-            if (mapRef.current) {
-              const map = mapRef.current.getMap();
-              if (!is3DTerrainMode) {
-                // Enable enhanced 3D terrain
-                map.setTerrain({
-                  source: "mapbox-dem",
-                  exaggeration: 5.0,
-                });
-                map.easeTo({
-                  pitch: 60,
-                  zoom: Math.max(map.getZoom(), 10),
-                  duration: 1000,
-                });
-                setPitch(60);
-              } else {
-                // Return to normal terrain
-                map.setTerrain({
-                  source: "mapbox-dem",
-                  exaggeration: 4.0,
-                });
-                map.easeTo({
-                  pitch: 0,
-                  duration: 1000,
-                });
-                setPitch(0);
+        <div className="text-sm text-sidebar-foreground/70 font-medium mb-2">
+          3D Terrain Mode
+        </div>
+        <div className="space-x-1 flex flex-row w-full justify-between">
+          <button
+            onClick={() => {
+              setIs3DTerrainMode(!is3DTerrainMode);
+              if (mapRef.current) {
+                const map = mapRef.current.getMap();
+                if (!is3DTerrainMode) {
+                  // Enable enhanced 3D terrain
+                  map.setTerrain({
+                    source: "mapbox-dem",
+                    exaggeration: 5.0,
+                  });
+                  map.easeTo({
+                    pitch: 60,
+                    zoom: Math.max(map.getZoom(), 10),
+                    duration: 1000,
+                  });
+                  setPitch(60);
+                } else {
+                  // Return to normal terrain
+                  map.setTerrain({
+                    source: "mapbox-dem",
+                    exaggeration: 4.0,
+                  });
+                  map.easeTo({
+                    pitch: 0,
+                    duration: 1000,
+                  });
+                  setPitch(0);
+                }
               }
-            }
-          }}
-          className={`w-full px-3 py-1 text-xs rounded transition-colors ${
-            is3DTerrainMode
-              ? "bg-emerald-500 text-white hover:bg-emerald-600"
-              : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-          }`}
-        >
-          🌍 {is3DTerrainMode ? "Disable 3D" : "Enable 3D"}
-        </button>
+            }}
+            className={`w-full px-3 py-1 text-xs rounded transition-colors h-8 ${
+              is3DTerrainMode
+                ? "bg-emerald-500 text-white hover:bg-emerald-600"
+                : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+            }`}
+          >
+            🌍 {is3DTerrainMode ? "Disable 3D" : "Enable 3D"}
+          </button>
 
-        {/* 3D Terrain Controls - Only show when 3D mode is active */}
-        {is3DTerrainMode && (
-          <div className="space-y-1 mt-2">
+          {is3DTerrainMode && (
             <button
               onClick={() => {
                 if (mapRef.current) {
@@ -176,6 +181,9 @@ const TiltControl = ({
             >
               🏔️ Extreme View
             </button>
+          )}
+
+          {is3DTerrainMode && (
             <button
               onClick={() => {
                 if (mapRef.current) {
@@ -189,8 +197,8 @@ const TiltControl = ({
             >
               ⛰️ Boost Height
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

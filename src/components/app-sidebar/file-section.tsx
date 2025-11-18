@@ -16,6 +16,7 @@ import { useLayers, useNodeIconMappings } from "@/store/layers-store";
 import { generateLayerId } from "@/lib/layers";
 import { fileToDEMRaster, fileToGeoJSON } from "@/lib/utils";
 import { Encoding, Filesystem } from "@capacitor/filesystem";
+import { FileDown } from "lucide-react";
 
 const FileSection = () => {
   const { layers, setLayers } = useLayers();
@@ -549,18 +550,18 @@ const FileSection = () => {
 
   return (
     <SidebarGroup className="space-y-3">
-      <SidebarGroupLabel className="px-3 py-2 text-sm font-semibold">
+      {/* <SidebarGroupLabel className="px-3 py-2 text-sm font-semibold">
         Import / Export Layers
-      </SidebarGroupLabel>
+      </SidebarGroupLabel> */}
       <SidebarGroupContent className="space-y-4">
-        <div className="space-y-2">
-          <label className="text-xs text-muted-foreground block px-3">
+        <div className="space-y-1 px-2">
+          <label className="text-sm text-sidebar-foreground/70 block font-medium">
             Import Files
           </label>
           <Input
             type="file"
             accept="*/*"
-            className="w-full mx-3"
+            className="w-full"
             onChange={async (e) => {
               const file = e.target.files?.[0];
               if (file) {
@@ -575,28 +576,30 @@ const FileSection = () => {
               }
             }}
           />
-          <p className="text-xs text-muted-foreground px-3">
+          <p className="text-xs text-muted-foreground px-0">
             Import vector files, raster/DEM, or layer exports (JSON)
           </p>
         </div>
 
-        <Button
-          onClick={async () => {
-            try {
-              await downloadAllLayers();
-            } catch (error) {
-              console.error("Failed to download layers:", error);
-            }
-          }}
-          disabled={layers.length === 0}
-          className="w-full h-10 font-medium mx-3"
-          variant="outline"
-        >
-          📥 Export All Layers
-        </Button>
-        <p className="text-xs text-muted-foreground px-3">
-          Export all layers as JSON with complete layer information
-        </p>
+        <div className="px-2 space-y-1">
+          <Button
+            onClick={async () => {
+              try {
+                await downloadAllLayers();
+              } catch (error) {
+                console.error("Failed to download layers:", error);
+              }
+            }}
+            disabled={layers.length === 0}
+            className="w-full h-10 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium shadow-sm hover:shadow-md transition-all duration-200 border-0 rounded-md flex items-center gap-1.5"
+            variant="outline"
+          >
+            <FileDown className="w-4 h-4" /> Export All Layers
+          </Button>
+          <p className="text-xs text-muted-foreground px-0">
+            Export all layers as JSON with complete layer information
+          </p>
+        </div>
       </SidebarGroupContent>
     </SidebarGroup>
   );

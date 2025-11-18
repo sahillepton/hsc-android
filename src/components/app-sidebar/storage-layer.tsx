@@ -33,9 +33,9 @@ const StorageLayer = ({
 
   return (
     <SidebarGroup className="space-y-3">
-      <SidebarGroupLabel className="px-3 py-2 text-sm font-semibold">
+      {/* <SidebarGroupLabel className="px-2 py-2 text-sm font-semibold">
         Storage Location
-      </SidebarGroupLabel>
+      </SidebarGroupLabel> */}
 
       <SidebarGroupContent className="space-y-4">
         {/* <div className="space-y-2">
@@ -54,8 +54,8 @@ const StorageLayer = ({
             <strong>{getStorageDirectoryName(currentStorageDir)}</strong>
           </p>
         </div> */}
-        <div className="space-y-2">
-          <Label className="text-xs text-muted-foreground">
+        <div className="space-y-1 px-2">
+          <Label className="text-sm text-sidebar-foreground/70">
             Change Storage Location
           </Label>
           <Select
