@@ -8,8 +8,8 @@ import {
   PolygonLayer,
   ScatterplotLayer,
   TextLayer,
+  BitmapLayer,
 } from "@deck.gl/layers";
-import { TerrainLayer } from "@deck.gl/geo-layers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import TiltControl from "./tilt-control";
@@ -670,35 +670,32 @@ const MapComponent = () => {
     });
 
     demLayers.forEach((layer) => {
-      if (!layer.bounds || !layer.elevationData) return;
+      if (!layer.bounds) return;
       const [minLng, minLat] = layer.bounds[0];
       const [maxLng, maxLat] = layer.bounds[1];
-      const elevationData: any = {
-        data: layer.elevationData.data,
-        width: layer.elevationData.width,
-        height: layer.elevationData.height,
-      };
-      const texture: any = layer.texture ?? layer.bitmap ?? undefined;
+
+      // Get the image source (canvas, bitmap, or texture)
+      const image: any = layer.bitmap ?? layer.texture ?? undefined;
+
+      if (!image) {
+        console.warn("DEM layer missing image source:", {
+          id: layer.id,
+          name: layer.name,
+          hasBitmap: !!layer.bitmap,
+          hasTexture: !!layer.texture,
+        });
+        return;
+      }
+
+      // BitmapLayer expects bounds as [left, bottom, right, top]
+      // Our bounds format is [[minLng, minLat], [maxLng, maxLat]]
       deckLayers.push(
-        new TerrainLayer({
-          id: `${layer.id}-terrain`,
+        new BitmapLayer({
+          id: `${layer.id}-bitmap`,
+          image: image,
           bounds: [minLng, minLat, maxLng, maxLat],
-          elevationData,
-          elevationRange: [
-            layer.elevationData.min ?? 0,
-            layer.elevationData.max ?? 1,
-          ],
-          texture,
-          meshMaxError: 2,
-          wireframe: false,
-          pickable: false,
+          pickable: true,
           visible: layer.visible !== false,
-          material: {
-            ambient: 0.4,
-            diffuse: 0.6,
-            shininess: 32,
-            specularColor: [255, 255, 255],
-          },
         })
       );
     });

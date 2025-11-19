@@ -1,16 +1,19 @@
-import { clsx, type ClassValue } from "clsx"
-import { twMerge } from "tailwind-merge"
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
 import * as turf from "@turf/turf";
 import Papa from "papaparse";
 import shp from "shpjs";
 // geotiff is optional; we will dynamic import when needed
 
-
 export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs))
+  return twMerge(clsx(inputs));
 }
 
-export const base64ToFile = (base64Data: string, fileName: string, mimeType: string): File => {
+export const base64ToFile = (
+  base64Data: string,
+  fileName: string,
+  mimeType: string
+): File => {
   const byteString = atob(base64Data);
   const ab = new ArrayBuffer(byteString.length);
   const ia = new Uint8Array(ab);
@@ -20,7 +23,6 @@ export const base64ToFile = (base64Data: string, fileName: string, mimeType: str
   const blob = new Blob([ab], { type: mimeType });
   return new File([blob], fileName, { type: mimeType });
 };
-
 
 export const collectCoordinates = (coordinates: any): [number, number][] => {
   if (!coordinates) return [];
@@ -40,7 +42,9 @@ export const collectCoordinates = (coordinates: any): [number, number][] => {
   return [];
 };
 
-export const extractGeometryCoordinates = (geometry: GeoJSON.Geometry): [number, number][] => {
+export const extractGeometryCoordinates = (
+  geometry: GeoJSON.Geometry
+): [number, number][] => {
   if (!geometry) return [];
 
   switch (geometry.type) {
@@ -55,14 +59,17 @@ export const extractGeometryCoordinates = (geometry: GeoJSON.Geometry): [number,
     case "MultiPolygon":
       return collectCoordinates(geometry.coordinates);
     case "GeometryCollection":
-      return geometry.geometries.flatMap((child) => extractGeometryCoordinates(child));
+      return geometry.geometries.flatMap((child) =>
+        extractGeometryCoordinates(child)
+      );
     default:
       return [];
   }
 };
 
-
-export function rgbToHex(rgb: [number, number, number] | [number, number, number, number]): string {
+export function rgbToHex(
+  rgb: [number, number, number] | [number, number, number, number]
+): string {
   const [r, g, b, a] = rgb;
 
   const toHex = (n: number) => {
@@ -84,7 +91,10 @@ export function hexToRgb(hex: string): [number, number, number] | null {
   hex = hex.replace(/^#/, "");
 
   if (hex.length === 3) {
-    hex = hex.split("").map((c) => c + c).join("");
+    hex = hex
+      .split("")
+      .map((c) => c + c)
+      .join("");
   }
 
   if (hex.length !== 6) return null;
@@ -95,7 +105,6 @@ export function hexToRgb(hex: string): [number, number, number] | null {
 
   return [r, g, b];
 }
-
 
 export function formatDistance(meters: number): string {
   if (meters < 1000) {
@@ -159,32 +168,39 @@ export function getPolygonArea(polygon: [number, number][][]) {
   return areaKm2.toFixed(2);
 }
 
-
-export function getDistance (point1: [number, number], point2: [number, number]) {
+export function getDistance(
+  point1: [number, number],
+  point2: [number, number]
+) {
   const from = turf.point([point1[0], point1[1]]);
   const to = turf.point([point2[0], point2[1]]);
-  return turf.distance(from, to, {units : 'kilometers'}).toFixed(2);
+  return turf.distance(from, to, { units: "kilometers" }).toFixed(2);
 }
 
-
-export function csvToGeoJSON(csvString: string, latField = "latitude", lonField = "longitude") {
+export function csvToGeoJSON(
+  csvString: string,
+  latField = "latitude",
+  lonField = "longitude"
+) {
   const result = Papa.parse(csvString, { header: true, skipEmptyLines: true });
 
-  const features = result.data.map((row: any) => {
-    const lat = parseFloat(row[latField]);
-    const lon = parseFloat(row[lonField]);
+  const features = result.data
+    .map((row: any) => {
+      const lat = parseFloat(row[latField]);
+      const lon = parseFloat(row[lonField]);
 
-    if (isNaN(lat) || isNaN(lon)) return null;
+      if (isNaN(lat) || isNaN(lon)) return null;
 
-    return {
-      type: "Feature",
-      geometry: {
-        type: "Point",
-        coordinates: [lon, lat],
-      },
-      properties: { ...row },
-    };
-  }).filter(f => f !== null);
+      return {
+        type: "Feature",
+        geometry: {
+          type: "Point",
+          coordinates: [lon, lat],
+        },
+        properties: { ...row },
+      };
+    })
+    .filter((f) => f !== null);
 
   return {
     type: "FeatureCollection",
@@ -195,74 +211,81 @@ export function csvToGeoJSON(csvString: string, latField = "latitude", lonField 
 export async function shpToGeoJSON(file: File) {
   try {
     const arrayBuffer = await file.arrayBuffer();
-    
+
     // Check if file is a ZIP by checking magic bytes
     const uint8Array = new Uint8Array(arrayBuffer);
-    const isZip = uint8Array[0] === 0x50 && uint8Array[1] === 0x4B; // PK (ZIP signature)
-    
-    if (!isZip && file.name.toLowerCase().endsWith('.shp')) {
+    const isZip = uint8Array[0] === 0x50 && uint8Array[1] === 0x4b; // PK (ZIP signature)
+
+    if (!isZip && file.name.toLowerCase().endsWith(".shp")) {
       throw new Error(
-        'Shapefile must be uploaded as a ZIP archive containing .shp, .shx, and .dbf files. ' +
-        'Please compress all shapefile components into a ZIP file and upload that instead.'
+        "Shapefile must be uploaded as a ZIP archive containing .shp, .shx, and .dbf files. " +
+          "Please compress all shapefile components into a ZIP file and upload that instead."
       );
     }
-    
+
     const geojson = await shp(arrayBuffer);
-    
+
     // Ensure we return a FeatureCollection
     // shpjs can return FeatureCollection, Feature[], or Feature
     if (Array.isArray(geojson)) {
       return {
-        type: 'FeatureCollection',
+        type: "FeatureCollection",
         features: geojson.map((f: any) => ({
-          type: 'Feature',
+          type: "Feature",
           geometry: f.geometry,
           properties: f.properties || {},
         })),
       } as GeoJSON.FeatureCollection;
     }
-    
-    if (typeof geojson === 'object' && geojson !== null && 'type' in geojson) {
+
+    if (typeof geojson === "object" && geojson !== null && "type" in geojson) {
       const typedGeojson = geojson as any;
-      if (typedGeojson.type === 'FeatureCollection') {
+      if (typedGeojson.type === "FeatureCollection") {
         return {
-          type: 'FeatureCollection',
+          type: "FeatureCollection",
           features: (typedGeojson.features || []).map((f: any) => ({
-            type: 'Feature',
+            type: "Feature",
             geometry: f.geometry,
             properties: f.properties || {},
           })),
         } as GeoJSON.FeatureCollection;
-      } else if (typedGeojson.type === 'Feature') {
+      } else if (typedGeojson.type === "Feature") {
         return {
-          type: 'FeatureCollection',
-          features: [{
-            type: 'Feature',
-            geometry: typedGeojson.geometry,
-            properties: typedGeojson.properties || {},
-          }],
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: typedGeojson.geometry,
+              properties: typedGeojson.properties || {},
+            },
+          ],
         } as GeoJSON.FeatureCollection;
       }
     }
-    
+
     // Fallback: try to convert whatever we got
     return {
-      type: 'FeatureCollection',
+      type: "FeatureCollection",
       features: [],
     } as GeoJSON.FeatureCollection;
   } catch (error) {
     if (error instanceof Error) {
       // Provide more helpful error messages
-      if (error.message.includes('unzip') || error.message.includes('but-unzip')) {
+      if (
+        error.message.includes("unzip") ||
+        error.message.includes("but-unzip")
+      ) {
         throw new Error(
-          'Failed to process shapefile. Please ensure the file is a valid ZIP archive containing ' +
-          'all required shapefile components (.shp, .shx, .dbf). If uploading a single .shp file, ' +
-          'please compress all related files into a ZIP archive first.'
+          "Failed to process shapefile. Please ensure the file is a valid ZIP archive containing " +
+            "all required shapefile components (.shp, .shx, .dbf). If uploading a single .shp file, " +
+            "please compress all related files into a ZIP archive first."
         );
       }
       throw error;
     }
-    throw new Error('Failed to process shapefile. Please ensure it is a valid ZIP archive.');
+    throw new Error(
+      "Failed to process shapefile. Please ensure it is a valid ZIP archive."
+    );
   }
 }
 
@@ -301,7 +324,7 @@ export function gpxToGeoJSON(gpxText: string): GeoJSON.FeatureCollection {
     const trk = tracks[i];
     const name = trk.getElementsByTagName("name")[0]?.textContent || "";
     const segments = trk.getElementsByTagName("trkseg");
-    
+
     for (let j = 0; j < segments.length; j++) {
       const seg = segments[j];
       const points = seg.getElementsByTagName("trkpt");
@@ -367,7 +390,9 @@ export function gpxToGeoJSON(gpxText: string): GeoJSON.FeatureCollection {
 }
 
 // Parse KML to GeoJSON
-export async function kmlToGeoJSON(kmlText: string): Promise<GeoJSON.FeatureCollection> {
+export async function kmlToGeoJSON(
+  kmlText: string
+): Promise<GeoJSON.FeatureCollection> {
   const parser = new DOMParser();
   const kmlDoc = parser.parseFromString(kmlText, "text/xml");
   const features: GeoJSON.Feature[] = [];
@@ -391,12 +416,14 @@ export async function kmlToGeoJSON(kmlText: string): Promise<GeoJSON.FeatureColl
   for (let i = 0; i < placemarks.length; i++) {
     const pm = placemarks[i];
     const name = pm.getElementsByTagName("name")[0]?.textContent || "";
-    const description = pm.getElementsByTagName("description")[0]?.textContent || "";
+    const description =
+      pm.getElementsByTagName("description")[0]?.textContent || "";
 
     // Point
     const point = pm.getElementsByTagName("Point")[0];
     if (point) {
-      const coord = point.getElementsByTagName("coordinates")[0]?.textContent || "";
+      const coord =
+        point.getElementsByTagName("coordinates")[0]?.textContent || "";
       const coords = parseCoordinates(coord);
       if (coords.length > 0) {
         features.push({
@@ -417,7 +444,8 @@ export async function kmlToGeoJSON(kmlText: string): Promise<GeoJSON.FeatureColl
     // LineString
     const lineString = pm.getElementsByTagName("LineString")[0];
     if (lineString) {
-      const coord = lineString.getElementsByTagName("coordinates")[0]?.textContent || "";
+      const coord =
+        lineString.getElementsByTagName("coordinates")[0]?.textContent || "";
       const coords = parseCoordinates(coord);
       if (coords.length > 1) {
         features.push({
@@ -442,12 +470,16 @@ export async function kmlToGeoJSON(kmlText: string): Promise<GeoJSON.FeatureColl
       if (outerBoundary) {
         const linearRing = outerBoundary.getElementsByTagName("LinearRing")[0];
         if (linearRing) {
-          const coord = linearRing.getElementsByTagName("coordinates")[0]?.textContent || "";
+          const coord =
+            linearRing.getElementsByTagName("coordinates")[0]?.textContent ||
+            "";
           const coords = parseCoordinates(coord);
           if (coords.length > 2) {
             // Close the polygon
-            if (coords[0][0] !== coords[coords.length - 1][0] || 
-                coords[0][1] !== coords[coords.length - 1][1]) {
+            if (
+              coords[0][0] !== coords[coords.length - 1][0] ||
+              coords[0][1] !== coords[coords.length - 1][1]
+            ) {
               coords.push(coords[0]);
             }
             features.push({
@@ -475,7 +507,9 @@ export async function kmlToGeoJSON(kmlText: string): Promise<GeoJSON.FeatureColl
 }
 
 // Extract KMZ (ZIP containing KML)
-export  async function kmzToGeoJSON(file: File): Promise<GeoJSON.FeatureCollection> {
+export async function kmzToGeoJSON(
+  file: File
+): Promise<GeoJSON.FeatureCollection> {
   // Use JSZip-like approach or parse as ZIP
   // For now, try to read as text first (some KMZ files can be read as text)
   try {
@@ -484,26 +518,28 @@ export  async function kmzToGeoJSON(file: File): Promise<GeoJSON.FeatureCollecti
   } catch {
     // If that fails, it's a proper ZIP - would need JSZip library
     // For now, throw error suggesting to extract KML first
-    throw new Error("KMZ (compressed KML) files require extraction. Please extract the KML file from the KMZ archive and upload the .kml file instead.");
+    throw new Error(
+      "KMZ (compressed KML) files require extraction. Please extract the KML file from the KMZ archive and upload the .kml file instead."
+    );
   }
 }
 
-export async function fileToGeoJSON(file : File) {
+export async function fileToGeoJSON(file: File) {
   // Better extension detection (handle .geojson and multi-dot filenames)
   const fileName = file.name.toLowerCase();
-  let ext = '';
-  if (fileName.endsWith('.geojson')) {
-    ext = 'geojson';
-  } else if (fileName.endsWith('.tiff')) {
-    ext = 'tiff';
+  let ext = "";
+  if (fileName.endsWith(".geojson")) {
+    ext = "geojson";
+  } else if (fileName.endsWith(".tiff")) {
+    ext = "tiff";
   } else {
-    const parts = fileName.split('.');
-    ext = parts.length > 1 ? parts[parts.length - 1] : '';
+    const parts = fileName.split(".");
+    ext = parts.length > 1 ? parts[parts.length - 1] : "";
   }
 
   if (ext === "csv") {
     const text = await file.text();
-    return csvToGeoJSON(text, "latitude", "longitude"); 
+    return csvToGeoJSON(text, "latitude", "longitude");
   }
 
   if (ext === "shp" || ext === "zip") {
@@ -512,7 +548,7 @@ export async function fileToGeoJSON(file : File) {
     try {
       return await shpToGeoJSON(file);
     } catch (error) {
-      // If shapefile processing fails and it's a ZIP, 
+      // If shapefile processing fails and it's a ZIP,
       // it might be a ZIP containing other formats (like TIFF for DEM)
       // Let the caller handle it
       if (ext === "zip") {
@@ -524,7 +560,7 @@ export async function fileToGeoJSON(file : File) {
 
   if (ext === "geojson" || ext === "json") {
     const text = await file.text();
-    return JSON.parse(text); 
+    return JSON.parse(text);
   }
 
   if (ext === "gpx") {
@@ -541,7 +577,9 @@ export async function fileToGeoJSON(file : File) {
     return await kmzToGeoJSON(file);
   }
 
-  throw new Error(`Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, Shapefile, GPX, KML`);
+  throw new Error(
+    `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, Shapefile, GPX, KML`
+  );
 }
 
 export interface DemRasterResult {
@@ -554,23 +592,25 @@ export interface DemRasterResult {
   max: number;
 }
 
-export async function fileToDEMRaster(file: File): Promise<DemRasterResult>{
+export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
   // Better extension detection (handle .tiff and multi-dot filenames)
   const fileName = file.name.toLowerCase();
-  let ext = '';
-  if (fileName.endsWith('.tiff')) {
-    ext = 'tiff';
+  let ext = "";
+  if (fileName.endsWith(".tiff")) {
+    ext = "tiff";
   } else {
-    const parts = fileName.split('.');
-    ext = parts.length > 1 ? parts[parts.length - 1] : '';
+    const parts = fileName.split(".");
+    ext = parts.length > 1 ? parts[parts.length - 1] : "";
   }
-  
-  if (ext !== 'tif' && ext !== 'tiff') {
-    throw new Error('Unsupported DEM format. Only GeoTIFF (.tif, .tiff) is supported.');
+
+  if (ext !== "tif" && ext !== "tiff") {
+    throw new Error(
+      "Unsupported DEM format. Only GeoTIFF (.tif, .tiff) is supported."
+    );
   }
 
   // Lazy-load geotiff to avoid bundling if unused
-  const geotiff = await import('geotiff');
+  const geotiff = await import("geotiff");
   const arrayBuffer = await file.arrayBuffer();
   const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
   const image = await tiff.getImage();
@@ -581,14 +621,14 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult>{
 
   // Try to get bounding box using different methods
   let bounds: [number, number, number, number];
-  
+
   try {
     // Try getBoundingBox first (for properly georeferenced GeoTIFFs)
     const bbox = image.getBoundingBox();
-    if (bbox && bbox.length === 4 && bbox.every(v => Number.isFinite(v))) {
+    if (bbox && bbox.length === 4 && bbox.every((v) => Number.isFinite(v))) {
       bounds = bbox as [number, number, number, number];
     } else {
-      throw new Error('No valid bounding box');
+      throw new Error("No valid bounding box");
     }
   } catch (error) {
     // If getBoundingBox fails, try to extract from file directory tags
@@ -596,55 +636,66 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult>{
       const fileDirectory = image.fileDirectory;
       const modelPixelScaleTag = fileDirectory.ModelPixelScaleTag;
       const modelTiepointTag = fileDirectory.ModelTiepointTag;
-    //  const geoAsciiParamsTag = fileDirectory.GeoAsciiParamsTag;
-      
-      if (modelTiepointTag && modelPixelScaleTag && modelTiepointTag.length >= 6) {
+      //  const geoAsciiParamsTag = fileDirectory.GeoAsciiParamsTag;
+
+      if (
+        modelTiepointTag &&
+        modelPixelScaleTag &&
+        modelTiepointTag.length >= 6
+      ) {
         // Use ModelTiepointTag and ModelPixelScaleTag for georeferencing
         // Format: [I, J, K, X, Y, Z] where I,J,K are pixel coordinates and X,Y,Z are world coordinates
         const [tieI, tieJ, worldX, worldY] = modelTiepointTag;
         const [scaleX, scaleY] = modelPixelScaleTag;
-        
+
         // Calculate bounds from tiepoint and pixel scale
         // The tiepoint represents the world coordinates at pixel (I, J)
         const pixelX = tieI;
         const pixelY = tieJ;
         const worldOriginX = worldX;
         const worldOriginY = worldY;
-        
+
         // Calculate the world coordinates at the corners
-        const minX = worldOriginX - (pixelX * scaleX);
-        const maxX = worldOriginX + ((width - pixelX) * scaleX);
+        const minX = worldOriginX - pixelX * scaleX;
+        const maxX = worldOriginX + (width - pixelX) * scaleX;
         // Note: Y axis might be inverted depending on the file
-        const minY = worldOriginY - ((height - pixelY) * Math.abs(scaleY));
-        const maxY = worldOriginY + (pixelY * Math.abs(scaleY));
-        
+        const minY = worldOriginY - (height - pixelY) * Math.abs(scaleY);
+        const maxY = worldOriginY + pixelY * Math.abs(scaleY);
+
         bounds = [minX, minY, maxX, maxY];
-      } else if (fileDirectory.GeoTransformationMatrix && fileDirectory.GeoTransformationMatrix.length === 16) {
+      } else if (
+        fileDirectory.GeoTransformationMatrix &&
+        fileDirectory.GeoTransformationMatrix.length === 16
+      ) {
         // Use GeoTransformationMatrix (4x4 matrix)
         const matrix = fileDirectory.GeoTransformationMatrix;
         // Extract translation and scale from matrix
         const originX = matrix[12]; // Translation X
         const originY = matrix[13]; // Translation Y
-        const scaleX = matrix[0];   // Scale X
-        const scaleY = matrix[5];   // Scale Y
-        
+        const scaleX = matrix[0]; // Scale X
+        const scaleY = matrix[5]; // Scale Y
+
         const minX = originX;
-        const maxX = originX + (width * scaleX);
+        const maxX = originX + width * scaleX;
         const minY = originY;
-        const maxY = originY + (height * Math.abs(scaleY));
-        
+        const maxY = originY + height * Math.abs(scaleY);
+
         bounds = [minX, minY, maxX, maxY];
       } else {
-        throw new Error('No georeferencing tags found');
+        throw new Error("No georeferencing tags found");
       }
     } catch (error2) {
       // If no georeferencing is found, use default bounds (India - can be adjusted by user)
       // Default to India bounds: [minLng, minLat, maxLng, maxLat]
-      const defaultBounds: [number, number, number, number] = [68.0, 6.0, 97.0, 37.0];
+      const defaultBounds: [number, number, number, number] = [
+        68.0, 6.0, 97.0, 37.0,
+      ];
       bounds = defaultBounds;
-      
+
       // Log a warning but don't throw - allow the DEM to be displayed
-      console.warn('GeoTIFF file does not contain georeferencing information. Using default bounds (India). The DEM will be displayed but may not be correctly positioned. Please use a properly georeferenced GeoTIFF file for accurate positioning.');
+      console.warn(
+        "GeoTIFF file does not contain georeferencing information. Using default bounds (India). The DEM will be displayed but may not be correctly positioned. Please use a properly georeferenced GeoTIFF file for accurate positioning."
+      );
     }
   }
 
@@ -658,14 +709,19 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult>{
       if (v > maxVal) maxVal = v;
     }
   }
-  if (!Number.isFinite(minVal) || !Number.isFinite(maxVal) || minVal === maxVal) {
-    minVal = 0; maxVal = 1;
+  if (
+    !Number.isFinite(minVal) ||
+    !Number.isFinite(maxVal) ||
+    minVal === maxVal
+  ) {
+    minVal = 0;
+    maxVal = 1;
   }
 
-  const canvas = document.createElement('canvas');
+  const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext("2d")!;
   const imgData = ctx.createImageData(width, height);
   for (let i = 0; i < width * height; i++) {
     const v = raster[i] as number;
