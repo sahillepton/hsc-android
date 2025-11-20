@@ -89,9 +89,6 @@ const MapComponent = () => {
   );
   const [mapZoom, setMapZoom] = useState(4);
 
-  // UDP layers from separate component
-  const udpLayers = useUdpLayers();
-
   // useEffect(() => {
   //   const loadNodeData = async () => {
   //     try {
@@ -395,6 +392,9 @@ const MapComponent = () => {
     },
     [setHoverInfo]
   );
+
+  // UDP layers from separate component
+  const udpLayers = useUdpLayers(handleLayerHover);
 
   const handleNodeIconClick = useCallback(
     (info: PickingInfo<unknown>) => {

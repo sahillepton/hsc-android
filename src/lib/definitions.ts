@@ -12,38 +12,48 @@ export interface Node {
 }
 
 export interface LayerProps {
-    type: "point" | "polygon" | "line" | "geojson" | "nodes" | "connections" | "dem" | "annotation";
-    visible: boolean; 
-    id: string;
-    name: string;
-    position?: [number, number]; 
-    color: [number, number, number] | [number, number, number, number]; 
-    radius?: number;
-    pointRadius?: number; 
-    path?: [number, number][];
-    lineWidth?: number;
-    polygon?: [number, number][][];
-    bounds?: [[number, number], [number, number]];
-    bitmap?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
-    texture?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
-    elevationData?: {
-      data: Float32Array;
-      width: number;
-      height: number;
-      min: number;
-      max: number;
-    };
-    geojson?: GeoJSON.FeatureCollection;
-    nodes?: Node[];
-    annotations?: Array<{
-      position: [number, number];
-      text: string;
-      color?: [number, number, number];
-      fontSize?: number;
-    }>;
-    sectorAngleDeg?: number;
-    radiusMeters?: number;
-    bearing?: number;
-  }
+  type:
+    | "point"
+    | "polygon"
+    | "line"
+    | "geojson"
+    | "nodes"
+    | "connections"
+    | "dem"
+    | "annotation"
+    | "udp";
+  visible: boolean;
+  id: string;
+  name: string;
+  position?: [number, number];
+  color: [number, number, number] | [number, number, number, number];
+  radius?: number;
+  pointRadius?: number;
+  path?: [number, number][];
+  lineWidth?: number;
+  polygon?: [number, number][][];
+  bounds?: [[number, number], [number, number]];
+  bitmap?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
+  texture?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
+  elevationData?: {
+    data: Float32Array;
+    width: number;
+    height: number;
+    min: number;
+    max: number;
+  };
+  geojson?: GeoJSON.FeatureCollection;
+  nodes?: Node[];
+  annotations?: Array<{
+    position: [number, number];
+    text: string;
+    color?: [number, number, number];
+    fontSize?: number;
+  }>;
+  sectorAngleDeg?: number;
+  radiusMeters?: number;
+  bearing?: number;
+  symbol?: string; // Symbol for UDP layers
+}
 
-export type DrawingMode = "point" | "polygon" | "line" | "azimuthal" | null
+export type DrawingMode = "point" | "polygon" | "line" | "azimuthal" | null;

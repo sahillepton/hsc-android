@@ -106,17 +106,22 @@ export function hexToRgb(hex: string): [number, number, number] | null {
   return [r, g, b];
 }
 
-export function formatDistance(meters: number): string {
-  if (meters < 1000) {
+export function formatDistance(kilometers: number): string {
+  if (kilometers < 1) {
+    const meters = kilometers * 1000;
     return `${meters.toFixed(1)} m`;
-  } else if (meters < 1000000) {
-    return `${(meters / 1000).toFixed(2)} km`;
-  } else {
-    return `${(meters / 1000000).toFixed(2)} Mm`;
   }
+
+  if (kilometers >= 10000) {
+    const megameters = kilometers / 1000; // 1 Mm = 1000 km
+    return `${megameters.toFixed(2)} Mm`;
+  }
+
+  return `${kilometers.toFixed(2)} km`;
 }
 
 export function formatArea(squareMeters: number): string {
+  console.log(squareMeters);
   if (squareMeters < 10000) {
     return `${squareMeters.toFixed(1)} m²`;
   } else if (squareMeters < 1000000) {
