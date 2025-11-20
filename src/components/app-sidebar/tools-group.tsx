@@ -5,7 +5,6 @@ import {
   LineChart,
   Hexagon,
   Compass,
-  XCircle,
   LogOut,
 } from "lucide-react";
 import {

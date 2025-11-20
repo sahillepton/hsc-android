@@ -1,9 +1,5 @@
 import { setStorageDirectory } from "@/lib/capacitor-utils";
-import {
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-} from "../ui/sidebar";
+import { SidebarGroup, SidebarGroupContent } from "../ui/sidebar";
 import { Directory } from "@capacitor/filesystem";
 import { Label } from "../ui/label";
 

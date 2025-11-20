@@ -75,7 +75,7 @@ const MapComponent = () => {
   const { currentPath, setCurrentPath } = useCurrentPath();
   const { nodeIconMappings } = useNodeIconMappings();
   const { azimuthalAngle } = useAzimuthalAngle();
-  const { setHoverInfo } = useHoverInfo();
+  const { hoverInfo, setHoverInfo } = useHoverInfo();
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const previousDrawingModeRef = useRef(drawingMode);
 
@@ -318,8 +318,10 @@ const MapComponent = () => {
     // If clicking on empty space, close any open dialogs
     if (selectedNodeForIcon && !object) {
       setSelectedNodeForIcon(null);
-      return;
     }
+
+    // Close tooltip when clicking anywhere on the map
+    setHoverInfo(undefined);
 
     // For other clicks, use the default handler
     handleClick(event);
@@ -359,6 +361,39 @@ const MapComponent = () => {
       setFocusLayerRequest(null);
     }
   }, [focusLayerRequest]);
+
+  // Close tooltip when the hovered layer becomes hidden
+  useEffect(() => {
+    if (!hoverInfo || !hoverInfo.object) {
+      return;
+    }
+
+    // Find the layer ID from the hover info
+    const hoveredObject = hoverInfo.object;
+    let hoveredLayerId: string | undefined;
+
+    if ((hoveredObject as any)?.layerId) {
+      hoveredLayerId = (hoveredObject as any).layerId;
+    } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+      hoveredLayerId = (hoveredObject as any).id;
+    } else if (hoverInfo.layer?.id) {
+      const deckLayerId = hoverInfo.layer.id;
+      const matchingLayer = layers.find((l) => l.id === deckLayerId);
+      hoveredLayerId = matchingLayer?.id;
+      if (!hoveredLayerId) {
+        const baseId = deckLayerId.replace(/-icon-layer$/, '').replace(/-signal-overlay$/, '').replace(/-bitmap$/, '');
+        hoveredLayerId = layers.find((l) => l.id === baseId)?.id;
+      }
+    }
+
+    // Check if the hovered layer is now hidden
+    if (hoveredLayerId) {
+      const hoveredLayer = layers.find((l) => l.id === hoveredLayerId);
+      if (hoveredLayer && hoveredLayer.visible === false) {
+        setHoverInfo(undefined);
+      }
+    }
+  }, [layers, hoverInfo, setHoverInfo]);
 
   const {
     cityNamesLayer,

@@ -15,7 +15,11 @@ import {
   SidebarMenuItem,
 } from "../ui/sidebar";
 import { Button } from "../ui/button";
-import { useLayers, useFocusLayerRequest } from "@/store/layers-store";
+import {
+  useLayers,
+  useFocusLayerRequest,
+  useHoverInfo,
+} from "@/store/layers-store";
 import LayerPopover from "./layer-popover";
 
 const LayersPanel = ({
@@ -27,7 +31,7 @@ const LayersPanel = ({
 }) => {
   const { layers } = useLayers();
   const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
-
+  const { hoverInfo, setHoverInfo } = useHoverInfo();
   return (
     <SidebarGroup>
       {/* Collapsible Header */}
@@ -45,7 +49,9 @@ const LayersPanel = ({
 
       {/* Collapsible Content */}
       <SidebarGroupContent
-        className={`${isLayersOpen ? "block" : "hidden"} transition-all`}
+        className={`${
+          isLayersOpen ? "block" : "hidden"
+        } transition-all max-h-[200px] overflow-y-auto`}
       >
         {layers.length === 0 ? (
           <div className="px-3 py-4 text-center text-sm text-muted-foreground">
@@ -79,7 +85,7 @@ const LayersPanel = ({
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8 hover:bg-accent"
-                      title="Focus layer"
+                      title={`Focus layer: ${layer.name}`}
                       onClick={() => focusLayer(layer.id)}
                     >
                       <LocateFixed size={14} />
@@ -89,13 +95,52 @@ const LayersPanel = ({
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8 hover:bg-accent"
-                      onClick={() =>
+                      onClick={() => {
+                        const newVisible =
+                          layer.visible !== false ? false : true;
                         updateLayer(layer.id, {
                           ...layer,
-                          visible: layer.visible !== false ? false : true,
-                        })
+                          visible: newVisible,
+                        });
+                        // Close tooltip if the layer being hidden is currently being hovered
+                        if (!newVisible && hoverInfo) {
+                          // Check if the hovered object belongs to this layer
+                          const hoveredObject = hoverInfo.object;
+                          let hoveredLayerId: string | undefined;
+
+                          if ((hoveredObject as any)?.layerId) {
+                            hoveredLayerId = (hoveredObject as any).layerId;
+                          } else if (
+                            (hoveredObject as any)?.id &&
+                            (hoveredObject as any)?.type
+                          ) {
+                            hoveredLayerId = (hoveredObject as any).id;
+                          } else if (hoverInfo.layer?.id) {
+                            const deckLayerId = hoverInfo.layer.id;
+                            hoveredLayerId = layers.find(
+                              (l) => l.id === deckLayerId
+                            )?.id;
+                            if (!hoveredLayerId) {
+                              const baseId = deckLayerId
+                                .replace(/-icon-layer$/, "")
+                                .replace(/-signal-overlay$/, "")
+                                .replace(/-bitmap$/, "");
+                              hoveredLayerId = layers.find(
+                                (l) => l.id === baseId
+                              )?.id;
+                            }
+                          }
+
+                          if (hoveredLayerId === layer.id) {
+                            setHoverInfo(undefined);
+                          }
+                        }
+                      }}
+                      title={
+                        layer.visible
+                          ? `Hide layer: ${layer.name}`
+                          : `Show layer: ${layer.name}`
                       }
-                      title={layer.visible ? "Hide layer" : "Show layer"}
                     >
                       {layer.visible ? (
                         <EyeIcon size={14} />
@@ -110,7 +155,7 @@ const LayersPanel = ({
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 hover:bg-accent"
-                        title="Layer settings"
+                        title={`Layer settings: ${layer.name}`}
                       >
                         <Settings2 size={14} />
                       </Button>
@@ -121,7 +166,7 @@ const LayersPanel = ({
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
-                        title="Delete layer"
+                        title={`Delete layer: ${layer.name}`}
                         onClick={() => {
                           if (
                             confirm(
