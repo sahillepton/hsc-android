@@ -15,8 +15,33 @@ const Tooltip = () => {
   }
 
   const { object, x, y, layer } = hoverInfo;
-  const layerInfo = layer?.id ? layers.find((l) => l.id === layer.id) : null;
 
+  // Find the layer from the store using multiple strategies
+  let layerInfo: (typeof layers)[0] | undefined = undefined;
+
+  // Check if the object has a layerId (for line layers)
+  if ((object as any)?.layerId) {
+    layerInfo = layers.find((l) => l.id === (object as any).layerId);
+  }
+  // Check if the object is a LayerProps itself (for point/polygon layers)
+  else if ((object as any)?.id && (object as any)?.type) {
+    layerInfo = layers.find((l) => l.id === (object as any).id);
+  }
+  // Check if the deck.gl layer has an id that matches a store layer (for GeoJSON layers, node layers, etc.)
+  else if (layer?.id) {
+    const deckLayerId = layer.id;
+    // Check if this ID matches a layer in the store directly
+    layerInfo = layers.find((l) => l.id === deckLayerId);
+    // If not found, check if it's a sub-layer (e.g., `${layer.id}-icon-layer`)
+    if (!layerInfo) {
+      // Try to extract the base layer ID by removing common suffixes
+      const baseId = deckLayerId
+        .replace(/-icon-layer$/, "")
+        .replace(/-signal-overlay$/, "")
+        .replace(/-bitmap$/, "");
+      layerInfo = layers.find((l) => l.id === baseId);
+    }
+  }
   const getTooltipContent = () => {
     const isDirectNodeObject =
       object.hasOwnProperty("snr") &&
@@ -27,7 +52,7 @@ const Tooltip = () => {
     if (isDirectNodeObject) {
       return (
         <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
-          {layerInfo && (
+          {layerInfo?.name && (
             <div className="font-semibold text-cyan-300 mb-2">
               {layerInfo.name}
             </div>
@@ -94,7 +119,7 @@ const Tooltip = () => {
       if (isNodeFeature) {
         return (
           <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
-            {layerInfo && (
+            {layerInfo?.name && (
               <div className="font-semibold text-cyan-300 mb-2">
                 {layerInfo.name}
               </div>
@@ -194,9 +219,7 @@ const Tooltip = () => {
         object.geometry.coordinates[0]
       ) {
         // object.geometry.coordinates is already [number, number][][] (array of rings)
-        const areaKm2 = parseFloat(
-          getPolygonArea(object.geometry.coordinates)
-        );
+        const areaKm2 = parseFloat(getPolygonArea(object.geometry.coordinates));
         const areaMeters = areaKm2 * 1_000_000;
         geometryInfo = (
           <div className="text-orange-300 font-medium">
@@ -211,12 +234,16 @@ const Tooltip = () => {
 
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm max-w-xs">
-          {layerInfo && (
+          {layerInfo?.name && (
             <div className="font-semibold text-blue-300 mb-1">
               {layerInfo.name}
             </div>
           )}
-          <div className="font-semibold">{geometryType} Feature</div>
+          <div className="font-semibold">
+            {geometryType === "Point" && layerInfo?.name
+              ? `${layerInfo.name} - Point`
+              : `${geometryType} Feature`}
+          </div>
           {colorDisplay && (
             <div className="flex items-center gap-2 mt-1">
               <span className="text-gray-300">Color:</span>
@@ -280,7 +307,7 @@ const Tooltip = () => {
 
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
-          {layerInfo && (
+          {layerInfo?.name && (
             <div className="font-semibold text-green-300 mb-1">
               {layerInfo.name}
             </div>
@@ -324,12 +351,14 @@ const Tooltip = () => {
 
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
-          {layerInfo && (
+          {layerInfo?.name && (
             <div className="font-semibold text-red-300 mb-1">
               {layerInfo.name}
             </div>
           )}
-          <div className="font-semibold">Point</div>
+          <div className="font-semibold">
+            {layerInfo?.name ? `${layerInfo.name} - Point` : "Point"}
+          </div>
           {colorDisplay && (
             <div className="flex items-center gap-2 mt-1">
               <span className="text-gray-300">Color:</span>
@@ -359,10 +388,10 @@ const Tooltip = () => {
     if (object.polygon) {
       // object.polygon from deck.gl PolygonLayer is a single ring [number, number][]
       // getPolygonArea expects [number, number][][] (array of rings), so wrap it
-      const polygonRings = Array.isArray(object.polygon[0]) && 
-                          Array.isArray(object.polygon[0][0])
-        ? object.polygon  // Already array of rings [[[lng, lat], ...], ...]
-        : [object.polygon]; // Single ring [[lng, lat], ...], wrap it
+      const polygonRings =
+        Array.isArray(object.polygon[0]) && Array.isArray(object.polygon[0][0])
+          ? object.polygon // Already array of rings [[[lng, lat], ...], ...]
+          : [object.polygon]; // Single ring [[lng, lat], ...], wrap it
       const areaKm2 = parseFloat(getPolygonArea(polygonRings));
       const areaMeters = areaKm2 * 1_000_000;
       const colorDisplay = layerInfo?.color
@@ -371,7 +400,7 @@ const Tooltip = () => {
 
       return (
         <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
-          {layerInfo && (
+          {layerInfo?.name && (
             <div className="font-semibold text-purple-300 mb-1">
               {layerInfo.name}
             </div>

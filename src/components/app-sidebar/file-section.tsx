@@ -1,11 +1,7 @@
 import type { LayerProps } from "@/lib/definitions";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import {
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-} from "../ui/sidebar";
+import { SidebarGroup, SidebarGroupContent } from "../ui/sidebar";
 import {
   getStorageDirectory,
   getStorageDirectoryName,
