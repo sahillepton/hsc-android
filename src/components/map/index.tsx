@@ -16,6 +16,7 @@ import TiltControl from "./tilt-control";
 import IconSelection from "./icon-selection";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
+import { useUdpLayers } from "./udp-layers";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
   useCurrentPath,
@@ -87,6 +88,9 @@ const MapComponent = () => {
     null
   );
   const [mapZoom, setMapZoom] = useState(4);
+
+  // UDP layers from separate component
+  const udpLayers = useUdpLayers();
 
   // useEffect(() => {
   //   const loadNodeData = async () => {
@@ -770,6 +774,10 @@ const MapComponent = () => {
     // --- Preview layers ---
     const previewLayers: any[] = [];
 
+    // Add UDP layers to the deck layers
+    if (udpLayers.length > 0) {
+      deckLayers.push(...udpLayers);
+    }
     if (
       isDrawing &&
       drawingMode === "line" &&
@@ -920,6 +928,7 @@ const MapComponent = () => {
     azimuthalAngle,
     handleLayerHover,
     handleNodeIconClick,
+    udpLayers,
   ]);
 
   return (
@@ -968,7 +977,6 @@ const MapComponent = () => {
 
           map.target.on("sourcedata", (e: any) => {
             if (e.sourceId === "offline-tiles" && e.isSourceLoaded) {
-              console.log("Offline tiles loaded successfully");
             }
           });
 
