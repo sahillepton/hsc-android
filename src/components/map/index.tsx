@@ -381,7 +381,10 @@ const MapComponent = () => {
       const matchingLayer = layers.find((l) => l.id === deckLayerId);
       hoveredLayerId = matchingLayer?.id;
       if (!hoveredLayerId) {
-        const baseId = deckLayerId.replace(/-icon-layer$/, '').replace(/-signal-overlay$/, '').replace(/-bitmap$/, '');
+        const baseId = deckLayerId
+          .replace(/-icon-layer$/, "")
+          .replace(/-signal-overlay$/, "")
+          .replace(/-bitmap$/, "");
         hoveredLayerId = layers.find((l) => l.id === baseId)?.id;
       }
     }

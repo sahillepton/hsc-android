@@ -103,7 +103,7 @@ export const useDefaultLayers = (mapZoom: number) => {
         // Avoid label overlaps
         collisionEnabled: true,
         collisionPadding: Math.max(2, 2 + (roundedZoom - 0) * 0.35), // Scale padding with zoom
-        visible: true, // Always visible
+        visible: roundedZoom >= 7, // Only show at zoom 7 and above
         updateTriggers: {
           getSize: [stateTextSize],
         },
@@ -176,19 +176,13 @@ export const useDefaultLayers = (mapZoom: number) => {
         billboard: true,
         sizeScale: 1,
         sizeMinPixels:
-          roundedZoom >= 8
-            ? Math.max(9, 7 + (roundedZoom - 8) * 1.5)
-            : 9, // Dynamic min based on zoom
+          roundedZoom >= 8 ? Math.max(9, 7 + (roundedZoom - 8) * 1.5) : 9, // Dynamic min based on zoom
         sizeMaxPixels:
-          roundedZoom >= 8
-            ? Math.max(16, 13 + (roundedZoom - 8) * 2.25)
-            : 16, // Dynamic max based on zoom
+          roundedZoom >= 8 ? Math.max(16, 13 + (roundedZoom - 8) * 2.25) : 16, // Dynamic max based on zoom
         // Avoid label overlaps
         collisionEnabled: true,
         collisionPadding:
-          roundedZoom >= 8
-            ? Math.max(1.5, 1 + (roundedZoom - 8) * 0.5)
-            : 1.5, // Scale padding with zoom
+          roundedZoom >= 8 ? Math.max(1.5, 1 + (roundedZoom - 8) * 0.5) : 1.5, // Scale padding with zoom
         visible: roundedZoom >= 8, // Show at slightly lower zoom for better visibility
         updateTriggers: {
           getSize: [placesTextSize],

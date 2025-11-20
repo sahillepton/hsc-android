@@ -250,45 +250,53 @@ const Tooltip = () => {
               {layerInfo.name}
             </div>
           )}
-          <div className="font-semibold text-blue-400 mb-1">Network Node</div>
-          <div className="space-y-1">
-            <div className="flex justify-between">
+          <div className="font-semibold text-blue-400 mb-2">Network Node</div>
+          <div className="space-y-2">
+            <div className="flex justify-between items-center gap-4">
               <span className="text-gray-300">User ID:</span>
-              <span className="font-mono">{object.userId}</span>
+              <span className="font-mono text-right">{object.userId}</span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex justify-between items-center gap-4">
               <span className="text-gray-300">SNR:</span>
-              <span className="font-mono">{object.snr} dB</span>
+              <span className="font-mono text-right">{object.snr} dB</span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex justify-between items-center gap-4">
               <span className="text-gray-300">RSSI:</span>
-              <span className="font-mono">{object.rssi} dBm</span>
+              <span className="font-mono text-right">{object.rssi} dBm</span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex justify-between items-center gap-4">
               <span className="text-gray-300">Distance:</span>
-              <span className="font-mono">{object.distance?.toFixed(2)} m</span>
+              <span className="font-mono text-right">
+                {object.distance?.toFixed(2)} m
+              </span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex justify-between items-center gap-4">
               <span className="text-gray-300">Hop Count:</span>
-              <span className="font-mono">{object.hopCount}</span>
+              <span className="font-mono text-right">{object.hopCount}</span>
             </div>
             {object.connectedNodeIds && object.connectedNodeIds.length > 0 && (
-              <div className="mt-2 pt-1 border-t border-gray-600">
-                <div className="text-gray-300 text-xs mb-1">
-                  Connected Nodes:
+              <div className="mt-3 pt-2 border-t border-gray-600">
+                <div className="flex justify-between items-start gap-4 mb-1">
+                  <span className="text-gray-300 text-xs">
+                    Connected Nodes:
+                  </span>
                 </div>
-                <div className="font-mono text-xs">
+                <div className="font-mono text-xs text-right">
                   [{object.connectedNodeIds.join(", ")}]
                 </div>
               </div>
             )}
-            <div className="mt-2 pt-1 border-t border-gray-600">
-              <div className="text-gray-300 text-xs">Location (lat, lng):</div>
-              <div className="font-mono text-xs">
-                [{object.latitude.toFixed(6)}, {object.longitude.toFixed(6)}]
+            <div className="mt-3 pt-2 border-t border-gray-600">
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300 text-xs">
+                  Location (lat, lng):
+                </span>
+                <span className="font-mono text-xs text-right">
+                  [{object.latitude.toFixed(6)}, {object.longitude.toFixed(6)}]
+                </span>
               </div>
             </div>
-            <div className="mt-2 pt-1 border-t border-gray-600">
+            <div className="mt-3 pt-2 border-t border-gray-600">
               <div className="text-gray-300 text-xs mb-1">Icon:</div>
               <div className="text-xs text-gray-400">
                 Click on the node to change its icon
@@ -317,53 +325,65 @@ const Tooltip = () => {
                 {layerInfo.name}
               </div>
             )}
-            <div className="font-semibold text-blue-400 mb-1">Network Node</div>
-            <div className="space-y-1">
-              <div className="flex justify-between">
+            <div className="font-semibold text-blue-400 mb-2">Network Node</div>
+            <div className="space-y-2">
+              <div className="flex justify-between items-center gap-4">
                 <span className="text-gray-300">User ID:</span>
-                <span className="font-mono">{properties.userId}</span>
+                <span className="font-mono text-right">
+                  {properties.userId}
+                </span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center gap-4">
                 <span className="text-gray-300">SNR:</span>
-                <span className="font-mono">{properties.snr} dB</span>
+                <span className="font-mono text-right">
+                  {properties.snr} dB
+                </span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center gap-4">
                 <span className="text-gray-300">RSSI:</span>
-                <span className="font-mono">{properties.rssi} dBm</span>
+                <span className="font-mono text-right">
+                  {properties.rssi} dBm
+                </span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center gap-4">
                 <span className="text-gray-300">Distance:</span>
-                <span className="font-mono">
+                <span className="font-mono text-right">
                   {properties.distance?.toFixed(2)} m
                 </span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center gap-4">
                 <span className="text-gray-300">Hop Count:</span>
-                <span className="font-mono">{properties.hopCount}</span>
+                <span className="font-mono text-right">
+                  {properties.hopCount}
+                </span>
               </div>
               {properties.connectedNodeIds &&
                 properties.connectedNodeIds.length > 0 && (
-                  <div className="mt-2 pt-1 border-t border-gray-600">
-                    <div className="text-gray-300 text-xs mb-1">
-                      Connected Nodes:
+                  <div className="mt-3 pt-2 border-t border-gray-600">
+                    <div className="flex justify-between items-start gap-4 mb-1">
+                      <span className="text-gray-300 text-xs">
+                        Connected Nodes:
+                      </span>
                     </div>
-                    <div className="font-mono text-xs">
+                    <div className="font-mono text-xs text-right">
                       [{properties.connectedNodeIds.join(", ")}]
                     </div>
                   </div>
                 )}
               {geometryType === "Point" && object.geometry.coordinates && (
-                <div className="mt-2 pt-1 border-t border-gray-600">
-                  <div className="text-gray-300 text-xs">
-                    Location (lat, lng):
-                  </div>
-                  <div className="font-mono text-xs">
-                    [{object.geometry.coordinates[1].toFixed(6)},{" "}
-                    {object.geometry.coordinates[0].toFixed(6)}]
+                <div className="mt-3 pt-2 border-t border-gray-600">
+                  <div className="flex justify-between items-center gap-4">
+                    <span className="text-gray-300 text-xs">
+                      Location (lat, lng):
+                    </span>
+                    <span className="font-mono text-xs text-right">
+                      [{object.geometry.coordinates[1].toFixed(6)},{" "}
+                      {object.geometry.coordinates[0].toFixed(6)}]
+                    </span>
                   </div>
                 </div>
               )}
-              <div className="mt-2 pt-1 border-t border-gray-600">
+              <div className="mt-3 pt-2 border-t border-gray-600">
                 <div className="text-gray-300 text-xs mb-1">Icon:</div>
                 <div className="text-xs text-gray-400">
                   Click on the node to change its icon
@@ -426,65 +446,96 @@ const Tooltip = () => {
         : null;
 
       return (
-        <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm max-w-xs">
+        <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
           {layerInfo?.name && (
-            <div className="font-semibold text-blue-300 mb-1">
+            <div className="font-semibold text-blue-300 mb-2">
               {layerInfo.name}
             </div>
           )}
-          <div className="font-semibold">
+          <div className="font-semibold mb-2">
             {geometryType === "Point" && layerInfo?.name
               ? `${layerInfo.name} - Point`
               : `${geometryType} Feature`}
           </div>
-          {colorDisplay && (
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-gray-300">Color:</span>
-              <div
-                className="w-4 h-4 rounded border border-gray-500"
-                style={{ backgroundColor: colorDisplay }}
-              />
-              <span className="font-mono text-xs">{colorDisplay}</span>
-            </div>
-          )}
-          {geometryType === "Point" && layerInfo?.pointRadius && (
-            <div className="mt-1">
-              <span className="text-gray-300">Radius: </span>
-              <span>{layerInfo.pointRadius.toLocaleString()}</span>
-            </div>
-          )}
-          {geometryType === "LineString" && layerInfo?.lineWidth && (
-            <div className="mt-1">
-              <span className="text-gray-300">Width: </span>
-              <span>{layerInfo.lineWidth} px</span>
-            </div>
-          )}
-          {properties.name && <div>Name: {properties.name}</div>}
-          {geometryInfo}
-          {geometryType === "Point" && object.geometry.coordinates && (
-            <div>
-              Coordinates (lat, lng): [
-              {object.geometry.coordinates[1].toFixed(4)},{" "}
-              {object.geometry.coordinates[0].toFixed(4)}]
-            </div>
-          )}
-          {Object.keys(properties).length > 0 && (
-            <div className="mt-1">
-              <div className="text-gray-300 text-xs">Properties:</div>
-              {Object.entries(properties)
-                .slice(0, 3)
-                .map(([key, value]) => (
-                  <div key={key} className="ml-1">
-                    {key}: {String(value)}
-                  </div>
-                ))}
-              {Object.keys(properties).length > 3 && (
-                <div className="text-gray-400 text-xs ml-1">
-                  ...and {Object.keys(properties).length - 3} more
+          <div className="space-y-2">
+            {colorDisplay && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Color:</span>
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-4 h-4 rounded border border-gray-500"
+                    style={{ backgroundColor: colorDisplay }}
+                  />
+                  <span className="font-mono text-xs text-right">
+                    {colorDisplay}
+                  </span>
                 </div>
-              )}
-            </div>
-          )}
+              </div>
+            )}
+            {geometryType === "Point" && layerInfo?.pointRadius && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Radius:</span>
+                <span className="text-right">
+                  {layerInfo.pointRadius.toLocaleString()} px
+                </span>
+              </div>
+            )}
+            {geometryType === "LineString" && layerInfo?.lineWidth && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Width:</span>
+                <span className="text-right">{layerInfo.lineWidth} px</span>
+              </div>
+            )}
+            {properties.name && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Name:</span>
+                <span className="text-right">{properties.name}</span>
+              </div>
+            )}
+            {geometryInfo && (
+              <div className="mt-3 pt-2 border-t border-gray-600">
+                {geometryInfo}
+              </div>
+            )}
+            {geometryType === "Point" && object.geometry.coordinates && (
+              <div className="mt-3 pt-2 border-t border-gray-600">
+                <div className="flex justify-between items-center gap-4">
+                  <span className="text-gray-300 text-xs">
+                    Coordinates (lat, lng):
+                  </span>
+                  <span className="font-mono text-xs text-right">
+                    [{object.geometry.coordinates[1].toFixed(4)},{" "}
+                    {object.geometry.coordinates[0].toFixed(4)}]
+                  </span>
+                </div>
+              </div>
+            )}
+            {Object.keys(properties).length > 0 && (
+              <div className="mt-3 pt-2 border-t border-gray-600">
+                <div className="text-gray-300 text-xs mb-2">Properties:</div>
+                <div className="space-y-1">
+                  {Object.entries(properties)
+                    .slice(0, 3)
+                    .map(([key, value]) => (
+                      <div
+                        key={key}
+                        className="flex justify-between items-center gap-4"
+                      >
+                        <span className="text-gray-300 text-xs">{key}:</span>
+                        <span className="font-mono text-xs text-right">
+                          {String(value)}
+                        </span>
+                      </div>
+                    ))}
+                  {Object.keys(properties).length > 3 && (
+                    <div className="text-gray-400 text-xs text-right mt-1">
+                      ...and {Object.keys(properties).length - 3} more
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       );
     }
@@ -499,39 +550,60 @@ const Tooltip = () => {
         : null;
 
       return (
-        <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
+        <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
           {layerInfo?.name && (
-            <div className="font-semibold text-green-300 mb-1">
+            <div className="font-semibold text-green-300 mb-2">
               {layerInfo.name}
             </div>
           )}
-          <div className="font-semibold">Line Segment</div>
-          {colorDisplay && (
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-gray-300">Color:</span>
-              <div
-                className="w-4 h-4 rounded border border-gray-500"
-                style={{ backgroundColor: colorDisplay }}
-              />
-              <span className="font-mono text-xs">{colorDisplay}</span>
+          <div className="font-semibold mb-2">Line Segment</div>
+          <div className="space-y-2">
+            {colorDisplay && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Color:</span>
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-4 h-4 rounded border border-gray-500"
+                    style={{ backgroundColor: colorDisplay }}
+                  />
+                  <span className="font-mono text-xs text-right">
+                    {colorDisplay}
+                  </span>
+                </div>
+              </div>
+            )}
+            {(layerInfo?.lineWidth || object.width) && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Width:</span>
+                <span className="text-right">
+                  {layerInfo?.lineWidth || object.width} px
+                </span>
+              </div>
+            )}
+            <div className="mt-3 pt-2 border-t border-gray-600">
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-yellow-300 font-medium">Distance:</span>
+                <span className="text-yellow-300 font-medium text-right">
+                  {parseFloat(distance).toFixed(2)} km
+                </span>
+              </div>
             </div>
-          )}
-          {(layerInfo?.lineWidth || object.width) && (
-            <div className="mt-1">
-              <span className="text-gray-300">Width: </span>
-              <span>{layerInfo?.lineWidth || object.width}</span>
+            <div className="mt-3 pt-2 border-t border-gray-600">
+              <div className="flex justify-between items-center gap-4 mb-1">
+                <span className="text-gray-300 text-xs">From (lat, lng):</span>
+                <span className="font-mono text-xs text-right">
+                  [{object.sourcePosition[1].toFixed(4)},{" "}
+                  {object.sourcePosition[0].toFixed(4)}]
+                </span>
+              </div>
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300 text-xs">To (lat, lng):</span>
+                <span className="font-mono text-xs text-right">
+                  [{object.targetPosition[1].toFixed(4)},{" "}
+                  {object.targetPosition[0].toFixed(4)}]
+                </span>
+              </div>
             </div>
-          )}
-          <div className="text-yellow-300 font-medium">
-            Distance: {parseFloat(distance).toFixed(2)} km
-          </div>
-          <div>
-            From (lat, lng): [{object.sourcePosition[1].toFixed(4)},{" "}
-            {object.sourcePosition[0].toFixed(4)}]
-          </div>
-          <div>
-            To (lat, lng): [{object.targetPosition[1].toFixed(4)},{" "}
-            {object.targetPosition[0].toFixed(4)}]
           </div>
         </div>
       );
@@ -543,36 +615,49 @@ const Tooltip = () => {
         : null;
 
       return (
-        <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
+        <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
           {layerInfo?.name && (
-            <div className="font-semibold text-red-300 mb-1">
+            <div className="font-semibold text-red-300 mb-2">
               {layerInfo.name}
             </div>
           )}
-          <div className="font-semibold">
+          <div className="font-semibold mb-2">
             {layerInfo?.name ? `${layerInfo.name} - Point` : "Point"}
           </div>
-          {colorDisplay && (
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-gray-300">Color:</span>
-              <div
-                className="w-4 h-4 rounded border border-gray-500"
-                style={{ backgroundColor: colorDisplay }}
-              />
-              <span className="font-mono text-xs">{colorDisplay}</span>
+          <div className="space-y-2">
+            {colorDisplay && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Color:</span>
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-4 h-4 rounded border border-gray-500"
+                    style={{ backgroundColor: colorDisplay }}
+                  />
+                  <span className="font-mono text-xs text-right">
+                    {colorDisplay}
+                  </span>
+                </div>
+              </div>
+            )}
+            {(layerInfo?.radius || object.radius) && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Radius:</span>
+                <span className="text-right">
+                  {(layerInfo?.radius || object.radius).toLocaleString()} px
+                </span>
+              </div>
+            )}
+            <div className="mt-3 pt-2 border-t border-gray-600">
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300 text-xs">
+                  Coordinates (lat, lng):
+                </span>
+                <span className="font-mono text-xs text-right">
+                  [{object.position[1].toFixed(4)},{" "}
+                  {object.position[0].toFixed(4)}]
+                </span>
+              </div>
             </div>
-          )}
-          {(layerInfo?.radius || object.radius) && (
-            <div className="mt-1">
-              <span className="text-gray-300">Radius: </span>
-              <span>
-                {(layerInfo?.radius || object.radius).toLocaleString()}
-              </span>
-            </div>
-          )}
-          <div>
-            Coordinates (lat, lng): [{object.position[1].toFixed(4)},{" "}
-            {object.position[0].toFixed(4)}]
           </div>
         </div>
       );
@@ -606,35 +691,49 @@ const Tooltip = () => {
       }
 
       return (
-        <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
+        <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
           {layerInfo?.name && (
-            <div className="font-semibold text-purple-300 mb-1">
+            <div className="font-semibold text-purple-300 mb-2">
               {layerInfo.name}
             </div>
           )}
-          <div className="font-semibold">Polygon</div>
-          {colorDisplay && (
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-gray-300">Color:</span>
-              <div
-                className="w-4 h-4 rounded border border-gray-500"
-                style={{ backgroundColor: colorDisplay }}
-              />
-              <span className="font-mono text-xs">{colorDisplay}</span>
+          <div className="font-semibold mb-2">Polygon</div>
+          <div className="space-y-2">
+            {colorDisplay && (
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-gray-300">Color:</span>
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-4 h-4 rounded border border-gray-500"
+                    style={{ backgroundColor: colorDisplay }}
+                  />
+                  <span className="font-mono text-xs text-right">
+                    {colorDisplay}
+                  </span>
+                </div>
+              </div>
+            )}
+            <div className="mt-3 pt-2 border-t border-gray-600">
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-orange-300 font-medium">Area:</span>
+                <span className="text-orange-300 font-medium text-right">
+                  {formatArea(areaMeters)}
+                </span>
+              </div>
             </div>
-          )}
-          <div className="text-orange-300 font-medium">
-            Area: {formatArea(areaMeters)}
+            <div className="flex justify-between items-center gap-4">
+              <span className="text-gray-300">Vertices:</span>
+              <span className="text-right">{vertexCount}</span>
+            </div>
           </div>
-          <div>Vertices: {vertexCount}</div>
         </div>
       );
     }
 
     return (
-      <div className="bg-black bg-opacity-80 text-white p-2 rounded shadow-lg text-sm">
-        <div className="font-semibold">Map Feature</div>
-        <div>Hover for details</div>
+      <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
+        <div className="font-semibold mb-2">Map Feature</div>
+        <div className="text-gray-300">Hover for details</div>
       </div>
     );
   };

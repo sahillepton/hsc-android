@@ -30,7 +30,7 @@ export function AppSidebar() {
 
   return (
     <div className="flex">
-      <Sidebar variant="floating" collapsible={"offcanvas"}>
+      <Sidebar variant="floating" collapsible={"offcanvas"} className="mt-4">
         <SidebarDrawHeader />
         <SidebarContent className="px-2 py-0 space-y-0 gap-0">
           <ToolsGroup
