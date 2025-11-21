@@ -17,6 +17,9 @@ import IconSelection from "./icon-selection";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
+import UdpConfigDialog from "./udp-config-dialog";
+import { Settings } from "lucide-react";
+import { Button } from "../ui/button";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
   useCurrentPath,
@@ -65,6 +68,15 @@ const MapComponent = () => {
     };
   }, []);
 
+  // Show UDP config dialog on app start (only once)
+  useEffect(() => {
+    const hasShownConfig = sessionStorage.getItem("udp-config-shown");
+    if (!hasShownConfig) {
+      setIsUdpConfigDialogOpen(true);
+      sessionStorage.setItem("udp-config-shown", "true");
+    }
+  }, []);
+
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { dragStart, setDragStart } = useDragStart();
   const { mousePosition, setMousePosition } = useMousePosition();
@@ -88,6 +100,8 @@ const MapComponent = () => {
     null
   );
   const [mapZoom, setMapZoom] = useState(4);
+  const [isUdpConfigDialogOpen, setIsUdpConfigDialogOpen] = useState(false);
+  const [configKey, setConfigKey] = useState(0);
 
   // useEffect(() => {
   //   const loadNodeData = async () => {
@@ -1070,6 +1084,30 @@ const MapComponent = () => {
 
       <Tooltip />
       <ZoomControls mapRef={mapRef} />
+
+      {/* UDP Config Button - Top Right */}
+      <div className="absolute top-4 right-4 z-50">
+        <Button
+          onClick={() => setIsUdpConfigDialogOpen(true)}
+          variant="outline"
+          size="icon"
+          className="bg-white/90 hover:bg-white shadow-lg"
+          title="Configure UDP Server"
+        >
+          <Settings className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {/* UDP Config Dialog */}
+      <UdpConfigDialog
+        key={configKey}
+        isOpen={isUdpConfigDialogOpen}
+        onClose={() => setIsUdpConfigDialogOpen(false)}
+        onConfigSet={() => {
+          // Trigger reconnection by updating key
+          setConfigKey((prev) => prev + 1);
+        }}
+      />
     </div>
   );
 };

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { IconLayer } from "@deck.gl/layers";
 import { useNetworkLayersVisible } from "@/store/layers-store";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
+import { useUdpConfigStore } from "@/store/udp-config-store";
 
 interface UdpLayerData {
   targets: any[];
@@ -15,26 +16,26 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
   });
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { getNodeSymbol, nodeSymbols } = useUdpSymbolsStore();
+  const { getWsUrl, wsHost, wsPort } = useUdpConfigStore();
   const wsRef = useRef<WebSocket | null>(null);
 
   // Manage WebSocket connection based on networkLayersVisible
   useEffect(() => {
-    if (!networkLayersVisible) {
-      // Close WebSocket and clear data when network layers are hidden
-      if (wsRef.current) {
-        const ws = wsRef.current;
-        if (
-          ws.readyState === WebSocket.OPEN ||
-          ws.readyState === WebSocket.CONNECTING
-        ) {
-          console.log(
-            "🔌 Closing WebSocket connection (Network layers disabled)"
-          );
-          ws.close();
-        }
-        wsRef.current = null;
+    // Always close existing connection first (whether config changed or layers hidden)
+    if (wsRef.current) {
+      const oldWs = wsRef.current;
+      if (
+        oldWs.readyState === WebSocket.OPEN ||
+        oldWs.readyState === WebSocket.CONNECTING
+      ) {
+        console.log("🔌 Closing existing WebSocket connection");
+        oldWs.close();
       }
-      // Clear UDP data
+      wsRef.current = null;
+    }
+
+    if (!networkLayersVisible) {
+      // Clear UDP data when network layers are hidden
       setUdpData({
         targets: [],
         networkMembers: [],
@@ -42,72 +43,103 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       return;
     }
 
-    // Connect WebSocket when network layers are visible
-    console.log("🔌 Connecting to WebSocket: ws://localhost:8080");
-    const ws = new WebSocket("ws://localhost:8080");
+    // Small delay to ensure old connection is closed before creating new one
+    const connectTimeout = setTimeout(() => {
+      // Connect WebSocket when network layers are visible
+      const wsUrl = getWsUrl();
+      console.log(`🔌 Connecting to WebSocket: ${wsUrl}`);
+      const ws = new WebSocket(wsUrl);
+      let connectionOpened = false;
+      let connectionFailed = false;
 
-    ws.onopen = () => {
-      console.log("✅ WebSocket connected successfully");
-    };
+      ws.onopen = () => {
+        console.log("✅ WebSocket connected successfully");
+        connectionOpened = true;
+        connectionFailed = false;
+      };
 
-    ws.onmessage = (event) => {
-      try {
-        const parsed = JSON.parse(event.data);
+      ws.onmessage = (event) => {
+        try {
+          const parsed = JSON.parse(event.data);
 
-        // Filter out welcome/connection messages
+          // Filter out welcome/connection messages
+          if (
+            parsed.message &&
+            parsed.message.includes("Connected to WebSocket bridge")
+          ) {
+            return;
+          }
+
+          // Update state based on type
+          if (parsed.type === "networkMembers") {
+            setUdpData((prev) => ({
+              ...prev,
+              networkMembers: parsed.data || [],
+            }));
+          } else if (parsed.type === "targets") {
+            setUdpData((prev) => ({
+              ...prev,
+              targets: parsed.data || [],
+            }));
+          }
+        } catch (e) {
+          console.error("❌ Error parsing WebSocket message:", e);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error("❌ WebSocket error:", error);
+        connectionFailed = true;
+      };
+
+      ws.onclose = (event) => {
+        console.log(
+          "🔌 WebSocket closed, code:",
+          event.code,
+          "reason:",
+          event.reason
+        );
+
+        // Show alert if connection failed (not opened successfully or closed with error)
+        // Error codes: 1006 (abnormal closure), 1002 (protocol error), etc.
+        // Don't show alert if it was a normal close (1000) or going away (1001)
         if (
-          parsed.message &&
-          parsed.message.includes("Connected to WebSocket bridge")
+          !connectionOpened &&
+          (connectionFailed ||
+            event.code === 1006 ||
+            (event.code !== 1000 && event.code !== 1001))
         ) {
-          return;
+          alert(
+            `Connection to socket bridge server failed!\n\nHost: ${wsHost}\nPort: ${wsPort}\n\nPlease check your configuration.`
+          );
         }
 
-        // Update state based on type
-        if (parsed.type === "networkMembers") {
-          setUdpData((prev) => ({
-            ...prev,
-            networkMembers: parsed.data || [],
-          }));
-        } else if (parsed.type === "targets") {
-          setUdpData((prev) => ({
-            ...prev,
-            targets: parsed.data || [],
-          }));
-        }
-      } catch (e) {
-        console.error("❌ Error parsing WebSocket message:", e);
-      }
-    };
+        wsRef.current = null;
+      };
 
-    ws.onerror = (error) => {
-      console.error("❌ WebSocket error:", error);
-    };
-
-    ws.onclose = (event) => {
-      console.log(
-        "🔌 WebSocket closed, code:",
-        event.code,
-        "reason:",
-        event.reason
-      );
-      wsRef.current = null;
-    };
-
-    wsRef.current = ws;
+      wsRef.current = ws;
+    }, 100); // Small delay to ensure old connection cleanup
 
     return () => {
+      clearTimeout(connectTimeout);
       if (wsRef.current) {
         const currentWs = wsRef.current;
         if (
           currentWs.readyState === WebSocket.OPEN ||
           currentWs.readyState === WebSocket.CONNECTING
         ) {
+          console.log("🔌 Cleaning up WebSocket connection");
           currentWs.close();
         }
         wsRef.current = null;
       }
+      // Clear UDP data when connection changes
+      setUdpData({
+        targets: [],
+        networkMembers: [],
+      });
     };
-  }, [networkLayersVisible]);
+  }, [networkLayersVisible, wsHost, wsPort, getWsUrl]);
 
   // Memoize layers to prevent unnecessary recreations
   const udpLayers = useMemo(() => {
