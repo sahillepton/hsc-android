@@ -1,147 +1,232 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { IconLayer } from "@deck.gl/layers";
 import { useNetworkLayersVisible } from "@/store/layers-store";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
 import { useUdpConfigStore } from "@/store/udp-config-store";
+import { Udp } from "../../plugins/udp";
 
 interface UdpLayerData {
   targets: any[];
   networkMembers: any[];
 }
 
+// Binary parsing functions (from websocket-server.js)
+const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
+  const msg = new Uint8Array(msgBuffer);
+  const bin = Array.from(msg)
+    .map((b) => b.toString(2).padStart(8, "0"))
+    .join("");
+
+  const readBits = (start: number, len: number) =>
+    parseInt(bin.slice(start, start + len), 2);
+
+  const readI16 = (start: number) => {
+    let v = readBits(start, 16);
+    return v & 0x8000 ? v - 0x10000 : v;
+  };
+
+  const readU32 = (start: number) => readBits(start, 32);
+
+  const header = {
+    msgId: readBits(0, 8),
+    opcode: readBits(8, 8),
+    reserved0: readBits(16, 32),
+    reserved1: readBits(48, 32),
+    reserved2: readBits(80, 32),
+  };
+
+  const opcode = header.opcode;
+
+  if (opcode === 101) {
+    // Network Members
+    const numMembers = readBits(128, 8);
+    let offset = 160;
+    const members = [];
+    for (let i = 0; i < numMembers; i++) {
+      const m = {
+        globalId: readU32(offset),
+        latitude: readU32(offset + 32) / 11930469,
+        longitude: readU32(offset + 64) / 11931272.17,
+        altitude: readI16(offset + 96),
+        veIn: readI16(offset + 112),
+        veIe: readI16(offset + 128),
+        veIu: readI16(offset + 144),
+        trueHeading: readI16(offset + 160),
+        reserved: readI16(offset + 176),
+        opcode: 101,
+      };
+      members.push(m);
+      offset += 192;
+    }
+    return { type: "networkMembers", opcode: 101, data: members, header };
+  }
+
+  if (opcode === 104) {
+    // Targets
+    const numTargets = readBits(128, 16);
+    let offset = 160;
+    const targets = [];
+    for (let i = 0; i < numTargets; i++) {
+      const t = {
+        globalId: readU32(offset),
+        latitude: readU32(offset + 32) / 11930469,
+        longitude: readU32(offset + 64) / 11931272.17,
+        altitude: readI16(offset + 96),
+        heading: readI16(offset + 112),
+        groundSpeed: readI16(offset + 128),
+        reserved0: readBits(offset + 144, 8),
+        reserved1: readBits(offset + 152, 8),
+        range: readU32(offset + 160),
+        opcode: 104,
+      };
+      targets.push(t);
+      offset += 192;
+    }
+    return { type: "targets", opcode: 104, data: targets, header };
+  }
+
+  if (opcode === 106) {
+    // Threats
+    const senderGlobalId = readU32(128);
+    const numOfThreats = readBits(160, 8);
+    let offset = 192;
+    const threats = [];
+    for (let i = 0; i < numOfThreats; i++) {
+      const t = {
+        threatId: readBits(offset, 8),
+        isSearchMode: readBits(offset + 8, 8),
+        isLockOn: readBits(offset + 16, 8),
+        threatType: readBits(offset + 24, 8),
+        threatRange: readBits(offset + 32, 8),
+        reserved: readBits(offset + 40, 24),
+        threatAzimuth: readBits(offset + 64, 16),
+        threatFrequency: readBits(offset + 80, 16),
+        opcode: 106,
+      };
+      threats.push(t);
+      offset += 96;
+    }
+    return {
+      type: "threats",
+      opcode: 106,
+      data: threats,
+      header,
+      senderGlobalId,
+    };
+  }
+
+  return { type: "unknown", opcode, header };
+};
+
 export const useUdpLayers = (onHover?: (info: any) => void) => {
   const [udpData, setUdpData] = useState<UdpLayerData>({
     targets: [],
     networkMembers: [],
   });
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { getNodeSymbol, nodeSymbols } = useUdpSymbolsStore();
-  const { getWsUrl, wsHost, wsPort } = useUdpConfigStore();
-  const wsRef = useRef<WebSocket | null>(null);
+  const { host, port } = useUdpConfigStore();
 
-  // Manage WebSocket connection based on networkLayersVisible
   useEffect(() => {
-    // Always close existing connection first (whether config changed or layers hidden)
-    if (wsRef.current) {
-      const oldWs = wsRef.current;
-      if (
-        oldWs.readyState === WebSocket.OPEN ||
-        oldWs.readyState === WebSocket.CONNECTING
-      ) {
-        console.log("🔌 Closing existing WebSocket connection");
-        oldWs.close();
-      }
-      wsRef.current = null;
-    }
-
     if (!networkLayersVisible) {
-      // Clear UDP data when network layers are hidden
       setUdpData({
         targets: [],
         networkMembers: [],
       });
+      setConnectionError(null);
       return;
     }
 
-    // Small delay to ensure old connection is closed before creating new one
-    const connectTimeout = setTimeout(() => {
-      // Connect WebSocket when network layers are visible
-      const wsUrl = getWsUrl();
-      console.log(`🔌 Connecting to WebSocket: ${wsUrl}`);
-      const ws = new WebSocket(wsUrl);
-      let connectionOpened = false;
-      let connectionFailed = false;
+    let isConnected = false;
+    setConnectionError(null);
 
-      ws.onopen = () => {
-        console.log("✅ WebSocket connected successfully");
-        connectionOpened = true;
-        connectionFailed = false;
-      };
+    const connectUdp = async () => {
+      try {
+        console.log(`🔌 Connecting to UDP: ${host}:${port}`);
+        await Udp.create({ address: host, port });
+        isConnected = true;
+        setConnectionError(null);
+        console.log(`✅ UDP connected to ${host}:${port}`);
 
-      ws.onmessage = (event) => {
+        // Send registration message to UDP server (like websocket-server did)
         try {
-          const parsed = JSON.parse(event.data);
+          await Udp.send({
+            address: host,
+            port: port,
+            data: "bridge-register",
+          });
+          console.log("📤 Sent registration message to UDP server");
+        } catch (sendError) {
+          console.warn("⚠️ Could not send registration message:", sendError);
+          setConnectionError(
+            "Failed to send registration message. Connection may be unstable."
+          );
+        }
+      } catch (error: any) {
+        console.error("❌ UDP connection error:", error);
+        const errorMessage =
+          error?.message || error?.toString() || "Unknown error";
+        const fullErrorMessage = `Failed to connect to UDP server!\n\nHost: ${host}\nPort: ${port}\n\nError: ${errorMessage}\n\nPlease check your configuration.`;
+        setConnectionError(fullErrorMessage);
+        // Show alert prompt
+        alert(fullErrorMessage);
+      }
+    };
 
-          // Filter out welcome/connection messages
-          if (
-            parsed.message &&
-            parsed.message.includes("Connected to WebSocket bridge")
-          ) {
-            return;
-          }
+    let listener: { remove: () => void } | null = null;
 
-          // Update state based on type
-          if (parsed.type === "networkMembers") {
+    const setupListener = async () => {
+      await connectUdp();
+
+      // Listen for UDP messages
+      listener = await Udp.addListener("udpMessage", (event: any) => {
+        try {
+          const parsed = parseBinaryMessage(event.buffer);
+
+          // Add metadata (timestamp and rawLength) like websocket-server did
+          const enrichedData = {
+            ...parsed,
+            timestamp: new Date().toISOString(),
+            rawLength: event.buffer.byteLength,
+          };
+
+          console.log("📡 UDP message received:", enrichedData);
+
+          if (enrichedData.type === "networkMembers") {
             setUdpData((prev) => ({
               ...prev,
-              networkMembers: parsed.data || [],
+              networkMembers: enrichedData.data || [],
             }));
-          } else if (parsed.type === "targets") {
+          } else if (enrichedData.type === "targets") {
             setUdpData((prev) => ({
               ...prev,
-              targets: parsed.data || [],
+              targets: enrichedData.data || [],
             }));
           }
         } catch (e) {
-          console.error("❌ Error parsing WebSocket message:", e);
+          console.error("❌ Error parsing UDP message:", e);
         }
-      };
+      });
+    };
 
-      ws.onerror = (error) => {
-        console.error("❌ WebSocket error:", error);
-        connectionFailed = true;
-      };
-
-      ws.onclose = (event) => {
-        console.log(
-          "🔌 WebSocket closed, code:",
-          event.code,
-          "reason:",
-          event.reason
-        );
-
-        // Show alert if connection failed (not opened successfully or closed with error)
-        // Error codes: 1006 (abnormal closure), 1002 (protocol error), etc.
-        // Don't show alert if it was a normal close (1000) or going away (1001)
-        if (
-          !connectionOpened &&
-          (connectionFailed ||
-            event.code === 1006 ||
-            (event.code !== 1000 && event.code !== 1001))
-        ) {
-          alert(
-            `Connection to socket bridge server failed!\n\nHost: ${wsHost}\nPort: ${wsPort}\n\nPlease check your configuration.`
-          );
-        }
-
-        wsRef.current = null;
-      };
-
-      wsRef.current = ws;
-    }, 100); // Small delay to ensure old connection cleanup
+    setupListener();
 
     return () => {
-      clearTimeout(connectTimeout);
-      if (wsRef.current) {
-        const currentWs = wsRef.current;
-        if (
-          currentWs.readyState === WebSocket.OPEN ||
-          currentWs.readyState === WebSocket.CONNECTING
-        ) {
-          console.log("🔌 Cleaning up WebSocket connection");
-          currentWs.close();
-        }
-        wsRef.current = null;
+      if (isConnected) {
+        Udp.closeAllSockets().catch(console.error);
       }
-      // Clear UDP data when connection changes
+      if (listener) {
+        listener.remove();
+      }
       setUdpData({
         targets: [],
         networkMembers: [],
       });
+      setConnectionError(null);
     };
-  }, [networkLayersVisible, wsHost, wsPort, getWsUrl]);
+  }, [networkLayersVisible, host, port]);
 
-  // Memoize layers to prevent unnecessary recreations
   const udpLayers = useMemo(() => {
     if (!networkLayersVisible) {
       return [];
@@ -265,8 +350,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     onHover,
     networkLayersVisible,
     getNodeSymbol,
-    nodeSymbols, // Add nodeSymbols to dependencies so layers update when symbols change
+    nodeSymbols,
   ]);
 
-  return udpLayers;
+  return { udpLayers, connectionError };
 };

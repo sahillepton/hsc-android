@@ -4,8 +4,9 @@ import {
   EyeIcon,
   EyeOffIcon,
   LocateFixed,
-  X,
+  Trash2,
   Settings2,
+  ArrowUp,
 } from "lucide-react";
 import {
   SidebarGroup,
@@ -29,7 +30,7 @@ const LayersPanel = ({
   setIsLayersOpen: (isOpen: boolean) => void;
   isLayersOpen: boolean;
 }) => {
-  const { layers } = useLayers();
+  const { layers, bringLayerToTop } = useLayers();
   const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
   return (
@@ -161,11 +162,22 @@ const LayersPanel = ({
                       </Button>
                     </LayerPopover>
 
+                    {/* Bring to Top */}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 hover:bg-accent"
+                      title={`Bring to top: ${layer.name}`}
+                      onClick={() => bringLayerToTop(layer.id)}
+                    >
+                      <ArrowUp size={14} />
+                    </Button>
+
                     {!isProgressiveLayer && (
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                        className="h-8 w-8 hover:bg-accent"
                         title={`Delete layer: ${layer.name}`}
                         onClick={() => {
                           if (
@@ -177,7 +189,7 @@ const LayersPanel = ({
                           }
                         }}
                       >
-                        <X size={14} />
+                        <Trash2 size={14} />
                       </Button>
                     )}
                   </div>

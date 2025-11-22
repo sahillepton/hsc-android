@@ -12,7 +12,7 @@ const UdpConfigDialog = ({
   onClose,
   onConfigSet,
 }: UdpConfigDialogProps) => {
-  const { wsHost, wsPort, setConfig } = useUdpConfigStore();
+  const { host, port, setConfig } = useUdpConfigStore();
   const hasPromptedRef = useRef(false);
 
   useEffect(() => {
@@ -21,7 +21,7 @@ const UdpConfigDialog = ({
 
       const promptConfig = () => {
         // Prompt for host
-        const newHost = prompt(`Enter Socket Bridge Host:`, wsHost);
+        const newHost = prompt(`Enter UDP Server IP Address:`, host);
 
         if (newHost === null) {
           // User cancelled
@@ -31,14 +31,14 @@ const UdpConfigDialog = ({
         }
 
         if (!newHost.trim()) {
-          alert("Host cannot be empty. Please enter a valid host address.");
+          alert("Host cannot be empty. Please enter a valid IP address.");
           hasPromptedRef.current = false;
           promptConfig();
           return;
         }
 
         // Prompt for port
-        const newPort = prompt(`Enter Socket Bridge Port:`, wsPort.toString());
+        const newPort = prompt(`Enter UDP Server Port:`, port.toString());
 
         if (newPort === null) {
           // User cancelled
@@ -69,7 +69,7 @@ const UdpConfigDialog = ({
         promptConfig();
       }, 100);
     }
-  }, [isOpen, wsHost, wsPort, setConfig, onConfigSet, onClose]);
+  }, [isOpen, host, port, setConfig, onConfigSet, onClose]);
 
   // Reset the ref when dialog closes
   useEffect(() => {

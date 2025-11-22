@@ -9,8 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "generate:places": "node tools/generate-places.cjs",
-    "convert:xlsx": "node tools/convert-xlsx-to-json.cjs",
-    "ws-server": "node websocket-server.js"
+    "convert:xlsx": "node tools/convert-xlsx-to-json.cjs"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.3",

@@ -9,6 +9,7 @@ interface LayerState {
   addLayer: (layer: LayerProps) => void;
   deleteLayer: (layerId: string) => void;
   updateLayer: (layerId: string, layer: LayerProps) => void;
+  bringLayerToTop: (layerId: string) => void;
   isDrawing: boolean;
   setIsDrawing: (isDrawing: boolean) => void;
   currentPath: [number, number][];
@@ -62,9 +63,39 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   setLayers: (layers) => set({ layers }),
   addLayer: (layer) => set((state) => ({ layers: [...state.layers, layer] })),
   deleteLayer: (layerId: string) =>
-    set((state) => ({
-      layers: state.layers.filter((layer) => layer.id !== layerId),
-    })),
+    set((state) => {
+      // Check if the deleted layer is the one being hovered
+      let shouldClearHoverInfo = false;
+      if (state.hoverInfo) {
+        const hoveredObject = state.hoverInfo.object;
+        let hoveredLayerId: string | undefined;
+
+        if ((hoveredObject as any)?.layerId) {
+          hoveredLayerId = (hoveredObject as any).layerId;
+        } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+          hoveredLayerId = (hoveredObject as any).id;
+        } else if (state.hoverInfo.layer?.id) {
+          const deckLayerId = state.hoverInfo.layer.id;
+          hoveredLayerId = state.layers.find((l) => l.id === deckLayerId)?.id;
+          if (!hoveredLayerId) {
+            const baseId = deckLayerId
+              .replace(/-icon-layer$/, "")
+              .replace(/-signal-overlay$/, "")
+              .replace(/-bitmap$/, "");
+            hoveredLayerId = state.layers.find((l) => l.id === baseId)?.id;
+          }
+        }
+
+        if (hoveredLayerId === layerId) {
+          shouldClearHoverInfo = true;
+        }
+      }
+
+      return {
+        layers: state.layers.filter((layer) => layer.id !== layerId),
+        hoverInfo: shouldClearHoverInfo ? undefined : state.hoverInfo,
+      };
+    }),
   updateLayer: (layerId: string, updatedLayer: LayerProps) =>
     set((state) => ({
       layers: state.layers.map((layer) => {
@@ -77,14 +108,32 @@ const useLayerStore = create<LayerState>()((set, get) => ({
           return {
             ...updatedLayer,
             color: newColor,
-            // Explicitly include radius to ensure it's updated
+            // Explicitly include geometry properties to ensure they're updated
             radius: updatedLayer.radius,
             pointRadius: updatedLayer.pointRadius,
+            lineWidth: updatedLayer.lineWidth,
           };
         }
         return layer;
       }),
     })),
+  bringLayerToTop: (layerId: string) =>
+    set((state) => {
+      const layerIndex = state.layers.findIndex(
+        (layer) => layer.id === layerId
+      );
+      if (layerIndex === -1 || layerIndex === state.layers.length - 1) {
+        // Layer not found or already at top
+        return state;
+      }
+      const layer = state.layers[layerIndex];
+      const newLayers = [
+        ...state.layers.slice(0, layerIndex),
+        ...state.layers.slice(layerIndex + 1),
+        layer, // Move to end (top of rendering stack)
+      ];
+      return { layers: newLayers };
+    }),
   isDrawing: false,
   setIsDrawing: (isDrawing) => set({ isDrawing }),
   currentPath: [],
@@ -144,10 +193,12 @@ export const useLayers = () => {
   const layers = useLayerStore((state) => state.layers);
   const setLayers = useLayerStore((state) => state.setLayers);
   const addLayer = useLayerStore((state) => state.addLayer);
+  const bringLayerToTop = useLayerStore((state) => state.bringLayerToTop);
   return {
     layers,
     setLayers,
     addLayer,
+    bringLayerToTop,
   };
 };
 

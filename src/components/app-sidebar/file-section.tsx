@@ -363,7 +363,7 @@ const FileSection = () => {
           Math.floor(Math.random() * 255),
           Math.floor(Math.random() * 255),
         ],
-        pointRadius: 50000,
+        pointRadius: 5,
         lineWidth: 5,
         visible: true,
       };

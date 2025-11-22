@@ -1,5 +1,6 @@
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Input } from "../ui/input";
+import { Slider } from "../ui/slider";
 import { Separator } from "../ui/separator";
 import { rgbToHex, hexToRgb, getDistance, getPolygonArea } from "@/lib/utils";
 import { useMemo } from "react";
@@ -11,18 +12,27 @@ interface LayerPopoverProps {
 }
 
 const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
+  // Check for line geometry types
   const isLine =
     layer.type === "line" ||
     (layer.type === "geojson" &&
-      layer.geojson?.features?.some((f: any) =>
-        ["LineString", "MultiLineString"].includes(f.geometry?.type)
-      ));
+      layer.geojson &&
+      Array.isArray(layer.geojson.features) &&
+      layer.geojson.features.some((f: any) => {
+        const geomType = f?.geometry?.type;
+        return geomType === "LineString" || geomType === "MultiLineString";
+      }));
+
+  // Check for point geometry types
   const isPoint =
     layer.type === "point" ||
     (layer.type === "geojson" &&
-      layer.geojson?.features?.some((f: any) =>
-        ["Point", "MultiPoint"].includes(f.geometry?.type)
-      ));
+      layer.geojson &&
+      Array.isArray(layer.geojson.features) &&
+      layer.geojson.features.some((f: any) => {
+        const geomType = f?.geometry?.type;
+        return geomType === "Point" || geomType === "MultiPoint";
+      }));
 
   const distance = useMemo(() => {
     if (layer.type === "line" && layer.path?.length >= 2)
@@ -39,7 +49,19 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
   return (
     <Popover>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent className="w-72 p-3 space-y-4" align="end">
+      <PopoverContent className="w-72 p-3 space-y-4 ml-10 mt-3" align="end">
+        <style>{`
+          [data-slot='slider-track'] {
+            background-color: #e5e7eb !important;
+          }
+          [data-slot='slider-range'] {
+            background-color: #60a5fa !important;
+          }
+          [data-slot='slider-thumb'] {
+            background-color: #3b82f6 !important;
+            border-color: #3b82f6 !important;
+          }
+        `}</style>
         {/* Name Field */}
         <div className="mb-2">
           <label className="text-xs font-medium text-muted-foreground">
@@ -83,24 +105,25 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
               <label className="text-xs font-medium text-muted-foreground">
                 Line Width
               </label>
-              <Input
-                type="range"
+              <Slider
                 min={1}
                 max={20}
                 step={1}
-                tabIndex={-1}
-                value={layer.lineWidth ?? 5}
-                onChange={(e) =>
+                value={[layer.lineWidth ?? 5]}
+                onValueChange={(values) =>
                   updateLayer(layer.id, {
                     ...layer,
-                    lineWidth: parseInt(e.target.value),
+                    lineWidth: values[0],
                   })
                 }
+                className="mt-2"
               />
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>1</span>
-                <span>{layer.lineWidth ?? 5}</span>
-                <span>20</span>
+              <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                <span>1 px</span>
+                <span className="font-medium">
+                  Current: {layer.lineWidth ?? 5} px
+                </span>
+                <span>20 px</span>
               </div>
             </div>
           </>
@@ -113,18 +136,17 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
               <label className="text-xs font-medium text-muted-foreground">
                 Point Radius
               </label>
-              <Input
-                type="range"
-                min={100}
-                max={100000}
-                step={1000}
-                value={
+              <Slider
+                min={1}
+                max={100}
+                step={1}
+                value={[
                   layer.type === "point"
-                    ? layer.radius || 200
-                    : layer.pointRadius || 50000
-                }
-                onChange={(e) => {
-                  const value = parseInt(e.target.value);
+                    ? layer.radius || 5
+                    : layer.pointRadius || 5,
+                ]}
+                onValueChange={(values) => {
+                  const value = values[0];
                   if (layer.type === "point") {
                     updateLayer(layer.id, {
                       ...layer,
@@ -137,15 +159,18 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                     });
                   }
                 }}
+                className="mt-2"
               />
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>100</span>
-                <span>
+              <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                <span>1 px</span>
+                <span className="font-medium">
+                  Current:{" "}
                   {layer.type === "point"
-                    ? layer.radius || 200
-                    : layer.pointRadius || 50000}
+                    ? layer.radius || 5
+                    : layer.pointRadius || 5}{" "}
+                  px
                 </span>
-                <span>100k</span>
+                <span>100 px</span>
               </div>
             </div>
           </>
