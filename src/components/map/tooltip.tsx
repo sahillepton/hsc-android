@@ -24,26 +24,9 @@ const Tooltip = () => {
     x: number;
     y: number;
   } | null>(null);
-  const [udpDataUpdateTrigger, setUdpDataUpdateTrigger] = useState(0);
   const mapRef = (window as any).mapRef;
 
-  // Poll for UDP data updates when showing UDP layer tooltip (to avoid rerenders)
-  const isUdpLayerTooltip =
-    hoverInfo?.layer?.id === "udp-network-members-layer" ||
-    hoverInfo?.layer?.id === "udp-targets-layer";
-
-  useEffect(() => {
-    if (!isUdpLayerTooltip) return;
-
-    const interval = setInterval(() => {
-      // Just trigger a state update to force tooltip re-render
-      setUdpDataUpdateTrigger((prev) => prev + 1);
-    }, 100); // Check every 100ms for UDP data updates
-
-    return () => clearInterval(interval);
-  }, [isUdpLayerTooltip]);
-
-  // Update tooltip position when map moves/zooms or UDP data changes
+  // Update tooltip position when map moves/zooms
   useEffect(() => {
     if (!hoverInfo || !hoverInfo.object || !mapRef?.current) {
       setTooltipPosition(null);
@@ -55,88 +38,25 @@ const Tooltip = () => {
         const map = mapRef.current.getMap();
         if (!map) return;
 
-        // Get object coordinates - for UDP layers, use latest data from stream
+        // Get object coordinates
         let lng: number | undefined;
         let lat: number | undefined;
 
-        // Check if this is a UDP layer - get latest coordinates from stream
-        const currentUdpData = (window as any).udpData || {
-          targets: [],
-          networkMembers: [],
-        };
-        if (
-          hoverInfo.layer?.id === "udp-network-members-layer" ||
-          hoverInfo.layer?.id === "udp-targets-layer"
-        ) {
-          const userId =
-            hoverInfo.object.userId ||
-            hoverInfo.object.id ||
-            hoverInfo.object.globalId;
-          const isNetworkLayer =
-            hoverInfo.layer.id === "udp-network-members-layer";
-          const dataArray = isNetworkLayer
-            ? currentUdpData.networkMembers || []
-            : currentUdpData.targets || [];
-
-          // Find the latest data for this node
-          const latestNodeData = dataArray.find((item: any) => {
-            if (!item) return false;
-            return (
-              item.userId === userId ||
-              item.id === userId ||
-              item.globalId === userId ||
-              String(item.userId) === String(userId) ||
-              String(item.id) === String(userId) ||
-              String(item.globalId) === String(userId)
-            );
-          });
-
+        // Try to get coordinates from different object structures
+        if (hoverInfo.object.geometry?.coordinates) {
+          // GeoJSON Point
           if (
-            latestNodeData &&
-            latestNodeData.longitude !== undefined &&
-            latestNodeData.latitude !== undefined
+            Array.isArray(hoverInfo.object.geometry.coordinates) &&
+            hoverInfo.object.geometry.coordinates.length >= 2
           ) {
-            lng = latestNodeData.longitude;
-            lat = latestNodeData.latitude;
-          }
-        }
-
-        // Fallback to object coordinates if not found in latest data
-        if (lng === undefined || lat === undefined) {
-          // Try to get coordinates from different object structures
-          if (hoverInfo.object.geometry?.coordinates) {
-            // GeoJSON Point
-            if (
-              Array.isArray(hoverInfo.object.geometry.coordinates) &&
-              hoverInfo.object.geometry.coordinates.length >= 2
-            ) {
-              lng = hoverInfo.object.geometry.coordinates[0];
-              lat = hoverInfo.object.geometry.coordinates[1];
-            } else if (
-              hoverInfo.object.geometry.type === "Polygon" &&
-              Array.isArray(hoverInfo.object.geometry.coordinates[0])
-            ) {
-              // Polygon - use first point of first ring as reference
-              const firstRing = hoverInfo.object.geometry.coordinates[0];
-              if (
-                firstRing &&
-                firstRing.length > 0 &&
-                Array.isArray(firstRing[0])
-              ) {
-                lng = firstRing[0][0];
-                lat = firstRing[0][1];
-              }
-            }
+            lng = hoverInfo.object.geometry.coordinates[0];
+            lat = hoverInfo.object.geometry.coordinates[1];
           } else if (
-            hoverInfo.object.polygon &&
-            Array.isArray(hoverInfo.object.polygon)
+            hoverInfo.object.geometry.type === "Polygon" &&
+            Array.isArray(hoverInfo.object.geometry.coordinates[0])
           ) {
-            // Direct polygon layer - use first point as reference
-            const firstRing =
-              Array.isArray(hoverInfo.object.polygon[0]) &&
-              Array.isArray(hoverInfo.object.polygon[0][0])
-                ? hoverInfo.object.polygon[0] // Array of rings
-                : hoverInfo.object.polygon; // Single ring
+            // Polygon - use first point of first ring as reference
+            const firstRing = hoverInfo.object.geometry.coordinates[0];
             if (
               firstRing &&
               firstRing.length > 0 &&
@@ -145,25 +65,43 @@ const Tooltip = () => {
               lng = firstRing[0][0];
               lat = firstRing[0][1];
             }
-          } else if (
-            hoverInfo.object.longitude !== undefined &&
-            hoverInfo.object.latitude !== undefined
-          ) {
-            // Direct coordinates
-            lng = hoverInfo.object.longitude;
-            lat = hoverInfo.object.latitude;
-          } else if (
-            hoverInfo.object.position &&
-            Array.isArray(hoverInfo.object.position)
-          ) {
-            // Position array [lng, lat]
-            lng = hoverInfo.object.position[0];
-            lat = hoverInfo.object.position[1];
-          } else if (hoverInfo.coordinate) {
-            // PickingInfo coordinate
-            lng = hoverInfo.coordinate[0];
-            lat = hoverInfo.coordinate[1];
           }
+        } else if (
+          hoverInfo.object.polygon &&
+          Array.isArray(hoverInfo.object.polygon)
+        ) {
+          // Direct polygon layer - use first point as reference
+          const firstRing =
+            Array.isArray(hoverInfo.object.polygon[0]) &&
+            Array.isArray(hoverInfo.object.polygon[0][0])
+              ? hoverInfo.object.polygon[0] // Array of rings
+              : hoverInfo.object.polygon; // Single ring
+          if (
+            firstRing &&
+            firstRing.length > 0 &&
+            Array.isArray(firstRing[0])
+          ) {
+            lng = firstRing[0][0];
+            lat = firstRing[0][1];
+          }
+        } else if (
+          hoverInfo.object.longitude !== undefined &&
+          hoverInfo.object.latitude !== undefined
+        ) {
+          // Direct coordinates
+          lng = hoverInfo.object.longitude;
+          lat = hoverInfo.object.latitude;
+        } else if (
+          hoverInfo.object.position &&
+          Array.isArray(hoverInfo.object.position)
+        ) {
+          // Position array [lng, lat]
+          lng = hoverInfo.object.position[0];
+          lat = hoverInfo.object.position[1];
+        } else if (hoverInfo.coordinate) {
+          // PickingInfo coordinate
+          lng = hoverInfo.coordinate[0];
+          lat = hoverInfo.coordinate[1];
         }
 
         if (lng !== undefined && lat !== undefined) {
@@ -193,7 +131,7 @@ const Tooltip = () => {
         map.off("zoom", updatePosition);
       };
     }
-  }, [hoverInfo, mapRef, udpDataUpdateTrigger]);
+  }, [hoverInfo, mapRef]);
 
   if (!hoverInfo || !hoverInfo.object) {
     return null;
@@ -236,35 +174,12 @@ const Tooltip = () => {
     }
   }
   const getTooltipContent = () => {
-    // Handle UDP layers - get latest data from stream
+    // Handle UDP layers
     if (
       layer?.id === "udp-network-members-layer" ||
       layer?.id === "udp-targets-layer"
     ) {
-      const userId = object.userId || object.id || object.globalId || 0;
-      const isNetworkLayer = layer.id === "udp-network-members-layer";
-
-      // Get latest data from UDP stream
-      const currentUdpData = (window as any).udpData || {
-        targets: [],
-        networkMembers: [],
-      };
-      const dataArray = isNetworkLayer
-        ? currentUdpData.networkMembers || []
-        : currentUdpData.targets || [];
-      const latestNodeData =
-        dataArray.find((item: any) => {
-          if (!item) return false;
-          return (
-            item.userId === userId ||
-            item.id === userId ||
-            item.globalId === userId ||
-            String(item.userId) === String(userId) ||
-            String(item.id) === String(userId) ||
-            String(item.globalId) === String(userId)
-          );
-        }) || object; // Fallback to original object if not found
-
+      const userId = object.userId || object.id || 0;
       const currentSymbol = getNodeSymbol(layer.id, userId);
       const defaultSymbol =
         layer.id === "udp-network-members-layer"
@@ -280,94 +195,58 @@ const Tooltip = () => {
               : "Target"}
           </div>
           <div className="space-y-1">
-            {latestNodeData.longitude !== undefined &&
-              latestNodeData.latitude !== undefined && (
+            {object.longitude !== undefined &&
+              object.latitude !== undefined && (
                 <div className="flex justify-between gap-2">
                   <span className="text-gray-300">Location:</span>
                   <span className="font-mono text-xs mt-0.5">
-                    [{latestNodeData.latitude.toFixed(6)},{" "}
-                    {latestNodeData.longitude.toFixed(6)}]
+                    [{object.latitude.toFixed(3)}, {object.longitude.toFixed(3)}
+                    ]
                   </span>
                 </div>
               )}
-            {(latestNodeData.userId !== undefined ||
-              latestNodeData.globalId !== undefined) && (
+            {object.userId !== undefined && (
               <div className="flex justify-between">
                 <span className="text-gray-300">User ID:</span>
-                <span className="font-mono">
-                  {latestNodeData.userId || latestNodeData.globalId}
-                </span>
+                <span className="font-mono">{object.userId}</span>
               </div>
             )}
-            {latestNodeData.altitude !== undefined && (
-              <div className="flex justify-between">
-                <span className="text-gray-300">Altitude:</span>
-                <span className="font-mono">{latestNodeData.altitude} m</span>
-              </div>
-            )}
-            {latestNodeData.trueHeading !== undefined && (
-              <div className="flex justify-between">
-                <span className="text-gray-300">Heading:</span>
-                <span className="font-mono">{latestNodeData.trueHeading}°</span>
-              </div>
-            )}
-            {latestNodeData.heading !== undefined && (
-              <div className="flex justify-between">
-                <span className="text-gray-300">Heading:</span>
-                <span className="font-mono">{latestNodeData.heading}°</span>
-              </div>
-            )}
-            {latestNodeData.groundSpeed !== undefined && (
-              <div className="flex justify-between">
-                <span className="text-gray-300">Speed:</span>
-                <span className="font-mono">
-                  {latestNodeData.groundSpeed} m/s
-                </span>
-              </div>
-            )}
-            {latestNodeData.range !== undefined && (
-              <div className="flex justify-between">
-                <span className="text-gray-300">Range:</span>
-                <span className="font-mono">{latestNodeData.range} m</span>
-              </div>
-            )}
-            {latestNodeData.snr !== undefined && (
+            {object.snr !== undefined && (
               <div className="flex justify-between">
                 <span className="text-gray-300">SNR:</span>
-                <span className="font-mono">{latestNodeData.snr} dB</span>
+                <span className="font-mono">{object.snr} dB</span>
               </div>
             )}
-            {latestNodeData.rssi !== undefined && (
+            {object.rssi !== undefined && (
               <div className="flex justify-between">
                 <span className="text-gray-300">RSSI:</span>
-                <span className="font-mono">{latestNodeData.rssi} dBm</span>
+                <span className="font-mono">{object.rssi} dBm</span>
               </div>
             )}
-            {latestNodeData.distance !== undefined && (
+            {object.distance !== undefined && (
               <div className="flex justify-between">
                 <span className="text-gray-300">Distance:</span>
                 <span className="font-mono">
-                  {latestNodeData.distance.toFixed(2)} m
+                  {object.distance.toFixed(2)} m
                 </span>
               </div>
             )}
-            {latestNodeData.hopCount !== undefined && (
+            {object.hopCount !== undefined && (
               <div className="flex justify-between">
                 <span className="text-gray-300">Hop Count:</span>
-                <span className="font-mono">{latestNodeData.hopCount}</span>
+                <span className="font-mono">{object.hopCount}</span>
               </div>
             )}
-            {latestNodeData.connectedNodeIds &&
-              latestNodeData.connectedNodeIds.length > 0 && (
-                <div className="mt-2 pt-1 border-t border-gray-600">
-                  <div className="text-gray-300 text-xs mb-1">
-                    Connected Nodes:
-                  </div>
-                  <div className="font-mono text-xs">
-                    [{latestNodeData.connectedNodeIds.join(", ")}]
-                  </div>
+            {object.connectedNodeIds && object.connectedNodeIds.length > 0 && (
+              <div className="mt-2 pt-1 border-t border-gray-600">
+                <div className="text-gray-300 text-xs mb-1">
+                  Connected Nodes:
                 </div>
-              )}
+                <div className="font-mono text-xs">
+                  [{object.connectedNodeIds.join(", ")}]
+                </div>
+              </div>
+            )}
             {/* Symbol Selection for UDP Layers - Per Node */}
             <div className="mt-2 pt-1 border-t border-gray-600">
               <div className="text-gray-300 text-xs mb-2">Symbol:</div>
