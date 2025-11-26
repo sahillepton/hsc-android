@@ -44,7 +44,7 @@ import {
   makeSectorPolygon,
 } from "@/lib/layers";
 import type { LayerProps, Node } from "@/lib/definitions";
-import { LayersIcon, CameraIcon, WifiPen, XIcon } from "lucide-react";
+import { LayersIcon, CameraIcon, WifiPen, XIcon, PenIcon } from "lucide-react";
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
@@ -74,10 +74,12 @@ const MapComponent = ({
     };
   }, []);
 
-  // Show UDP config dialog on app start (only once)
+  // Show UDP config dialog on app start (only once) if no config exists
   useEffect(() => {
     const hasShownConfig = sessionStorage.getItem("udp-config-shown");
-    if (!hasShownConfig) {
+    const { host, port } = useUdpConfigStore.getState();
+    // Only auto-show if we haven't shown it before AND no config is set
+    if (!hasShownConfig && (!host || !host.trim() || !port || port <= 0)) {
       setIsUdpConfigDialogOpen(true);
       sessionStorage.setItem("udp-config-shown", "true");
     }
@@ -88,7 +90,7 @@ const MapComponent = ({
   const { mousePosition, setMousePosition } = useMousePosition();
   const { layers, addLayer } = useLayers();
   const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
-  const { drawingMode } = useDrawingMode();
+  const { drawingMode, setDrawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
   const { nodeIconMappings } = useNodeIconMappings();
@@ -180,6 +182,14 @@ const MapComponent = ({
       setCurrentPath([point]);
       setIsDrawing(true);
     } else {
+      // Safety check: ensure currentPath exists and has at least one point
+      if (!currentPath || currentPath.length === 0) {
+        console.warn("currentPath is empty, resetting line drawing");
+        setCurrentPath([point]);
+        setIsDrawing(true);
+        return;
+      }
+
       const finalPath = [currentPath[0], point];
       const newLayer: LayerProps = {
         type: "line",
@@ -436,35 +446,50 @@ const MapComponent = ({
       return;
     }
 
+    // Check if hovered layer is a UDP layer (by checking layer ID)
+    const hoveredLayerId = hoverInfo.layer?.id;
+    if (
+      hoveredLayerId &&
+      (hoveredLayerId.includes("udp-") ||
+        hoveredLayerId.includes("network-members") ||
+        hoveredLayerId.includes("targets"))
+    ) {
+      // If UDP layers are hidden, clear the tooltip
+      if (!networkLayersVisible) {
+        setHoverInfo(undefined);
+        return;
+      }
+    }
+
     // Find the layer ID from the hover info
     const hoveredObject = hoverInfo.object;
-    let hoveredLayerId: string | undefined;
+    let layerId: string | undefined;
 
     if ((hoveredObject as any)?.layerId) {
-      hoveredLayerId = (hoveredObject as any).layerId;
+      layerId = (hoveredObject as any).layerId;
     } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
-      hoveredLayerId = (hoveredObject as any).id;
+      layerId = (hoveredObject as any).id;
     } else if (hoverInfo.layer?.id) {
       const deckLayerId = hoverInfo.layer.id;
       const matchingLayer = layers.find((l) => l.id === deckLayerId);
-      hoveredLayerId = matchingLayer?.id;
-      if (!hoveredLayerId) {
+      layerId = matchingLayer?.id;
+      if (!layerId) {
         const baseId = deckLayerId
           .replace(/-icon-layer$/, "")
           .replace(/-signal-overlay$/, "")
           .replace(/-bitmap$/, "");
-        hoveredLayerId = layers.find((l) => l.id === baseId)?.id;
+        layerId = layers.find((l) => l.id === baseId)?.id;
       }
     }
 
     // Check if the hovered layer is now hidden or deleted
-    if (hoveredLayerId) {
-      const hoveredLayer = layers.find((l) => l.id === hoveredLayerId);
+    if (layerId) {
+      const hoveredLayer = layers.find((l) => l.id === layerId);
       if (!hoveredLayer || hoveredLayer.visible === false) {
         setHoverInfo(undefined);
       }
     }
-  }, [layers, hoverInfo, setHoverInfo]);
+  }, [layers, hoverInfo, setHoverInfo, networkLayersVisible]);
 
   const {
     cityNamesLayer,
@@ -509,7 +534,16 @@ const MapComponent = ({
   );
 
   // UDP layers from separate component
-  const { udpLayers, connectionError } = useUdpLayers(handleLayerHover);
+  const { udpLayers, connectionError, noDataWarning, isConnected, udpData } =
+    useUdpLayers(handleLayerHover);
+
+  // Expose UDP data to window for tooltip access (to avoid rerenders)
+  useEffect(() => {
+    (window as any).udpData = udpData;
+    return () => {
+      delete (window as any).udpData;
+    };
+  }, [udpData]);
   const { host, port } = useUdpConfigStore();
 
   const handleNodeIconClick = useCallback(
@@ -687,7 +721,7 @@ const MapComponent = ({
           stroked: true,
           pickable: true,
           pickingRadius: 300, // Larger picking radius for touch devices
-          radiusMinPixels: 3,
+          radiusMinPixels: 1,
           radiusMaxPixels: 50,
           onHover: handleLayerHover,
           updateTriggers: {
@@ -701,16 +735,18 @@ const MapComponent = ({
     }
 
     if (lineLayers.length) {
-      const pathData = lineLayers.flatMap((layer) =>
-        (layer.path ?? []).slice(0, -1).map((point, index) => ({
+      const pathData = lineLayers.flatMap((layer) => {
+        const path = layer.path ?? [];
+        if (path.length < 2) return []; // Need at least 2 points for a line
+        return path.slice(0, -1).map((point, index) => ({
           sourcePosition: point,
-          targetPosition: layer.path![index + 1],
+          targetPosition: path[index + 1],
           color: layer.color ? [...layer.color] : [0, 0, 0], // Black default
           width: layer.lineWidth ?? 5,
           layerId: layer.id,
           layer: layer,
-        }))
-      );
+        }));
+      });
 
       if (pathData.length) {
         deckLayers.push(
@@ -723,9 +759,10 @@ const MapComponent = ({
               const color = d.color || [0, 0, 0]; // Black default
               return color.length === 3 ? [...color, 255] : color;
             },
-            getWidth: (d: any) => Math.max(3, d.width), // Minimum width of 3
+            getWidth: (d: any) => Math.max(1, d.width), // Minimum width of 1
             widthUnits: "pixels", // Use pixels instead of meters
-            widthMinPixels: 3, // Minimum width of 3 pixels
+            widthMinPixels: 1, // Minimum width of 1 pixel
+            widthMaxPixels: 50, // Maximum width of 50 pixels
             pickable: true,
             pickingRadius: 300, // Larger picking radius for touch devices
             onHover: handleLayerHover,
@@ -752,9 +789,10 @@ const MapComponent = ({
             getSourcePosition: (d: any) => d.sourcePosition,
             getTargetPosition: (d: any) => d.targetPosition,
             getColor: (d: any) => d.color,
-            getWidth: (d: any) => Math.max(3, d.width), // Minimum width of 3
+            getWidth: (d: any) => Math.max(1, d.width), // Minimum width of 1
             widthUnits: "pixels", // Use pixels instead of meters
-            widthMinPixels: 3, // Minimum width of 3 pixels
+            widthMinPixels: 1, // Minimum width of 1 pixel
+            widthMaxPixels: 50, // Maximum width of 50 pixels
             pickable: true,
             pickingRadius: 300, // Larger picking radius for touch devices
             onHover: handleLayerHover,
@@ -1097,15 +1135,19 @@ const MapComponent = ({
         />
       )}
 
-      {/* Connection Error Indicator Button */}
-      {connectionError && (
+      {/* Connection Error/No Data Indicator Button */}
+      {(connectionError || noDataWarning) && (
         <div className="absolute top-4 right-4 z-50">
           <Button
             onClick={() => setShowConnectionError(!showConnectionError)}
             variant="outline"
             size="icon"
             className="bg-white hover:bg-gray-50 text-red-500 border-0 shadow-lg"
-            title="Connection Error - Click to view details"
+            title={
+              connectionError
+                ? "Connection Error - Click to view details"
+                : "No Data Warning - Click to view details"
+            }
           >
             <span className="text-lg font-bold">!</span>
           </Button>
@@ -1152,6 +1194,63 @@ const MapComponent = ({
               </svg>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* UDP No Data Warning Banner */}
+      {noDataWarning && showConnectionError && (
+        <div className="absolute top-16 right-4 z-50 bg-white rounded-lg shadow-lg p-3 max-w-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1">
+              <div className="font-semibold mb-1.5 text-sm text-orange-600">
+                No Data Warning
+              </div>
+              <div className="text-xs space-y-1 text-gray-700">
+                <div>{noDataWarning}</div>
+                <div className="text-gray-600">
+                  Host: {host}:{port}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowConnectionError(false)}
+              className="text-gray-400 hover:text-gray-600 transition-colors shrink-0"
+              title="Close"
+            >
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* UDP Connection Status Indicator */}
+      {isConnected && !connectionError && (
+        <div
+          className="absolute bottom-4 left-4 z-50 rounded-sm shadow-lg px-2 py-1 flex items-center gap-2"
+          style={{
+            background: "rgba(0, 0, 0, 0.4)",
+            pointerEvents: "none",
+          }}
+        >
+          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+          <span
+            className="text-[10px] md:text-xs font-mono text-gray-700 font-bold capitalize "
+            style={{ color: "rgb(255, 255, 255)", letterSpacing: "0.08em" }}
+          >
+            {host}:{port}
+          </span>
         </div>
       )}
 
@@ -1215,7 +1314,7 @@ const MapComponent = ({
               type: "raster",
               source: "offline-tiles",
               paint: {
-                "raster-opacity": 0.5,
+                "raster-opacity": 0.8,
               },
             });
           }
@@ -1257,7 +1356,10 @@ const MapComponent = ({
       <ZoomControls mapRef={mapRef} />
 
       {/* Bottom Floating Island */}
-      <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center justify-center bg-white shadow-lg py-2 px-4 gap-6 rounded-md w-auto">
+      <div
+        className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-100 cursor-pointer flex items-center justify-center bg-white shadow-lg py-2 px-4 gap-6 rounded-md w-auto"
+        style={{ pointerEvents: "auto" }}
+      >
         <Button
           size="icon"
           className="bg-transparent shadow-none w-auto m-0 hover:bg-transparent"
@@ -1304,23 +1406,72 @@ const MapComponent = ({
               <XIcon className="h-1 w-1 text-gray-600" />
             </Button>
             <div className="w-full p-3">
-              <TiltControl mapRef={mapRef} pitch={pitch} setPitch={setPitch} />
+              <TiltControl
+                mapRef={mapRef}
+                pitch={pitch}
+                setPitch={setPitch}
+                onCreatePoint={createPointLayer}
+              />
             </div>
           </PopoverContent>
         </Popover>
         <Button
           size="icon"
-          className="bg-transparent shadow-none w-auto m-0 hover:bg-transparent"
+          className="bg-transparent shadow-none w-auto m-0 hover:bg-transparent relative z-50"
           onClick={() => setIsUdpConfigDialogOpen(true)}
           title="Configure UDP Server"
+          style={{ pointerEvents: "auto" }}
         >
-          <div className="flex flex-col gap-0.5 items-center justify-center">
+          <div className="flex flex-col gap-0.5 items-center justify-center pointer-events-none">
             <WifiPen className="h-8 w-8 text-black shadow-none" />
             <span className="text-xs text-black whitespace-nowrap">
               Connection
             </span>
           </div>
         </Button>
+        {drawingMode && (
+          <Button
+            size="icon"
+            className="bg-transparent shadow-none w-auto m-0 hover:bg-transparent"
+            onClick={() => {
+              // If polygon mode with 3+ points, save the polygon before exiting
+              if (
+                drawingMode === "polygon" &&
+                pendingPolygonPoints.length >= 3
+              ) {
+                const closedPath = [
+                  ...pendingPolygonPoints,
+                  pendingPolygonPoints[0],
+                ];
+                const newLayer: LayerProps = {
+                  type: "polygon",
+                  id: generateLayerId(),
+                  name: `Polygon ${
+                    layers.filter((l) => l.type === "polygon").length + 1
+                  }`,
+                  polygon: [closedPath],
+                  color: [32, 32, 32, 180],
+                  visible: true,
+                };
+                addLayer(newLayer);
+                lastLayerCreationTimeRef.current = Date.now();
+                setHoverInfo(undefined);
+              }
+              // Exit drawing mode
+              setDrawingMode(null);
+              setIsDrawing(false);
+              setCurrentPath([]);
+              setPendingPolygonPoints([]);
+            }}
+          >
+            <div className="flex flex-col gap-0.5 items-center justify-center">
+              <PenIcon className="h-8 w-8 text-red-600 shadow-none" />
+              <span className="text-xs text-red-600 whitespace-nowrap">
+                Exit Drawing
+              </span>
+            </div>
+          </Button>
+        )}
       </div>
 
       {/* UDP Config Dialog */}

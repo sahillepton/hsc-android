@@ -107,7 +107,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
               </label>
               <Slider
                 min={1}
-                max={20}
+                max={50}
                 step={1}
                 value={[layer.lineWidth ?? 5]}
                 onValueChange={(values) =>
@@ -123,7 +123,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                 <span className="font-medium">
                   Current: {layer.lineWidth ?? 5} px
                 </span>
-                <span>20 px</span>
+                <span>50 px</span>
               </div>
             </div>
           </>
@@ -138,7 +138,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
               </label>
               <Slider
                 min={1}
-                max={100}
+                max={50}
                 step={1}
                 value={[
                   layer.type === "point"
@@ -170,7 +170,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                     : layer.pointRadius || 5}{" "}
                   px
                 </span>
-                <span>100 px</span>
+                <span>50 px</span>
               </div>
             </div>
           </>

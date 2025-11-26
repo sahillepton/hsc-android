@@ -250,6 +250,47 @@ const FileSection = () => {
     }
   };
 
+  // Helper function to extract size (radius/width) from feature properties
+  const extractSizeFromProperties = (
+    properties: any,
+    sizeType: "point" | "line"
+  ): number | null => {
+    if (!properties) return null;
+
+    const sizeKeys =
+      sizeType === "point"
+        ? [
+            "size",
+            "radius",
+            "pointRadius",
+            "point-radius",
+            "point_radius",
+            "marker-size",
+            "markerSize",
+          ]
+        : [
+            "size",
+            "width",
+            "lineWidth",
+            "line-width",
+            "line_width",
+            "stroke-width",
+            "strokeWidth",
+          ];
+
+    for (const key of sizeKeys) {
+      const sizeValue = properties[key];
+      if (sizeValue !== undefined && sizeValue !== null) {
+        const size = parseFloat(sizeValue);
+        if (!isNaN(size)) {
+          // Clamp to minimum of 1 and maximum of 50
+          return Math.max(1, Math.min(50, Math.round(size)));
+        }
+      }
+    }
+    return null;
+  };
+
   const uploadGeoJsonFile = async (file: File) => {
     try {
       const fileName = file.name.toLowerCase();
@@ -350,6 +391,24 @@ const FileSection = () => {
         return;
       }
 
+      // Extract size values from CSV properties if available
+      const firstFeature = validFeatures[0];
+      const hasPoints = validFeatures.some(
+        (f) => f.geometry?.type === "Point" || f.geometry?.type === "MultiPoint"
+      );
+      const hasLines = validFeatures.some(
+        (f) =>
+          f.geometry?.type === "LineString" ||
+          f.geometry?.type === "MultiLineString"
+      );
+
+      const extractedPointRadius = hasPoints
+        ? extractSizeFromProperties(firstFeature?.properties, "point")
+        : null;
+      const extractedLineWidth = hasLines
+        ? extractSizeFromProperties(firstFeature?.properties, "line")
+        : null;
+
       const newLayer: LayerProps = {
         type: "geojson",
         id: generateLayerId(),
@@ -363,8 +422,8 @@ const FileSection = () => {
           Math.floor(Math.random() * 255),
           Math.floor(Math.random() * 255),
         ],
-        pointRadius: 5,
-        lineWidth: 5,
+        pointRadius: extractedPointRadius ?? 5,
+        lineWidth: extractedLineWidth ?? 5,
         visible: true,
       };
       setLayers([...layers, newLayer]);

@@ -10,8 +10,8 @@ interface UdpConfigState {
 export const useUdpConfigStore = create<UdpConfigState>()(
   persist(
     (set) => ({
-      host: "127.0.0.1",
-      port: 5005,
+      host: "",
+      port: 0,
       setConfig: (host: string, port: number) => set({ host, port }),
     }),
     {

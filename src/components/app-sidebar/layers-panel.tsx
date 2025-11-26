@@ -6,7 +6,7 @@ import {
   LocateFixed,
   Trash2,
   Settings2,
-  ArrowUp,
+  // ArrowUp,
 } from "lucide-react";
 import {
   SidebarGroup,
@@ -30,7 +30,8 @@ const LayersPanel = ({
   setIsLayersOpen: (isOpen: boolean) => void;
   isLayersOpen: boolean;
 }) => {
-  const { layers, bringLayerToTop } = useLayers();
+  // const { layers, bringLayerToTop } = useLayers();
+  const { layers } = useLayers();
   const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
   return (
@@ -162,7 +163,7 @@ const LayersPanel = ({
                       </Button>
                     </LayerPopover>
 
-                    {/* Bring to Top */}
+                    {/* Bring to Top
                     <Button
                       variant="ghost"
                       size="icon"
@@ -171,7 +172,7 @@ const LayersPanel = ({
                       onClick={() => bringLayerToTop(layer.id)}
                     >
                       <ArrowUp size={14} />
-                    </Button>
+                    </Button> */}
 
                     {!isProgressiveLayer && (
                       <Button

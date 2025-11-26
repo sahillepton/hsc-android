@@ -19,9 +19,10 @@ const UdpConfigDialog = ({
     if (isOpen && !hasPromptedRef.current) {
       hasPromptedRef.current = true;
 
-      const promptConfig = () => {
+      const promptConfig = (): void => {
         // Prompt for host
-        const newHost = prompt(`Enter UDP Server IP Address:`, host);
+        const hostPrompt = host && host.trim() ? host : "";
+        const newHost = prompt(`Enter UDP Server IP Address:`, hostPrompt);
 
         if (newHost === null) {
           // User cancelled
@@ -38,7 +39,8 @@ const UdpConfigDialog = ({
         }
 
         // Prompt for port
-        const newPort = prompt(`Enter UDP Server Port:`, port.toString());
+        const portPrompt = port && port > 0 ? port.toString() : "";
+        const newPort = prompt(`Enter UDP Server Port:`, portPrompt);
 
         if (newPort === null) {
           // User cancelled
@@ -69,7 +71,7 @@ const UdpConfigDialog = ({
         promptConfig();
       }, 100);
     }
-  }, [isOpen, host, port, setConfig, onConfigSet, onClose]);
+  }, [isOpen, setConfig, onConfigSet, onClose, host, port]);
 
   // Reset the ref when dialog closes
   useEffect(() => {

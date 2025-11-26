@@ -124,6 +124,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     networkMembers: [],
   });
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [noDataWarning, setNoDataWarning] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { getNodeSymbol, nodeSymbols } = useUdpSymbolsStore();
   const { host, port } = useUdpConfigStore();
@@ -135,19 +137,41 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         networkMembers: [],
       });
       setConnectionError(null);
+      setIsConnected(false);
       return;
     }
 
-    let isConnected = false;
+    // Don't attempt connection if host or port are not configured
+    if (!host || !host.trim() || !port || port <= 0) {
+      setUdpData({
+        targets: [],
+        networkMembers: [],
+      });
+      setConnectionError(null);
+      setIsConnected(false);
+      return;
+    }
+
+    let connectionEstablished = false;
+    let noDataTimeout: NodeJS.Timeout | null = null;
     setConnectionError(null);
+    setNoDataWarning(null);
 
     const connectUdp = async () => {
       try {
         console.log(`🔌 Connecting to UDP: ${host}:${port}`);
         await Udp.create({ address: host, port });
-        isConnected = true;
+        connectionEstablished = true;
+        setIsConnected(true);
         setConnectionError(null);
         console.log(`✅ UDP connected to ${host}:${port}`);
+
+        // Check for no data after 5 seconds
+        noDataTimeout = setTimeout(() => {
+          setNoDataWarning(
+            "Please check the UDP server configurations. No data is coming!"
+          );
+        }, 15000);
 
         // Send registration message to UDP server (like websocket-server did)
         try {
@@ -168,6 +192,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         const errorMessage =
           error?.message || error?.toString() || "Unknown error";
         const fullErrorMessage = `Failed to connect to UDP server!\n\nHost: ${host}\nPort: ${port}\n\nError: ${errorMessage}\n\nPlease check your configuration.`;
+        setIsConnected(false);
         setConnectionError(fullErrorMessage);
         // Show alert prompt
         alert(fullErrorMessage);
@@ -179,41 +204,69 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     const setupListener = async () => {
       await connectUdp();
 
-      // Listen for UDP messages
-      listener = await Udp.addListener("udpMessage", (event: any) => {
-        try {
-          const parsed = parseBinaryMessage(event.buffer);
+      if (connectionEstablished) {
+        // Listen for UDP messages
+        listener = await Udp.addListener("udpMessage", (event: any) => {
+          try {
+            // Clear no data warning when data arrives
+            setNoDataWarning(null);
+            if (noDataTimeout) {
+              clearTimeout(noDataTimeout);
+              noDataTimeout = null;
+            }
 
-          // Add metadata (timestamp and rawLength) like websocket-server did
-          const enrichedData = {
-            ...parsed,
-            timestamp: new Date().toISOString(),
-            rawLength: event.buffer.byteLength,
-          };
+            const parsed = parseBinaryMessage(event.buffer);
 
-          console.log("📡 UDP message received:", enrichedData);
+            // Add metadata (timestamp and rawLength) like websocket-server did
+            const enrichedData = {
+              ...parsed,
+              timestamp: new Date().toISOString(),
+              rawLength: event.buffer.byteLength,
+            };
 
-          if (enrichedData.type === "networkMembers") {
-            setUdpData((prev) => ({
-              ...prev,
-              networkMembers: enrichedData.data || [],
-            }));
-          } else if (enrichedData.type === "targets") {
-            setUdpData((prev) => ({
-              ...prev,
-              targets: enrichedData.data || [],
-            }));
+            console.log("📡 UDP message received:", enrichedData);
+
+            if (enrichedData.type === "networkMembers") {
+              // Map globalId to userId for consistency
+              const mappedMembers = (enrichedData.data || []).map(
+                (member: any) => ({
+                  ...member,
+                  userId: member.globalId,
+                  id: member.globalId,
+                })
+              );
+              setUdpData((prev) => ({
+                ...prev,
+                networkMembers: mappedMembers,
+              }));
+            } else if (enrichedData.type === "targets") {
+              // Map globalId to userId for consistency
+              const mappedTargets = (enrichedData.data || []).map(
+                (target: any) => ({
+                  ...target,
+                  userId: target.globalId,
+                  id: target.globalId,
+                })
+              );
+              setUdpData((prev) => ({
+                ...prev,
+                targets: mappedTargets,
+              }));
+            }
+          } catch (e) {
+            console.error("❌ Error parsing UDP message:", e);
           }
-        } catch (e) {
-          console.error("❌ Error parsing UDP message:", e);
-        }
-      });
+        });
+      }
     };
 
     setupListener();
 
     return () => {
-      if (isConnected) {
+      if (noDataTimeout) {
+        clearTimeout(noDataTimeout);
+      }
+      if (connectionEstablished) {
         Udp.closeAllSockets().catch(console.error);
       }
       if (listener) {
@@ -224,6 +277,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         networkMembers: [],
       });
       setConnectionError(null);
+      setNoDataWarning(null);
+      setIsConnected(false);
     };
   }, [networkLayersVisible, host, port]);
 
@@ -353,5 +408,5 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     nodeSymbols,
   ]);
 
-  return { udpLayers, connectionError };
+  return { udpLayers, connectionError, noDataWarning, isConnected, udpData };
 };

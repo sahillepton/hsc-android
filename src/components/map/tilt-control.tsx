@@ -10,18 +10,58 @@ import {
 import { useState } from "react";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 const TiltControl = ({
   mapRef,
   pitch,
   setPitch,
+  onCreatePoint,
 }: {
   mapRef: React.RefObject<any>;
   pitch: number;
   setPitch: (pitch: number) => void;
+  onCreatePoint?: (position: [number, number]) => void;
 }) => {
   const [is3DTerrainMode, setIs3DTerrainMode] = useState(false);
   const [isOfflineMode, setIsOfflineMode] = useState(true);
+  const [latitude, setLatitude] = useState("");
+  const [longitude, setLongitude] = useState("");
+
+  const handleGoToLocation = () => {
+    if (!mapRef.current) return;
+
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+
+    // Validate coordinates
+    if (isNaN(lat) || isNaN(lng)) {
+      return;
+    }
+
+    // Validate latitude range (-90 to 90)
+    if (lat < -90 || lat > 90) {
+      return;
+    }
+
+    // Validate longitude range (-180 to 180)
+    if (lng < -180 || lng > 180) {
+      return;
+    }
+
+    const map = mapRef.current.getMap();
+    map.flyTo({
+      center: [lng, lat],
+      zoom: Math.max(map.getZoom(), 10),
+      duration: 1500,
+      essential: true,
+    });
+
+    // Create a point layer at this location (normal point layer flow)
+    if (onCreatePoint) {
+      onCreatePoint([lng, lat]);
+    }
+  };
 
   return (
     <div className="w-full">
@@ -78,6 +118,49 @@ const TiltControl = ({
         </div>
       </div>
 
+      {/* Go to Location */}
+      <div className="mb-2 pt-2 border-gray-200">
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-1.5" style={{ zoom: 0.85 }}>
+            <div className="flex-1">
+              <Input
+                type="number"
+                step="any"
+                placeholder="Lat"
+                value={latitude}
+                onChange={(e) => setLatitude(e.target.value)}
+                className="h-7 text-[10px]"
+              />
+            </div>
+            <div className="flex-1">
+              <Input
+                type="number"
+                step="any"
+                placeholder="Long"
+                value={longitude}
+                onChange={(e) => setLongitude(e.target.value)}
+                className="h-7 text-[10px]"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleGoToLocation();
+                  }
+                }}
+              />
+            </div>
+            <div className="flex-1">
+              <Button
+                onClick={handleGoToLocation}
+                className="h-7 text-xs bg-blue-500 rounded-sm hover:bg-blue-600 text-white w-full"
+                disabled={!latitude || !longitude}
+              >
+                Go
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Offline Mode Toggle */}
       <div className="pt-1 flex flex-row gap-1.5" style={{ zoom: 0.85 }}>
         <button
@@ -106,7 +189,7 @@ const TiltControl = ({
                     "visible"
                   );
                 }
-                map.setMaxBounds([76.9, 27.8, 77.2, 28.8]); // Restore bounds
+                // No bounds restriction - allow free panning
               }
             }
           }}
@@ -137,52 +220,51 @@ const TiltControl = ({
           <Navigation className="size-3" />
           <span className="whitespace-nowrap">Reset</span>
         </button>
+        <button
+          onClick={() => {
+            setIs3DTerrainMode(!is3DTerrainMode);
+            if (mapRef.current) {
+              const map = mapRef.current.getMap();
+              if (!is3DTerrainMode) {
+                // Enable enhanced 3D terrain
+                map.setTerrain({
+                  source: "mapbox-dem",
+                  exaggeration: 5.0,
+                });
+                map.easeTo({
+                  pitch: 60,
+                  zoom: Math.max(map.getZoom(), 10),
+                  duration: 1000,
+                });
+                setPitch(60);
+              } else {
+                // Return to normal terrain
+                map.setTerrain({
+                  source: "mapbox-dem",
+                  exaggeration: 4.0,
+                });
+                map.easeTo({
+                  pitch: 0,
+                  duration: 1000,
+                });
+                setPitch(0);
+              }
+            }
+          }}
+          className={`w-full px-2.5 py-1.5 flex-1 text-xs rounded transition-colors flex items-center justify-center gap-1.5 ${
+            is3DTerrainMode
+              ? "bg-emerald-500 text-white hover:bg-emerald-600"
+              : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+          }`}
+        >
+          <Globe className="size-3" />
+          {is3DTerrainMode ? "2D" : "3D"}
+        </button>
       </div>
 
       {/* 3D Terrain Mode */}
       <div className="pt-1 mt-1" style={{ zoom: 0.85 }}>
         <div className="flex flex-col gap-1.5">
-          <button
-            onClick={() => {
-              setIs3DTerrainMode(!is3DTerrainMode);
-              if (mapRef.current) {
-                const map = mapRef.current.getMap();
-                if (!is3DTerrainMode) {
-                  // Enable enhanced 3D terrain
-                  map.setTerrain({
-                    source: "mapbox-dem",
-                    exaggeration: 5.0,
-                  });
-                  map.easeTo({
-                    pitch: 60,
-                    zoom: Math.max(map.getZoom(), 10),
-                    duration: 1000,
-                  });
-                  setPitch(60);
-                } else {
-                  // Return to normal terrain
-                  map.setTerrain({
-                    source: "mapbox-dem",
-                    exaggeration: 4.0,
-                  });
-                  map.easeTo({
-                    pitch: 0,
-                    duration: 1000,
-                  });
-                  setPitch(0);
-                }
-              }
-            }}
-            className={`w-full px-2.5 py-1.5 text-xs rounded transition-colors flex items-center justify-center gap-1.5 ${
-              is3DTerrainMode
-                ? "bg-emerald-500 text-white hover:bg-emerald-600"
-                : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-            }`}
-          >
-            <Globe className="size-3" />
-            {is3DTerrainMode ? "Disable 3D" : "Enable 3D"}
-          </button>
-
           {is3DTerrainMode && (
             <div className="flex gap-1.5">
               <button
