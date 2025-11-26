@@ -534,16 +534,8 @@ const MapComponent = ({
   );
 
   // UDP layers from separate component
-  const { udpLayers, connectionError, noDataWarning, isConnected, udpData } =
+  const { udpLayers, connectionError, noDataWarning, isConnected } =
     useUdpLayers(handleLayerHover);
-
-  // Expose UDP data to window for tooltip access (to avoid rerenders)
-  useEffect(() => {
-    (window as any).udpData = udpData;
-    return () => {
-      delete (window as any).udpData;
-    };
-  }, [udpData]);
   const { host, port } = useUdpConfigStore();
 
   const handleNodeIconClick = useCallback(

@@ -5,6 +5,11 @@ import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
 import { useUdpConfigStore } from "@/store/udp-config-store";
 import { Udp } from "../../plugins/udp";
 
+// Test mode configuration - set to true to use WebSocket instead of UDP
+const IS_TEST = true;
+const WS_IP = "localhost";
+const WS_PORT = 8080;
+
 interface UdpLayerData {
   targets: any[];
   networkMembers: any[];
@@ -141,61 +146,244 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       return;
     }
 
-    // Don't attempt connection if host or port are not configured
-    if (!host || !host.trim() || !port || port <= 0) {
-      setUdpData({
-        targets: [],
-        networkMembers: [],
-      });
-      setConnectionError(null);
-      setIsConnected(false);
-      return;
+    // For test mode, use WebSocket; otherwise check UDP config
+    if (IS_TEST) {
+      // WebSocket mode - use hardcoded WS_IP and WS_PORT
+      if (!WS_IP || !WS_PORT || WS_PORT <= 0) {
+        setUdpData({
+          targets: [],
+          networkMembers: [],
+        });
+        setConnectionError(null);
+        setIsConnected(false);
+        return;
+      }
+    } else {
+      // UDP mode - check if host or port are configured
+      if (!host || !host.trim() || !port || port <= 0) {
+        setUdpData({
+          targets: [],
+          networkMembers: [],
+        });
+        setConnectionError(null);
+        setIsConnected(false);
+        return;
+      }
     }
 
     let connectionEstablished = false;
     let noDataTimeout: NodeJS.Timeout | null = null;
+    let websocket: WebSocket | null = null;
     setConnectionError(null);
     setNoDataWarning(null);
 
     const connectUdp = async () => {
-      try {
-        console.log(`🔌 Connecting to UDP: ${host}:${port}`);
-        await Udp.create({ address: host, port });
-        connectionEstablished = true;
-        setIsConnected(true);
-        setConnectionError(null);
-        console.log(`✅ UDP connected to ${host}:${port}`);
-
-        // Check for no data after 5 seconds
-        noDataTimeout = setTimeout(() => {
-          setNoDataWarning(
-            "Please check the UDP server configurations. No data is coming!"
-          );
-        }, 15000);
-
-        // Send registration message to UDP server (like websocket-server did)
+      if (IS_TEST) {
+        // Use WebSocket for testing
         try {
-          await Udp.send({
-            address: host,
-            port: port,
-            data: "bridge-register",
-          });
-          console.log("📤 Sent registration message to UDP server");
-        } catch (sendError) {
-          console.warn("⚠️ Could not send registration message:", sendError);
-          setConnectionError(
-            "Failed to send registration message. Connection may be unstable."
-          );
+          const wsUrl = `ws://${WS_IP}:${WS_PORT}`;
+          console.log(`🔌 Connecting to WebSocket: ${wsUrl}`);
+          websocket = new WebSocket(wsUrl);
+          websocket.binaryType = "arraybuffer";
+
+          websocket.onopen = () => {
+            connectionEstablished = true;
+            setIsConnected(true);
+            setConnectionError(null);
+            console.log(`✅ WebSocket connected to ${wsUrl}`);
+
+            // Send registration message
+            try {
+              websocket?.send("bridge-register");
+              console.log("📤 Sent registration message to WebSocket server");
+            } catch (sendError) {
+              console.warn(
+                "⚠️ Could not send registration message:",
+                sendError
+              );
+            }
+
+            // Check for no data after 15 seconds
+            noDataTimeout = setTimeout(() => {
+              setNoDataWarning(
+                "Please check the WebSocket server configurations. No data is coming!"
+              );
+              setIsConnected(false);
+            }, 15000);
+          };
+
+          websocket.onmessage = (event: MessageEvent) => {
+            try {
+              setNoDataWarning(null);
+              setIsConnected(true);
+              if (noDataTimeout) {
+                clearTimeout(noDataTimeout);
+                noDataTimeout = null;
+              }
+
+              let buffer: ArrayBuffer;
+              if (event.data instanceof ArrayBuffer) {
+                buffer = event.data;
+                handleBinaryMessage(buffer);
+              } else if (event.data instanceof Blob) {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  if (reader.result instanceof ArrayBuffer) {
+                    handleBinaryMessage(reader.result);
+                  }
+                };
+                reader.onerror = (error) => {
+                  console.error("❌ Error reading Blob:", error);
+                };
+                reader.readAsArrayBuffer(event.data);
+              } else if (typeof event.data === "string") {
+                // Handle JSON message directly (no binary conversion)
+                try {
+                  const jsonData = JSON.parse(event.data);
+                  // Check if it's already in the expected format (type, opcode, data)
+                  if (
+                    jsonData.type &&
+                    (jsonData.type === "networkMembers" ||
+                      jsonData.type === "targets")
+                  ) {
+                    handleJsonMessage(jsonData);
+                  } else {
+                    console.warn(
+                      "⚠️ Received JSON message with unexpected format:",
+                      jsonData
+                    );
+                  }
+                } catch (jsonError) {
+                  console.error(
+                    "❌ Could not parse WebSocket message as JSON:",
+                    jsonError
+                  );
+                }
+              } else {
+                console.warn(
+                  "⚠️ Received unsupported message type from WebSocket:",
+                  typeof event.data
+                );
+              }
+            } catch (e) {
+              console.error("❌ Error processing WebSocket message:", e);
+            }
+          };
+
+          websocket.onerror = (error) => {
+            console.error("❌ WebSocket error:", error);
+            setIsConnected(false);
+          };
+
+          websocket.onclose = (event) => {
+            console.log(
+              `🔌 WebSocket closed: ${event.code} - ${
+                event.reason || "No reason"
+              }`
+            );
+            setIsConnected(false);
+            if (event.code !== 1000) {
+              setConnectionError(
+                `WebSocket connection closed. Code: ${event.code}${
+                  event.reason ? `, Reason: ${event.reason}` : ""
+                }`
+              );
+            }
+          };
+        } catch (error: any) {
+          console.error("❌ WebSocket connection error:", error);
+          const errorMessage =
+            error?.message || error?.toString() || "Unknown error";
+          const fullErrorMessage = `Failed to connect to WebSocket server!\n\nHost: ${WS_IP}\nPort: ${WS_PORT}\n\nError: ${errorMessage}`;
+          setIsConnected(false);
+          setConnectionError(fullErrorMessage);
+          alert(fullErrorMessage);
         }
-      } catch (error: any) {
-        console.error("❌ UDP connection error:", error);
-        const errorMessage =
-          error?.message || error?.toString() || "Unknown error";
-        const fullErrorMessage = `Failed to connect to UDP server!\n\nHost: ${host}\nPort: ${port}\n\nError: ${errorMessage}\n\nPlease check your configuration.`;
-        setIsConnected(false);
-        setConnectionError(fullErrorMessage);
-        // Show alert prompt
-        alert(fullErrorMessage);
+      } else {
+        // Use UDP (normal mode)
+        try {
+          console.log(`🔌 Connecting to UDP: ${host}:${port}`);
+          await Udp.create({ address: host, port });
+          connectionEstablished = true;
+          setIsConnected(true);
+          setConnectionError(null);
+          console.log(`✅ UDP connected to ${host}:${port}`);
+
+          // Check for no data after 15 seconds
+          noDataTimeout = setTimeout(() => {
+            setNoDataWarning(
+              "Please check the UDP server configurations. No data is coming!"
+            );
+            setIsConnected(false);
+          }, 5000);
+
+          // Send registration message to UDP server
+          try {
+            await Udp.send({
+              address: host,
+              port: port,
+              data: "bridge-register",
+            });
+            console.log("📤 Sent registration message to UDP server");
+          } catch (sendError) {
+            console.warn("⚠️ Could not send registration message:", sendError);
+            setConnectionError(
+              "Failed to send registration message. Connection may be unstable."
+            );
+          }
+        } catch (error: any) {
+          console.error("❌ UDP connection error:", error);
+          const errorMessage =
+            error?.message || error?.toString() || "Unknown error";
+          const fullErrorMessage = `Failed to connect to UDP server!\n\nHost: ${host}\nPort: ${port}\n\nError: ${errorMessage}\n\nPlease check your configuration.`;
+          setIsConnected(false);
+          setConnectionError(fullErrorMessage);
+          alert(fullErrorMessage);
+        }
+      }
+    };
+
+    // Helper function to handle binary messages (shared between UDP and WebSocket)
+    const handleBinaryMessage = (buffer: ArrayBuffer) => {
+      const parsed = parseBinaryMessage(buffer);
+      const enrichedData = {
+        ...parsed,
+        timestamp: new Date().toISOString(),
+        rawLength: buffer.byteLength,
+      };
+
+      console.log("📡 Message received:", enrichedData);
+
+      if (enrichedData.type === "networkMembers") {
+        setUdpData((prev) => ({
+          ...prev,
+          networkMembers: enrichedData.data || [],
+        }));
+      } else if (enrichedData.type === "targets") {
+        setUdpData((prev) => ({
+          ...prev,
+          targets: enrichedData.data || [],
+        }));
+      }
+    };
+
+    // Helper function to handle JSON messages directly (for WebSocket test mode)
+    const handleJsonMessage = (jsonData: any) => {
+      const enrichedData = {
+        ...jsonData,
+        timestamp: new Date().toISOString(),
+      };
+
+      if (enrichedData.type === "networkMembers") {
+        setUdpData((prev) => ({
+          ...prev,
+          networkMembers: enrichedData.data || [],
+        }));
+      } else if (enrichedData.type === "targets") {
+        setUdpData((prev) => ({
+          ...prev,
+          targets: enrichedData.data || [],
+        }));
       }
     };
 
@@ -204,55 +392,23 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     const setupListener = async () => {
       await connectUdp();
 
-      if (connectionEstablished) {
-        // Listen for UDP messages
+      if (connectionEstablished && !IS_TEST) {
+        // Listen for UDP messages (only for UDP, WebSocket handles via onmessage)
         listener = await Udp.addListener("udpMessage", (event: any) => {
           try {
-            // Clear no data warning when data arrives
             setNoDataWarning(null);
+            setIsConnected(true);
             if (noDataTimeout) {
               clearTimeout(noDataTimeout);
               noDataTimeout = null;
             }
 
-            const parsed = parseBinaryMessage(event.buffer);
-
-            // Add metadata (timestamp and rawLength) like websocket-server did
-            const enrichedData = {
-              ...parsed,
-              timestamp: new Date().toISOString(),
-              rawLength: event.buffer.byteLength,
-            };
-
-            console.log("📡 UDP message received:", enrichedData);
-
-            if (enrichedData.type === "networkMembers") {
-              // Map globalId to userId for consistency
-              const mappedMembers = (enrichedData.data || []).map(
-                (member: any) => ({
-                  ...member,
-                  userId: member.globalId,
-                  id: member.globalId,
-                })
-              );
-              setUdpData((prev) => ({
-                ...prev,
-                networkMembers: mappedMembers,
-              }));
-            } else if (enrichedData.type === "targets") {
-              // Map globalId to userId for consistency
-              const mappedTargets = (enrichedData.data || []).map(
-                (target: any) => ({
-                  ...target,
-                  userId: target.globalId,
-                  id: target.globalId,
-                })
-              );
-              setUdpData((prev) => ({
-                ...prev,
-                targets: mappedTargets,
-              }));
+            if (!event.buffer) {
+              console.warn("⚠️ UDP message received with no buffer.");
+              return;
             }
+
+            handleBinaryMessage(event.buffer);
           } catch (e) {
             console.error("❌ Error parsing UDP message:", e);
           }
@@ -266,7 +422,15 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       if (noDataTimeout) {
         clearTimeout(noDataTimeout);
       }
-      if (connectionEstablished) {
+
+      // Close WebSocket if open
+      if (websocket) {
+        websocket.close();
+        websocket = null;
+      }
+
+      // Close UDP if open
+      if (connectionEstablished && !IS_TEST) {
         Udp.closeAllSockets().catch(console.error);
       }
       if (listener) {
@@ -408,5 +572,5 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     nodeSymbols,
   ]);
 
-  return { udpLayers, connectionError, noDataWarning, isConnected, udpData };
+  return { udpLayers, connectionError, noDataWarning, isConnected };
 };
