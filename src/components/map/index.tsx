@@ -1345,7 +1345,7 @@ const MapComponent = ({
       </Map>
 
       <Tooltip />
-      <ZoomControls mapRef={mapRef} />
+      <ZoomControls mapRef={mapRef} zoom={mapZoom} />
 
       {/* Bottom Floating Island */}
       <div
