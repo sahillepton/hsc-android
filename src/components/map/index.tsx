@@ -1250,6 +1250,7 @@ const MapComponent = ({
         ref={mapRef}
         style={{ width: "100%", height: "100%" }}
         mapboxAccessToken="pk.eyJ1IjoibmlraGlsc2FyYWYiLCJhIjoiY2xlc296YjRjMDA5dDNzcXphZjlzamFmeSJ9.7ZDaMZKecY3-70p9pX9-GQ"
+        renderWorldCopies={false}
         reuseMaps={true}
         attributionControl={false}
         dragRotate={true}
