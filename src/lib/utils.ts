@@ -182,6 +182,43 @@ export function getDistance(
   return turf.distance(from, to, { units: "kilometers" }).toFixed(2);
 }
 
+/**
+ * Formats a key/label into a human-readable format
+ * Examples:
+ * - "globalId" -> "Global ID"
+ * - "userId" -> "User ID"
+ * - "hopCount" -> "Hop Count"
+ * - "connectedNodeIds" -> "Connected Node IDs"
+ * - "groundSpeed" -> "Ground Speed"
+ */
+export function formatLabel(key: string): string {
+  if (!key) return key;
+
+  // Handle camelCase, PascalCase, snake_case, and kebab-case
+  let formatted = key
+    // Split by camelCase/PascalCase (before uppercase letters)
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    // Split by underscores
+    .replace(/_/g, " ")
+    // Split by hyphens
+    .replace(/-/g, " ")
+    // Split by numbers (e.g., "ID123" -> "ID 123")
+    .replace(/([a-zA-Z])(\d)/g, "$1 $2")
+    .replace(/(\d)([a-zA-Z])/g, "$1 $2");
+
+  // Capitalize first letter of each word, but keep common acronyms uppercase
+  const acronyms = ["ID", "IDs", "SNR", "RSSI", "FTP", "GPS", "URL", "API"];
+  const words = formatted.split(" ").map((word) => {
+    const upperWord = word.toUpperCase();
+    if (acronyms.includes(upperWord)) {
+      return upperWord;
+    }
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  });
+
+  return words.join(" ");
+}
+
 export function csvToGeoJSON(
   csvString: string,
   latField = "latitude",

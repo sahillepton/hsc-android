@@ -1,6 +1,5 @@
 import { MinusIcon, PlusIcon } from "lucide-react";
 import { Button } from "../ui/button";
-import { Separator } from "@/components/ui/separator";
 
 const ZoomControls = ({
   mapRef,
@@ -28,7 +27,7 @@ const ZoomControls = ({
   return (
     <div className="absolute bottom-4 right-4 z-50 flex items-end gap-3">
       {/* Watermark to the left of zoom controls */}
-      <div className="text-[10px] md:text-xs px-2 py-1 rounded font-bold bg-white text-black tracking-wider select-none pointer-events-none">
+      <div className="text-[10px] md:text-xs px-2 py-1 rounded font-bold bg-black/50 text-white tracking-wider select-none pointer-events-none">
         IGRS WGS84
       </div>
 

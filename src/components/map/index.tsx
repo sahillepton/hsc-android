@@ -1128,7 +1128,7 @@ const MapComponent = ({
       )}
 
       {/* Connection Error/No Data Indicator Button */}
-      {(connectionError || noDataWarning) && (
+      {networkLayersVisible && (connectionError || noDataWarning) && (
         <div className="absolute top-4 right-4 z-50">
           <Button
             onClick={() => setShowConnectionError(!showConnectionError)}
@@ -1147,7 +1147,7 @@ const MapComponent = ({
       )}
 
       {/* UDP Connection Error Banner */}
-      {connectionError && showConnectionError && (
+      {networkLayersVisible && connectionError && showConnectionError && (
         <div className="absolute top-16 right-4 z-50 bg-white rounded-lg shadow-lg p-3 max-w-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
@@ -1190,7 +1190,7 @@ const MapComponent = ({
       )}
 
       {/* UDP No Data Warning Banner */}
-      {noDataWarning && showConnectionError && (
+      {networkLayersVisible && noDataWarning && showConnectionError && (
         <div className="absolute top-16 right-4 z-50 bg-white rounded-lg shadow-lg p-3 max-w-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
@@ -1228,7 +1228,7 @@ const MapComponent = ({
       )}
 
       {/* UDP Connection Status Indicator */}
-      {isConnected && !connectionError && (
+      {networkLayersVisible && isConnected && !connectionError && (
         <div
           className="absolute bottom-4 left-4 z-50 rounded-sm shadow-lg px-2 py-1 flex items-center gap-2"
           style={{
