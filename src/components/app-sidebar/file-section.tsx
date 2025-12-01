@@ -70,53 +70,53 @@ const FileSection = () => {
       );
     }
   };
-  const extractGeoJsonFromZip = async (file: File): Promise<File[]> => {
-    try {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(file);
+  // const extractGeoJsonFromZip = async (file: File): Promise<File[]> => {
+  //   try {
+  //     const JSZip = (await import("jszip")).default;
+  //     const zip = await JSZip.loadAsync(file);
 
-      // Find all GeoJSON files in the ZIP (including in subfolders)
-      const geojsonFiles = Object.keys(zip.files).filter((name) => {
-        const lowerName = name.toLowerCase();
-        // Skip directories
-        if (zip.files[name].dir) {
-          return false;
-        }
-        // Check for GeoJSON files (but exclude node_icon_mappings.json)
-        return (
-          (lowerName.endsWith(".geojson") ||
-            (lowerName.endsWith(".json") &&
-              !lowerName.includes("node_icon_mappings"))) &&
-          !lowerName.includes("layers_export") // Exclude the old JSON export format
-        );
-      });
+  //     // Find all GeoJSON files in the ZIP (including in subfolders)
+  //     const geojsonFiles = Object.keys(zip.files).filter((name) => {
+  //       const lowerName = name.toLowerCase();
+  //       // Skip directories
+  //       if (zip.files[name].dir) {
+  //         return false;
+  //       }
+  //       // Check for GeoJSON files (but exclude node_icon_mappings.json)
+  //       return (
+  //         (lowerName.endsWith(".geojson") ||
+  //           (lowerName.endsWith(".json") &&
+  //             !lowerName.includes("node_icon_mappings"))) &&
+  //         !lowerName.includes("layers_export") // Exclude the old JSON export format
+  //       );
+  //     });
 
-      if (geojsonFiles.length === 0) {
-        return [];
-      }
+  //     if (geojsonFiles.length === 0) {
+  //       return [];
+  //     }
 
-      // Extract all GeoJSON files
-      const extractedFiles: File[] = [];
-      for (const fileName of geojsonFiles) {
-        try {
-          const fileData = await zip.files[fileName].async("blob");
-          // Extract just the filename without folder path for cleaner names
-          const baseFileName = fileName.split("/").pop() || fileName;
-          const extractedFile = new File([fileData], baseFileName, {
-            type: "application/json",
-          });
-          extractedFiles.push(extractedFile);
-        } catch (error) {
-          console.error(`Error extracting ${fileName} from ZIP:`, error);
-        }
-      }
+  //     // Extract all GeoJSON files
+  //     const extractedFiles: File[] = [];
+  //     for (const fileName of geojsonFiles) {
+  //       try {
+  //         const fileData = await zip.files[fileName].async("blob");
+  //         // Extract just the filename without folder path for cleaner names
+  //         const baseFileName = fileName.split("/").pop() || fileName;
+  //         const extractedFile = new File([fileData], baseFileName, {
+  //           type: "application/json",
+  //         });
+  //         extractedFiles.push(extractedFile);
+  //       } catch (error) {
+  //         console.error(`Error extracting ${fileName} from ZIP:`, error);
+  //       }
+  //     }
 
-      return extractedFiles;
-    } catch (error) {
-      console.error("Error extracting GeoJSON from ZIP:", error);
-      return [];
-    }
-  };
+  //     return extractedFiles;
+  //   } catch (error) {
+  //     console.error("Error extracting GeoJSON from ZIP:", error);
+  //     return [];
+  //   }
+  // };
 
   const extractTiffFromZip = async (file: File): Promise<File[]> => {
     try {
@@ -174,11 +174,17 @@ const FileSection = () => {
           return false;
         }
         // Check for vector file extensions
+        // Note: We allow files in "layers_export" folders (these are our exported ZIPs)
+        // but exclude the old JSON export format files
+        const isOldExportFormat =
+          lowerName.includes("layers_export") &&
+          lowerName.endsWith(".json") &&
+          !lowerName.includes("/"); // Root level JSON files with "layers_export" in name
         return (
           lowerName.endsWith(".geojson") ||
           (lowerName.endsWith(".json") &&
             !lowerName.includes("node_icon_mappings") &&
-            !lowerName.includes("layers_export")) ||
+            !isOldExportFormat) ||
           lowerName.endsWith(".csv") ||
           lowerName.endsWith(".gpx") ||
           lowerName.endsWith(".kml") ||
@@ -748,6 +754,29 @@ const FileSection = () => {
       if (ext === "zip") {
         setIsImporting(true);
         try {
+          // First, verify the ZIP can be read
+          try {
+            const JSZip = (await import("jszip")).default;
+            const testZip = await JSZip.loadAsync(file);
+            const fileNames = Object.keys(testZip.files);
+            console.log(
+              `ZIP contains ${fileNames.length} entries:`,
+              fileNames.slice(0, 10)
+            );
+          } catch (zipError) {
+            console.error("Error reading ZIP file:", zipError);
+            showMessage(
+              `Error reading ZIP file: ${
+                zipError instanceof Error
+                  ? zipError.message
+                  : "Invalid ZIP format"
+              }`,
+              true
+            );
+            setIsImporting(false);
+            return;
+          }
+
           let tiffCount = 0;
           let vectorCount = 0;
           let shapefileCount = 0;
@@ -998,6 +1027,14 @@ const FileSection = () => {
           ) {
             showMessage(
               "Some files could not be imported. Check errors above.",
+              true
+            );
+            setIsImporting(false);
+            return;
+          } else {
+            // No supported files found in ZIP
+            showMessage(
+              "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files.",
               true
             );
             setIsImporting(false);
@@ -1493,7 +1530,7 @@ const FileSection = () => {
       // Generate ZIP file with compression level optimization
       showMessage("Creating ZIP archive...", false);
       // Use lower compression for faster processing and less memory
-      // Generate directly as base64 to avoid corruption issues
+      // Generate as base64 for Capacitor Filesystem compatibility
       const zipBase64 = await zip.generateAsync({
         type: "base64",
         compression: "DEFLATE",

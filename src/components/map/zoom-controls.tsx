@@ -1,6 +1,5 @@
 import { MinusIcon, PlusIcon } from "lucide-react";
 import { Button } from "../ui/button";
-import { Separator } from "@/components/ui/separator";
 
 const ZoomControls = ({
   mapRef,
