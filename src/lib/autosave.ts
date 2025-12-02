@@ -10,21 +10,34 @@ import { Filesystem } from "@capacitor/filesystem";
 const AUTOSAVE_KEY = "autosave_layers";
 const AUTOSAVE_NODE_ICONS_KEY = "autosave_node_icon_mappings";
 
-// Serialize layers, excluding non-serializable data (bitmaps, canvases, textures)
+// Serialize layers, converting non-serializable data to serializable formats
 export const serializeLayers = (layers: LayerProps[]): LayerProps[] => {
   return layers.map((layer) => {
     const serialized: LayerProps = { ...layer };
 
-    // Remove non-serializable properties for DEM layers
+    // Handle DEM layers - convert non-serializable data to serializable formats
     if (layer.type === "dem") {
+      // Convert bitmap canvas to data URL
+      if (layer.bitmap && layer.bitmap instanceof HTMLCanvasElement) {
+        try {
+          (serialized as any).bitmapDataUrl = layer.bitmap.toDataURL("image/png");
+        } catch (error) {
+          console.warn("Failed to convert DEM bitmap to data URL:", error);
+        }
+      }
       delete (serialized as any).bitmap;
       delete (serialized as any).texture;
-      // Keep elevationData if it's serializable
+
+      // Convert Float32Array to regular array for serialization
       if (serialized.elevationData) {
-        // elevationData contains Float32Array which needs special handling
-        // For autosave, we'll exclude it to keep the save lightweight
-        // The user can re-upload the DEM if needed
-        delete (serialized as any).elevationData;
+        const elevationData = serialized.elevationData;
+        (serialized as any).elevationData = {
+          data: Array.from(elevationData.data), // Convert Float32Array to regular array
+          width: elevationData.width,
+          height: elevationData.height,
+          min: elevationData.min,
+          max: elevationData.max,
+        };
       }
     }
 
@@ -50,6 +63,64 @@ export const saveLayers = async (layers: LayerProps[]): Promise<void> => {
   }
 };
 
+// Deserialize layers, reconstructing non-serializable data
+const deserializeLayers = async (layers: LayerProps[]): Promise<LayerProps[]> => {
+  const deserializedLayers: LayerProps[] = [];
+
+  for (const layer of layers) {
+    const deserialized: LayerProps = { ...layer };
+
+    // Handle DEM layers - reconstruct non-serializable data
+    if (layer.type === "dem") {
+      // Reconstruct bitmap from data URL
+      if ((layer as any).bitmapDataUrl) {
+        try {
+          const bitmapDataUrl = (layer as any).bitmapDataUrl;
+          // Create an image from the data URL
+          const img = new Image();
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => {
+              // Create a canvas from the loaded image
+              const canvas = document.createElement("canvas");
+              canvas.width = img.width;
+              canvas.height = img.height;
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(img, 0, 0);
+                deserialized.bitmap = canvas;
+                deserialized.texture = canvas;
+                resolve();
+              } else {
+                reject(new Error("Failed to get canvas context"));
+              }
+            };
+            img.onerror = () => reject(new Error("Failed to load image from data URL"));
+            img.src = bitmapDataUrl;
+          });
+        } catch (error) {
+          console.warn("Failed to reconstruct DEM bitmap:", error);
+        }
+      }
+
+      // Reconstruct Float32Array from regular array
+      if ((layer as any).elevationData && Array.isArray((layer as any).elevationData.data)) {
+        const elevationData = (layer as any).elevationData;
+        deserialized.elevationData = {
+          data: new Float32Array(elevationData.data), // Convert array back to Float32Array
+          width: elevationData.width,
+          height: elevationData.height,
+          min: elevationData.min,
+          max: elevationData.max,
+        };
+      }
+    }
+
+    deserializedLayers.push(deserialized);
+  }
+
+  return deserializedLayers;
+};
+
 // Load layers from Capacitor Preferences
 export const loadLayers = async (): Promise<LayerProps[]> => {
   try {
@@ -60,8 +131,9 @@ export const loadLayers = async (): Promise<LayerProps[]> => {
     }
 
     const layers = JSON.parse(value) as LayerProps[];
-    console.log(`Loaded ${layers.length} layer(s) from autosave`);
-    return layers;
+    const deserializedLayers = await deserializeLayers(layers);
+    console.log(`Loaded ${deserializedLayers.length} layer(s) from autosave`);
+    return deserializedLayers;
   } catch (error) {
     console.error("Error loading autosaved layers:", error);
     return [];
@@ -135,7 +207,7 @@ export const loadLayersFromFile = async (
           console.log(
             `Loaded ${importData.layers.length} layers from ${defaultPath}`
           );
-          return importData.layers;
+          return await deserializeLayers(importData.layers);
         }
       } catch (error) {
         // Default file doesn't exist, try to find most recent export
@@ -173,7 +245,7 @@ export const loadLayersFromFile = async (
             console.log(
               `Loaded ${importData.layers.length} layers from ${fullPath}`
             );
-            return importData.layers;
+            return await deserializeLayers(importData.layers);
           }
         }
       } catch (error) {
@@ -218,7 +290,7 @@ export const loadLayersFromFile = async (
             console.log(
               `Loaded ${importData.layers.length} layers from ${fileName}`
             );
-            return importData.layers;
+            return await deserializeLayers(importData.layers);
           }
         }
       } catch (error) {
@@ -237,7 +309,7 @@ export const loadLayersFromFile = async (
 
     if (importData.version && Array.isArray(importData.layers)) {
       console.log(`Loaded ${importData.layers.length} layers from ${filePath}`);
-      return importData.layers;
+      return await deserializeLayers(importData.layers);
     }
 
     return [];
