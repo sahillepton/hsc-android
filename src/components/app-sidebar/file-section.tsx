@@ -123,14 +123,18 @@ const FileSection = () => {
       const JSZip = (await import("jszip")).default;
       const zip = await JSZip.loadAsync(file);
 
-      // Find all TIFF files in the ZIP (including in subfolders)
+      // Find all TIFF and HGT files in the ZIP (including in subfolders)
       const tiffFiles = Object.keys(zip.files).filter((name) => {
         const lowerName = name.toLowerCase();
         // Skip directories
         if (zip.files[name].dir) {
           return false;
         }
-        return lowerName.endsWith(".tif") || lowerName.endsWith(".tiff");
+        return (
+          lowerName.endsWith(".tif") ||
+          lowerName.endsWith(".tiff") ||
+          lowerName.endsWith(".hgt")
+        );
       });
 
       if (tiffFiles.length === 0) {
@@ -144,8 +148,14 @@ const FileSection = () => {
           const fileData = await zip.files[fileName].async("blob");
           // Extract just the filename without folder path
           const baseFileName = fileName.split("/").pop() || fileName;
+          // Determine MIME type based on extension
+          const lowerName = fileName.toLowerCase();
+          let mimeType = "image/tiff";
+          if (lowerName.endsWith(".hgt")) {
+            mimeType = "application/octet-stream";
+          }
           const extractedFile = new File([fileData], baseFileName, {
-            type: "image/tiff",
+            type: mimeType,
           });
           extractedFiles.push(extractedFile);
         } catch (error) {
@@ -1009,7 +1019,8 @@ const FileSection = () => {
           const totalImported = tiffCount + vectorCount + shapefileCount;
           if (totalImported > 0) {
             const parts: string[] = [];
-            if (tiffCount > 0) parts.push(`${tiffCount} DEM`);
+            if (tiffCount > 0)
+              parts.push(`${tiffCount} DEM${tiffCount > 1 ? "s" : ""}`);
             if (vectorCount > 0) parts.push(`${vectorCount} vector`);
             if (shapefileCount > 0) parts.push(`${shapefileCount} shapefile`);
             showMessage(
@@ -1058,7 +1069,7 @@ const FileSection = () => {
         "kml",
         "kmz",
       ];
-      const rasterExtensions = ["tif", "tiff"];
+      const rasterExtensions = ["tif", "tiff", "hgt"];
 
       if (ext === "geojson" || ext === "json") {
         const isAnnotationFile =
@@ -1115,8 +1126,8 @@ const FileSection = () => {
               `Vector: ${vectorExtensions
                 .filter((e) => e !== "json")
                 .join(", ")}, JSON\n` +
-              `Raster/DEM: ${rasterExtensions.join(", ")}, ZIP (with TIFF)\n` +
-              `Note: ZIP files are checked for TIFF files first, then processed as shapefiles if no TIFF found.`,
+              `Raster/DEM: ${rasterExtensions.join(", ")}, ZIP (with TIFF/HGT)\n` +
+              `Note: ZIP files are checked for DEM files (TIFF/HGT) first, then processed as shapefiles if no DEM found.`,
             true
           );
         }

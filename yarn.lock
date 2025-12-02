@@ -4709,7 +4709,7 @@ debug@^4.0.0, debug@^4.1.0, debug@^4.3.1, debug@^4.3.2, debug@^4.3.4, debug@^4.4
   dependencies:
     ms "^2.1.3"
 
-deck.gl@^9.1.14:
+deck.gl@^9.2.2:
   version "9.2.2"
   resolved "https://registry.npmjs.org/deck.gl/-/deck.gl-9.2.2.tgz"
   integrity sha512-ezdij3AWZUqC7HDC0GDnbRu/Ce3j7iUM7EXvF1CWKTWI220c1pfwSa0+2PlRgvFu3mZxwTk5Oa6eTFcDubymiA==

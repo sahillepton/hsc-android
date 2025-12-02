@@ -8,8 +8,8 @@ import {
   PolygonLayer,
   ScatterplotLayer,
   TextLayer,
-  BitmapLayer,
 } from "@deck.gl/layers";
+import { SimpleMeshLayer } from "@deck.gl/mesh-layers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import IconSelection from "./icon-selection";
@@ -45,6 +45,7 @@ import {
   isPointNearFirstPoint,
   makeSectorPolygon,
 } from "@/lib/layers";
+import { generateMeshFromElevation } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
 import { LayersIcon, CameraIcon, WifiPen, XIcon, PenIcon } from "lucide-react";
 
@@ -912,35 +913,67 @@ const MapComponent = ({
     });
 
     demLayers.forEach((layer) => {
-      if (!layer.bounds) return;
-      const [minLng, minLat] = layer.bounds[0];
-      const [maxLng, maxLat] = layer.bounds[1];
+      if (!layer.bounds || !layer.elevationData) return;
 
-      // Get the image source (canvas, bitmap, or texture)
-      const image: any = layer.bitmap ?? layer.texture ?? undefined;
+      try {
+        // Generate mesh from elevation data
+        const mesh = generateMeshFromElevation(
+          layer.elevationData,
+          layer.bounds,
+          1000 // elevation scale in meters (adjust as needed)
+        );
 
-      if (!image) {
-        console.warn("DEM layer missing image source:", {
+        // Create mesh in deck.gl format
+        // SimpleMeshLayer expects mesh with attributes
+        const meshData = {
+          attributes: {
+            positions: {
+              value: mesh.positions,
+              size: 3,
+            },
+            normals: {
+              value: mesh.normals,
+              size: 3,
+            },
+          },
+          indices: mesh.indices,
+        };
+
+        deckLayers.push(
+          new SimpleMeshLayer({
+            id: `${layer.id}-mesh`,
+            data: [{ position: [0, 0, 0] }], // Single data point
+            mesh: meshData as any,
+            getPosition: () => [0, 0, 0], // Position is already in world coordinates
+            getColor: layer.color
+              ? ((layer.color.length === 4
+                  ? layer.color
+                  : [...layer.color, 255]) as [number, number, number, number])
+              : [128, 128, 128, 255],
+            getOrientation: [0, 0, 0],
+            getScale: [1, 1, 1],
+            getTranslation: [0, 0, 0],
+            wireframe: false,
+            material: {
+              ambient: 0.5,
+              diffuse: 0.6,
+              shininess: 32,
+              specularColor: [60, 60, 60],
+            },
+            pickable: true,
+            pickingRadius: 300,
+            visible: layer.visible !== false,
+            onHover: handleLayerHover,
+          } as any)
+        );
+      } catch (error) {
+        console.error(`Error creating mesh for DEM layer ${layer.id}:`, error);
+        console.warn("DEM layer missing elevation data:", {
           id: layer.id,
           name: layer.name,
-          hasBitmap: !!layer.bitmap,
-          hasTexture: !!layer.texture,
+          hasElevationData: !!layer.elevationData,
         });
-        return;
       }
-
-      // BitmapLayer expects bounds as [left, bottom, right, top]
-      // Our bounds format is [[minLng, minLat], [maxLng, maxLat]]
-      deckLayers.push(
-        new BitmapLayer({
-          id: `${layer.id}-bitmap`,
-          image: image,
-          bounds: [minLng, minLat, maxLng, maxLat],
-          pickable: true,
-          pickingRadius: 300, // Larger picking radius for touch devices
-          visible: layer.visible !== false,
-        })
-      );
     });
 
     annotationLayers.forEach((layer) => {
