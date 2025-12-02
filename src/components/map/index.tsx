@@ -2,6 +2,7 @@ import Map, { useControl, NavigationControl } from "react-map-gl/mapbox";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { PickingInfo } from "@deck.gl/core";
 import {
+  BitmapLayer,
   GeoJsonLayer,
   IconLayer,
   LineLayer,
@@ -9,7 +10,6 @@ import {
   ScatterplotLayer,
   TextLayer,
 } from "@deck.gl/layers";
-import { SimpleMeshLayer } from "@deck.gl/mesh-layers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import IconSelection from "./icon-selection";
@@ -33,17 +33,14 @@ import {
   useMousePosition,
   useNetworkLayersVisible,
   useNodeIconMappings,
-  useAzimuthalAngle,
   useHoverInfo,
   usePendingPolygon,
   useUserLocation,
 } from "@/store/layers-store";
 import {
   calculateBearingDegrees,
-  calculateDistanceMeters,
   generateLayerId,
   isPointNearFirstPoint,
-  makeSectorPolygon,
 } from "@/lib/layers";
 import { generateMeshFromElevation } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
@@ -97,11 +94,13 @@ const MapComponent = ({
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
   const { nodeIconMappings } = useNodeIconMappings();
-  const { azimuthalAngle } = useAzimuthalAngle();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const { userLocation, userLocationError } = useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
+
+  // Cache for DEM meshes to avoid regenerating on every render
+  const demMeshCache = useRef<{ [key: string]: any }>({});
 
   // Debug: Log user location changes
   useEffect(() => {
@@ -262,39 +261,29 @@ const MapComponent = ({
 
   const handleAzimuthalDrawing = (point: [number, number]) => {
     if (!isDrawing) {
-      // First click sets the center
+      // First click sets the start point
       setCurrentPath([point]);
       setIsDrawing(true);
       return;
     }
 
-    // Second click sets the azimuth and radius
-    const center = currentPath[0];
+    // Second click sets the end point and calculates bearing
+    const start = currentPath[0];
     const end = point;
-    const radiusMeters = calculateDistanceMeters(center, end);
-    const bearing = calculateBearingDegrees(center, end);
+    const bearing = calculateBearingDegrees(start, end);
 
-    const sectorAngleDeg = azimuthalAngle || 60; // default sector width
-    const sector = makeSectorPolygon(
-      center,
-      radiusMeters,
-      bearing,
-      sectorAngleDeg
-    );
-
-    // Build GeoJSON with only the sector polygon (no point or azimuth line)
+    // Create a line layer with bearing information
     const newLayer: LayerProps = {
-      type: "polygon",
+      type: "line",
       id: generateLayerId(),
       name: `Azimuthal ${
         layers.filter((l) => l.name?.startsWith("Azimuthal")).length + 1
       }`,
-      polygon: [sector],
-      color: [32, 32, 32, 180],
+      path: [start, end],
+      color: [59, 130, 246], // Blue color like regular lines
+      lineWidth: 5,
       visible: true,
-      sectorAngleDeg,
-      radiusMeters,
-      bearing,
+      bearing, // Store bearing for tooltip display
     };
 
     addLayer(newLayer);
@@ -538,13 +527,36 @@ const MapComponent = ({
         return;
       }
 
-      if (info && info.object) {
+      if (!info) {
+        setHoverInfo(undefined);
+        return;
+      }
+
+      const deckLayerId = (info.layer as any)?.id as string | undefined;
+
+      // Special handling for DEM BitmapLayers (.tif, .tiff, .hgt)
+      // BitmapLayer hover info often has no `object`, but we still want a tooltip
+      let isDemHover = false;
+      if (deckLayerId) {
+        const baseId = deckLayerId
+          .replace(/-icon-layer$/, "")
+          .replace(/-signal-overlay$/, "")
+          .replace(/-bitmap$/, "")
+          .replace(/-mesh$/, "");
+
+        const matchingLayer = layers.find((l) => l.id === baseId);
+        if (matchingLayer?.type === "dem") {
+          isDemHover = true;
+        }
+      }
+
+      if (info.object || (isDemHover && info.coordinate)) {
         setHoverInfo(info);
       } else {
         setHoverInfo(undefined);
       }
     },
-    [setHoverInfo]
+    [setHoverInfo, layers]
   );
 
   // UDP layers from separate component
@@ -797,6 +809,7 @@ const MapComponent = ({
           width: layer.lineWidth ?? 5,
           layerId: layer.id,
           layer: layer,
+          bearing: layer.bearing, // Include bearing for azimuthal lines
         }));
       });
 
@@ -913,59 +926,133 @@ const MapComponent = ({
     });
 
     demLayers.forEach((layer) => {
-      if (!layer.bounds || !layer.elevationData) return;
+      if (!layer.bounds || !layer.elevationData) {
+        console.warn("DEM layer missing bounds or elevationData:", {
+          id: layer.id,
+          name: layer.name,
+          hasBounds: !!layer.bounds,
+          hasElevationData: !!layer.elevationData,
+        });
+        return;
+      }
 
       try {
-        // Generate mesh from elevation data
-        const mesh = generateMeshFromElevation(
-          layer.elevationData,
-          layer.bounds,
-          1000 // elevation scale in meters (adjust as needed)
-        );
+        // Check if mesh is already cached to avoid regenerating on every render
+        const cacheKey = `${layer.id}-${layer.elevationData.width}-${layer.elevationData.height}`;
+        let mesh = demMeshCache.current[cacheKey];
 
-        // Create mesh in deck.gl format
-        // SimpleMeshLayer expects mesh with attributes
-        const meshData = {
-          attributes: {
-            positions: {
-              value: mesh.positions,
-              size: 3,
-            },
-            normals: {
-              value: mesh.normals,
-              size: 3,
-            },
-          },
-          indices: mesh.indices,
-        };
+        if (!mesh) {
+          console.log("Generating mesh for DEM layer (first time):", {
+            id: layer.id,
+            name: layer.name,
+            bounds: layer.bounds,
+            elevationDataSize:
+              layer.elevationData.width * layer.elevationData.height,
+          });
 
-        deckLayers.push(
-          new SimpleMeshLayer({
-            id: `${layer.id}-mesh`,
-            data: [{ position: [0, 0, 0] }], // Single data point
-            mesh: meshData as any,
-            getPosition: () => [0, 0, 0], // Position is already in world coordinates
-            getColor: layer.color
-              ? ((layer.color.length === 4
-                  ? layer.color
-                  : [...layer.color, 255]) as [number, number, number, number])
-              : [128, 128, 128, 255],
-            getOrientation: [0, 0, 0],
-            getScale: [1, 1, 1],
-            getTranslation: [0, 0, 0],
-            wireframe: false,
-            material: {
-              ambient: 0.5,
-              diffuse: 0.6,
-              shininess: 32,
-              specularColor: [60, 60, 60],
-            },
-            pickable: true,
-            pickingRadius: 300,
+          // Generate mesh from elevation data
+          // Use a smaller elevation scale for better visibility (100 meters instead of 1000)
+          mesh = generateMeshFromElevation(
+            layer.elevationData,
+            layer.bounds,
+            100 // elevation scale in meters (reduced for better visibility)
+          );
+
+          console.log("Generated mesh:", {
+            positions: mesh.positions.length,
+            normals: mesh.normals.length,
+            indices: mesh.indices.length,
+          });
+
+          // Cache the mesh to avoid regenerating on every render
+          demMeshCache.current[cacheKey] = mesh;
+        } else {
+          // Mesh already cached, skip generation
+          console.log("Using cached mesh for DEM layer:", layer.id);
+        }
+
+        // Always render as BitmapLayer (more reliable and visible than 3D mesh)
+        if (layer.bitmap) {
+          const bounds: [number, number, number, number] = [
+            layer.bounds[0][0], // minLng
+            layer.bounds[0][1], // minLat
+            layer.bounds[1][0], // maxLng
+            layer.bounds[1][1], // maxLat
+          ];
+
+          console.log("Rendering DEM as BitmapLayer:", {
+            id: layer.id,
+            name: layer.name,
+            bounds,
+            hasBitmap: !!layer.bitmap,
             visible: layer.visible !== false,
-            onHover: handleLayerHover,
-          } as any)
-        );
+          });
+
+          deckLayers.push(
+            new BitmapLayer({
+              id: `${layer.id}-bitmap`,
+              image: layer.bitmap,
+              bounds: bounds,
+              pickable: true,
+              visible: layer.visible !== false,
+              onHover: handleLayerHover,
+            })
+          );
+          console.log(
+            "Successfully added DEM bitmap layer to deck.gl:",
+            layer.id
+          );
+        } else {
+          console.warn("DEM layer missing bitmap:", {
+            id: layer.id,
+            name: layer.name,
+            hasBitmap: !!layer.bitmap,
+            hasTexture: !!layer.texture,
+          });
+        }
+
+        // Optionally try to add as 3D mesh layer (may not always work)
+        // Commented out for now since BitmapLayer is more reliable
+        /*
+        try {
+          deckLayers.push(
+            new SimpleMeshLayer({
+              id: `${layer.id}-mesh`,
+              data: [{}], // Single data point - mesh positions are already in world coords
+              mesh: meshData as any,
+              getPosition: () => [0, 0, 0], // Mesh positions are already in world coordinates
+              getColor: layer.color
+                ? ((layer.color.length === 4
+                    ? layer.color
+                    : [...layer.color, 255]) as [
+                    number,
+                    number,
+                    number,
+                    number
+                  ])
+                : [128, 128, 128, 255],
+              getOrientation: [0, 0, 0],
+              getScale: [1, 1, 1],
+              getTranslation: [0, 0, 0],
+              coordinateSystem: 1, // Use LNGLAT coordinate system
+              wireframe: false,
+              material: {
+                ambient: 0.5,
+                diffuse: 0.6,
+                shininess: 32,
+                specularColor: [60, 60, 60],
+              },
+              pickable: true,
+              pickingRadius: 300,
+              visible: layer.visible !== false,
+              onHover: handleLayerHover,
+            } as any)
+          );
+          console.log("Added DEM 3D mesh layer to deck.gl:", layer.id);
+        } catch (meshError) {
+          console.warn("Failed to create 3D mesh:", meshError);
+        }
+        */
       } catch (error) {
         console.error(`Error creating mesh for DEM layer ${layer.id}:`, error);
         console.warn("DEM layer missing elevation data:", {
@@ -1150,23 +1237,23 @@ const MapComponent = ({
       currentPath.length === 1 &&
       mousePosition
     ) {
-      const center = currentPath[0];
-      const radiusMeters = calculateDistanceMeters(center, mousePosition);
-      const bearing = calculateBearingDegrees(center, mousePosition);
-      const sector = makeSectorPolygon(
-        center,
-        radiusMeters,
-        bearing,
-        azimuthalAngle || 60
-      );
+      // Preview line for azimuthal tool (like line tool)
+      const previewLineData = [
+        {
+          sourcePosition: currentPath[0],
+          targetPosition: mousePosition,
+          color: [160, 160, 160],
+          width: 3,
+        },
+      ];
       previewLayers.push(
-        new PolygonLayer({
+        new LineLayer({
           id: "preview-azimuthal-layer",
-          data: [sector],
-          getPolygon: (d: [number, number][]) => d,
-          getFillColor: [32, 32, 32, 100],
-          getLineColor: [32, 32, 32],
-          getLineWidth: 2,
+          data: previewLineData,
+          getSourcePosition: (d: any) => d.sourcePosition,
+          getTargetPosition: (d: any) => d.targetPosition,
+          getColor: (d: any) => d.color,
+          getWidth: (d: any) => d.width,
           pickable: false,
         })
       );
@@ -1200,7 +1287,6 @@ const MapComponent = ({
     drawingMode,
     currentPath,
     mousePosition,
-    azimuthalAngle,
     handleLayerHover,
     handleNodeIconClick,
     udpLayers,

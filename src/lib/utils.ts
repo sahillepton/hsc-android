@@ -709,6 +709,8 @@ async function parseHGTFile(file: File): Promise<DemRasterResult> {
   }
   ctx.putImageData(imgData, 0, 0);
 
+  console.log(elevationData, "elevationData");
+
   // Return bounds as [minLng, minLat, maxLng, maxLat]
   return {
     canvas,
