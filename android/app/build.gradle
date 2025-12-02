@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.example.hsc' // replace with your package
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.example.hsc" // replace with your appId
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        // Java/Kotlin options
+        multiDexEnabled true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.10"
+    implementation project(':capacitor-android') // if you have Capacitor core
+    implementation project(':capacitor-filesystem')
+    implementation project(':capacitor-geolocation')
+    implementation project(':capacitor-preferences')
+}
+
+apply plugin: 'com.google.gms.google-services' // if using Firebase

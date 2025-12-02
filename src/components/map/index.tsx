@@ -18,6 +18,7 @@ import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
 import TiltControl from "./tilt-control";
+import OfflineLocationTracker from "./offline-location-tracker";
 import { useUdpConfigStore } from "@/store/udp-config-store";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -35,6 +36,7 @@ import {
   useAzimuthalAngle,
   useHoverInfo,
   usePendingPolygon,
+  useUserLocation,
 } from "@/store/layers-store";
 import {
   calculateBearingDegrees,
@@ -97,7 +99,18 @@ const MapComponent = ({
   const { azimuthalAngle } = useAzimuthalAngle();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
+  const { userLocation, userLocationError } = useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
+
+  // Debug: Log user location changes
+  useEffect(() => {
+    if (userLocation) {
+      console.log("User location in map component:", userLocation);
+    }
+    if (userLocationError) {
+      console.error("User location error:", userLocationError);
+    }
+  }, [userLocation, userLocationError]);
 
   // const { nodeCoordinatesData, setNodeCoordinatesData } =
   //   useProgressiveNodes(networkLayersVisible);
@@ -534,7 +547,7 @@ const MapComponent = ({
   );
 
   // UDP layers from separate component
-  const { udpLayers, connectionError, noDataWarning, isConnected } =
+  const { udpLayers, connectionError, noDataWarning } =
     useUdpLayers(handleLayerHover);
   const { host, port } = useUdpConfigStore();
 
@@ -722,6 +735,52 @@ const MapComponent = ({
               pointLayers.map((l) => l.color?.join(",")).join("|"),
             ],
           },
+        })
+      );
+    }
+
+    // Add user location as a point layer
+    if (userLocation) {
+      console.log("Rendering user location:", userLocation);
+
+      // Add accuracy circle (in meters)
+      if (userLocation.accuracy > 0) {
+        deckLayers.push(
+          new ScatterplotLayer({
+            id: "user-location-accuracy",
+            data: [{ position: [userLocation.lng, userLocation.lat] }],
+            getPosition: (d: any) => d.position,
+            getRadius: userLocation.accuracy,
+            radiusUnits: "meters",
+            getFillColor: [34, 197, 94, 30], // Light green with transparency
+            getLineColor: [34, 197, 94, 100], // Green border
+            getLineWidth: 1,
+            stroked: true,
+            filled: true,
+            pickable: false,
+            radiusMinPixels: 0,
+            radiusMaxPixels: 1000,
+          })
+        );
+      }
+
+      // Add user location point
+      deckLayers.push(
+        new ScatterplotLayer({
+          id: "user-location-layer",
+          data: [{ position: [userLocation.lng, userLocation.lat] }],
+          getPosition: (d: any) => d.position,
+          getRadius: 12,
+          radiusUnits: "pixels",
+          getFillColor: [34, 197, 94, 255], // Green color
+          getLineColor: [22, 163, 74, 255], // Darker green border
+          getLineWidth: 3,
+          stroked: true,
+          pickable: true,
+          pickingRadius: 300,
+          radiusMinPixels: 10,
+          radiusMaxPixels: 20,
+          onHover: handleLayerHover,
         })
       );
     }
@@ -1112,6 +1171,7 @@ const MapComponent = ({
     handleLayerHover,
     handleNodeIconClick,
     udpLayers,
+    userLocation,
   ]);
 
   return (
@@ -1120,6 +1180,7 @@ const MapComponent = ({
         isMapEnabled ? "bg-transparent" : "bg-black"
       }`}
     >
+      <OfflineLocationTracker />
       {selectedNodeForIcon && (
         <IconSelection
           selectedNodeForIcon={selectedNodeForIcon}
@@ -1224,25 +1285,6 @@ const MapComponent = ({
               </svg>
             </button>
           </div>
-        </div>
-      )}
-
-      {/* UDP Connection Status Indicator */}
-      {isConnected && !connectionError && (
-        <div
-          className="absolute bottom-4 left-4 z-50 rounded-sm shadow-lg px-2 py-1 flex items-center gap-2"
-          style={{
-            background: "rgba(0, 0, 0, 0.4)",
-            pointerEvents: "none",
-          }}
-        >
-          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-          <span
-            className="text-[10px] md:text-xs font-mono text-gray-700 font-bold capitalize "
-            style={{ color: "rgb(255, 255, 255)", letterSpacing: "0.08em" }}
-          >
-            {host}:{port}
-          </span>
         </div>
       )}
 
