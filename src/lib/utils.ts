@@ -729,6 +729,8 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
   let ext = "";
   if (fileName.endsWith(".tiff")) {
     ext = "tiff";
+  } else if (fileName.endsWith(".dett")) {
+    ext = "dett";
   } else if (fileName.endsWith(".hgt")) {
     ext = "hgt";
   } else {
@@ -741,9 +743,9 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     return await parseHGTFile(file);
   }
 
-  if (ext !== "tif" && ext !== "tiff") {
+  if (ext !== "tif" && ext !== "tiff" && ext !== "dett") {
     throw new Error(
-      "Unsupported DEM format. Only GeoTIFF (.tif, .tiff) and SRTM HGT (.hgt) are supported."
+      "Unsupported DEM format. Only GeoTIFF (.tif, .tiff, .dett) and SRTM HGT (.hgt) are supported."
     );
   }
 

@@ -179,7 +179,7 @@ const Tooltip = () => {
   }
   const getTooltipContent = () => {
     // Handle DEM (elevation raster) layers - show elevation at hovered point
-    // Supports .tiff, .tif, and .hgt files
+    // Supports .tiff, .tif, .dett, and .hgt files
     if (
       layerInfo?.type === "dem" &&
       layerInfo.elevationData &&
@@ -249,7 +249,9 @@ const Tooltip = () => {
           // Detect file type from layer name
           const layerName = (layerInfo.name || "").toLowerCase();
           const fileType =
-            layerName.endsWith(".tiff") || layerName.endsWith(".tif")
+            layerName.endsWith(".tiff") ||
+            layerName.endsWith(".tif") ||
+            layerName.endsWith(".dett")
               ? "GeoTIFF"
               : layerName.endsWith(".hgt")
               ? "SRTM HGT"

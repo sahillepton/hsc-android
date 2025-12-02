@@ -133,7 +133,8 @@ const FileSection = () => {
         return (
           lowerName.endsWith(".tif") ||
           lowerName.endsWith(".tiff") ||
-          lowerName.endsWith(".hgt")
+          lowerName.endsWith(".hgt") ||
+          lowerName.endsWith(".dett")
         );
       });
 

@@ -534,7 +534,7 @@ const MapComponent = ({
 
       const deckLayerId = (info.layer as any)?.id as string | undefined;
 
-      // Special handling for DEM BitmapLayers (.tif, .tiff, .hgt)
+      // Special handling for DEM BitmapLayers (.tif, .tiff, .dett, .hgt)
       // BitmapLayer hover info often has no `object`, but we still want a tooltip
       let isDemHover = false;
       if (deckLayerId) {
