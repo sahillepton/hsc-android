@@ -2,13 +2,13 @@ import Map, { useControl, NavigationControl } from "react-map-gl/mapbox";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { PickingInfo } from "@deck.gl/core";
 import {
+  BitmapLayer,
   GeoJsonLayer,
   IconLayer,
   LineLayer,
   PolygonLayer,
   ScatterplotLayer,
   TextLayer,
-  BitmapLayer,
 } from "@deck.gl/layers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -17,6 +17,7 @@ import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
+import OfflineLocationTracker from "./offline-location-tracker";
 import { useUdpConfigStore } from "@/store/udp-config-store";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
@@ -33,6 +34,7 @@ import {
   usePendingPolygon,
   useIgrsPreference,
   useSetIgrsPreference,
+  useUserLocation,
 } from "@/store/layers-store";
 import {
   calculateBearingDegrees,
@@ -45,6 +47,7 @@ import {
   computePolygonPerimeterMeters,
 } from "@/lib/layers";
 import { formatArea, formatDistance } from "@/lib/utils";
+import { generateMeshFromElevation } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
@@ -114,7 +117,21 @@ const MapComponent = ({
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const useIgrs = useIgrsPreference();
   const setUseIgrs = useSetIgrsPreference();
+  const { userLocation, userLocationError } = useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
+
+  // Cache for DEM meshes to avoid regenerating on every render
+  const demMeshCache = useRef<{ [key: string]: any }>({});
+
+  // Debug: Log user location changes
+  useEffect(() => {
+    if (userLocation) {
+      console.log("User location in map component:", userLocation);
+    }
+    if (userLocationError) {
+      console.error("User location error:", userLocationError);
+    }
+  }, [userLocation, userLocationError]);
 
   // const { nodeCoordinatesData, setNodeCoordinatesData } =
   //   useProgressiveNodes(networkLayersVisible);
@@ -662,18 +679,42 @@ const MapComponent = ({
         return;
       }
 
-      if (info && info.object) {
+      if (!info) {
+        setHoverInfo(undefined);
+        return;
+      }
+
+      const deckLayerId = (info.layer as any)?.id as string | undefined;
+
+      // Special handling for DEM BitmapLayers (.tif, .tiff, .dett, .hgt)
+      // BitmapLayer hover info often has no `object`, but we still want a tooltip
+      let isDemHover = false;
+      if (deckLayerId) {
+        const baseId = deckLayerId
+          .replace(/-icon-layer$/, "")
+          .replace(/-signal-overlay$/, "")
+          .replace(/-bitmap$/, "")
+          .replace(/-mesh$/, "");
+
+        const matchingLayer = layers.find((l) => l.id === baseId);
+        if (matchingLayer?.type === "dem") {
+          isDemHover = true;
+        }
+      }
+
+      if (info.object || (isDemHover && info.coordinate)) {
         setHoverInfo(info);
       } else {
         setHoverInfo(undefined);
       }
     },
-    [setHoverInfo]
+    [setHoverInfo, layers]
   );
 
   // UDP layers from separate component
   const { udpLayers, connectionError, noDataWarning, isConnected } =
     useUdpLayers(handleLayerHover);
+
   const notificationsActive =
     networkLayersVisible && (connectionError || noDataWarning);
   const { host, port } = useUdpConfigStore();
@@ -890,6 +931,90 @@ const MapComponent = ({
           },
         })
       );
+    }
+
+    // Add user location as a point layer
+    if (userLocation) {
+      console.log("Rendering user location:", userLocation);
+
+      // Add accuracy circle (in meters)
+      if (userLocation.accuracy > 0) {
+        deckLayers.push(
+          new ScatterplotLayer({
+            id: "user-location-accuracy",
+            data: [{ position: [userLocation.lng, userLocation.lat] }],
+            getPosition: (d: any) => d.position,
+            getRadius: userLocation.accuracy,
+            radiusUnits: "meters",
+            getFillColor: [34, 197, 94, 30], // Light green with transparency
+            getLineColor: [34, 197, 94, 100], // Green border
+            getLineWidth: 1,
+            stroked: true,
+            filled: true,
+            pickable: false,
+            radiusMinPixels: 0,
+            radiusMaxPixels: 1000,
+          })
+        );
+      }
+
+      // Add user location point
+      deckLayers.push(
+        new ScatterplotLayer({
+          id: "user-location-layer",
+          data: [{ position: [userLocation.lng, userLocation.lat] }],
+          getPosition: (d: any) => d.position,
+          getRadius: 12,
+          radiusUnits: "pixels",
+          getFillColor: [34, 197, 94, 255], // Green color
+          getLineColor: [22, 163, 74, 255], // Darker green border
+          getLineWidth: 3,
+          stroked: true,
+          pickable: true,
+          pickingRadius: 300,
+          radiusMinPixels: 10,
+          radiusMaxPixels: 20,
+          onHover: handleLayerHover,
+        })
+      );
+    }
+
+    if (lineLayers.length) {
+      const pathData = lineLayers.flatMap((layer) => {
+        const path = layer.path ?? [];
+        if (path.length < 2) return []; // Need at least 2 points for a line
+        return path.slice(0, -1).map((point, index) => ({
+          sourcePosition: point,
+          targetPosition: path[index + 1],
+          color: layer.color ? [...layer.color] : [0, 0, 0], // Black default
+          width: layer.lineWidth ?? 5,
+          layerId: layer.id,
+          layer: layer,
+          bearing: layer.bearing, // Include bearing for azimuthal lines
+        }));
+      });
+
+      if (pathData.length) {
+        deckLayers.push(
+          new LineLayer({
+            id: "line-layer",
+            data: pathData,
+            getSourcePosition: (d: any) => d.sourcePosition,
+            getTargetPosition: (d: any) => d.targetPosition,
+            getColor: (d: any) => {
+              const color = d.color || [0, 0, 0]; // Black default
+              return color.length === 3 ? [...color, 255] : color;
+            },
+            getWidth: (d: any) => Math.max(1, d.width), // Minimum width of 1
+            widthUnits: "pixels", // Use pixels instead of meters
+            widthMinPixels: 1, // Minimum width of 1 pixel
+            widthMaxPixels: 50, // Maximum width of 50 pixels
+            pickable: true,
+            pickingRadius: 300, // Larger picking radius for touch devices
+            onHover: handleLayerHover,
+          })
+        );
+      }
     }
 
     if (connectionLayers.length) {
@@ -1156,35 +1281,141 @@ const MapComponent = ({
     });
 
     demLayers.forEach((layer) => {
-      if (!layer.bounds) return;
-      const [minLng, minLat] = layer.bounds[0];
-      const [maxLng, maxLat] = layer.bounds[1];
-
-      // Get the image source (canvas, bitmap, or texture)
-      const image: any = layer.bitmap ?? layer.texture ?? undefined;
-
-      if (!image) {
-        console.warn("DEM layer missing image source:", {
+      if (!layer.bounds || !layer.elevationData) {
+        console.warn("DEM layer missing bounds or elevationData:", {
           id: layer.id,
           name: layer.name,
-          hasBitmap: !!layer.bitmap,
-          hasTexture: !!layer.texture,
+          hasBounds: !!layer.bounds,
+          hasElevationData: !!layer.elevationData,
         });
         return;
       }
 
-      // BitmapLayer expects bounds as [left, bottom, right, top]
-      // Our bounds format is [[minLng, minLat], [maxLng, maxLat]]
-      deckLayers.push(
-        new BitmapLayer({
-          id: `${layer.id}-bitmap`,
-          image: image,
-          bounds: [minLng, minLat, maxLng, maxLat],
-          pickable: true,
-          pickingRadius: 300, // Larger picking radius for touch devices
-          visible: layer.visible !== false,
-        })
-      );
+      try {
+        // Check if mesh is already cached to avoid regenerating on every render
+        const cacheKey = `${layer.id}-${layer.elevationData.width}-${layer.elevationData.height}`;
+        let mesh = demMeshCache.current[cacheKey];
+
+        if (!mesh) {
+          console.log("Generating mesh for DEM layer (first time):", {
+            id: layer.id,
+            name: layer.name,
+            bounds: layer.bounds,
+            elevationDataSize:
+              layer.elevationData.width * layer.elevationData.height,
+          });
+
+          // Generate mesh from elevation data
+          // Use a smaller elevation scale for better visibility (100 meters instead of 1000)
+          mesh = generateMeshFromElevation(
+            layer.elevationData,
+            layer.bounds,
+            100 // elevation scale in meters (reduced for better visibility)
+          );
+
+          console.log("Generated mesh:", {
+            positions: mesh.positions.length,
+            normals: mesh.normals.length,
+            indices: mesh.indices.length,
+          });
+
+          // Cache the mesh to avoid regenerating on every render
+          demMeshCache.current[cacheKey] = mesh;
+        } else {
+          // Mesh already cached, skip generation
+          console.log("Using cached mesh for DEM layer:", layer.id);
+        }
+
+        // Always render as BitmapLayer (more reliable and visible than 3D mesh)
+        if (layer.bitmap) {
+          const bounds: [number, number, number, number] = [
+            layer.bounds[0][0], // minLng
+            layer.bounds[0][1], // minLat
+            layer.bounds[1][0], // maxLng
+            layer.bounds[1][1], // maxLat
+          ];
+
+          console.log("Rendering DEM as BitmapLayer:", {
+            id: layer.id,
+            name: layer.name,
+            bounds,
+            hasBitmap: !!layer.bitmap,
+            visible: layer.visible !== false,
+          });
+
+          deckLayers.push(
+            new BitmapLayer({
+              id: `${layer.id}-bitmap`,
+              image: layer.bitmap,
+              bounds: bounds,
+              pickable: true,
+              visible: layer.visible !== false,
+              onHover: handleLayerHover,
+            })
+          );
+          console.log(
+            "Successfully added DEM bitmap layer to deck.gl:",
+            layer.id
+          );
+        } else {
+          console.warn("DEM layer missing bitmap:", {
+            id: layer.id,
+            name: layer.name,
+            hasBitmap: !!layer.bitmap,
+            hasTexture: !!layer.texture,
+          });
+        }
+
+        // Optionally try to add as 3D mesh layer (may not always work)
+        // Commented out for now since BitmapLayer is more reliable
+        /*
+        try {
+          deckLayers.push(
+            new SimpleMeshLayer({
+              id: `${layer.id}-mesh`,
+              data: [{}], // Single data point - mesh positions are already in world coords
+              mesh: meshData as any,
+              getPosition: () => [0, 0, 0], // Mesh positions are already in world coordinates
+              getColor: layer.color
+                ? ((layer.color.length === 4
+                    ? layer.color
+                    : [...layer.color, 255]) as [
+                    number,
+                    number,
+                    number,
+                    number
+                  ])
+                : [128, 128, 128, 255],
+              getOrientation: [0, 0, 0],
+              getScale: [1, 1, 1],
+              getTranslation: [0, 0, 0],
+              coordinateSystem: 1, // Use LNGLAT coordinate system
+              wireframe: false,
+              material: {
+                ambient: 0.5,
+                diffuse: 0.6,
+                shininess: 32,
+                specularColor: [60, 60, 60],
+              },
+              pickable: true,
+              pickingRadius: 300,
+              visible: layer.visible !== false,
+              onHover: handleLayerHover,
+            } as any)
+          );
+          console.log("Added DEM 3D mesh layer to deck.gl:", layer.id);
+        } catch (meshError) {
+          console.warn("Failed to create 3D mesh:", meshError);
+        }
+        */
+      } catch (error) {
+        console.error(`Error creating mesh for DEM layer ${layer.id}:`, error);
+        console.warn("DEM layer missing elevation data:", {
+          id: layer.id,
+          name: layer.name,
+          hasElevationData: !!layer.elevationData,
+        });
+      }
     });
 
     annotationLayers.forEach((layer) => {
@@ -1480,6 +1711,7 @@ const MapComponent = ({
     handleLayerHover,
     handleNodeIconClick,
     udpLayers,
+    userLocation,
   ]);
 
   return (
@@ -1488,6 +1720,7 @@ const MapComponent = ({
         isMapEnabled ? "bg-transparent" : "bg-black"
       }`}
     >
+      <OfflineLocationTracker />
       {selectedNodeForIcon && (
         <IconSelection
           selectedNodeForIcon={selectedNodeForIcon}
@@ -1681,6 +1914,7 @@ const MapComponent = ({
         ref={mapRef}
         style={{ width: "100%", height: "100%" }}
         mapboxAccessToken="pk.eyJ1IjoibmlraGlsc2FyYWYiLCJhIjoiY2xlc296YjRjMDA5dDNzcXphZjlzamFmeSJ9.7ZDaMZKecY3-70p9pX9-GQ"
+        renderWorldCopies={false}
         reuseMaps={true}
         attributionControl={false}
         dragRotate={true}

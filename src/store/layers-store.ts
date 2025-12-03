@@ -2,6 +2,7 @@ import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds } from "@/lib/layers";
+import { saveLayers, saveNodeIconMappings } from "@/lib/autosave";
 
 interface LayerState {
   layers: LayerProps[];
@@ -56,12 +57,52 @@ interface LayerState {
   setPendingPolygonPoints: (points: [number, number][]) => void;
   useIgrs: boolean;
   setUseIgrs: (value: boolean) => void;
+  userLocation: {
+    lat: number;
+    lng: number;
+    accuracy: number;
+  } | null;
+  setUserLocation: (
+    location: {
+      lat: number;
+      lng: number;
+      accuracy: number;
+    } | null
+  ) => void;
+  userLocationError: string | null;
+  setUserLocationError: (error: string | null) => void;
 }
+
+// Debounce autosave to avoid saving too frequently
+let autosaveTimeout: NodeJS.Timeout | null = null;
+const AUTOSAVE_DELAY = 500; // 500ms delay
+
+const triggerAutosave = (
+  layers: LayerProps[],
+  nodeIconMappings: Record<string, string>
+) => {
+  if (autosaveTimeout) {
+    clearTimeout(autosaveTimeout);
+  }
+  autosaveTimeout = setTimeout(() => {
+    saveLayers(layers).catch(console.error);
+    saveNodeIconMappings(nodeIconMappings).catch(console.error);
+  }, AUTOSAVE_DELAY);
+};
 
 const useLayerStore = create<LayerState>()((set, get) => ({
   layers: [],
-  setLayers: (layers) => set({ layers }),
-  addLayer: (layer) => set((state) => ({ layers: [...state.layers, layer] })),
+  setLayers: (layers) => {
+    set({ layers });
+    triggerAutosave(layers, get().nodeIconMappings);
+  },
+  addLayer: (layer) => {
+    set((state) => {
+      const newLayers = [...state.layers, layer];
+      triggerAutosave(newLayers, state.nodeIconMappings);
+      return { layers: newLayers };
+    });
+  },
   deleteLayer: (layerId: string) =>
     set((state) => {
       // Check if the deleted layer is the one being hovered
@@ -91,14 +132,16 @@ const useLayerStore = create<LayerState>()((set, get) => ({
         }
       }
 
+      const newLayers = state.layers.filter((layer) => layer.id !== layerId);
+      triggerAutosave(newLayers, state.nodeIconMappings);
       return {
-        layers: state.layers.filter((layer) => layer.id !== layerId),
+        layers: newLayers,
         hoverInfo: shouldClearHoverInfo ? undefined : state.hoverInfo,
       };
     }),
   updateLayer: (layerId: string, updatedLayer: LayerProps) =>
-    set((state) => ({
-      layers: state.layers.map((layer) => {
+    set((state) => {
+      const newLayers = state.layers.map((layer) => {
         if (layer.id === layerId) {
           // Ensure color array is a new reference to avoid sharing
           const newColor = updatedLayer.color
@@ -115,8 +158,10 @@ const useLayerStore = create<LayerState>()((set, get) => ({
           };
         }
         return layer;
-      }),
-    })),
+      });
+      triggerAutosave(newLayers, state.nodeIconMappings);
+      return { layers: newLayers };
+    }),
   bringLayerToTop: (layerId: string) =>
     set((state) => {
       const layerIndex = state.layers.findIndex(
@@ -132,6 +177,7 @@ const useLayerStore = create<LayerState>()((set, get) => ({
         ...state.layers.slice(layerIndex + 1),
         layer, // Move to end (top of rendering stack)
       ];
+      triggerAutosave(newLayers, state.nodeIconMappings);
       return { layers: newLayers };
     }),
   isDrawing: false,
@@ -154,12 +200,17 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   setNetworkLayersVisible: (networkLayersVisible) =>
     set({ networkLayersVisible }),
   nodeIconMappings: {},
-  setNodeIconMappings: (nodeIconMappings) => set({ nodeIconMappings }),
+  setNodeIconMappings: (nodeIconMappings) => {
+    set({ nodeIconMappings });
+    triggerAutosave(get().layers, nodeIconMappings);
+  },
   getNodeIcon: (nodeId: string) => get().nodeIconMappings[nodeId],
   setNodeIcon: (nodeId: string, iconName: string) =>
-    set((state) => ({
-      nodeIconMappings: { ...state.nodeIconMappings, [nodeId]: iconName },
-    })),
+    set((state) => {
+      const newMappings = { ...state.nodeIconMappings, [nodeId]: iconName };
+      triggerAutosave(state.layers, newMappings);
+      return { nodeIconMappings: newMappings };
+    }),
   focusLayerRequest: null,
   setFocusLayerRequest: (focusLayerRequest) => set({ focusLayerRequest }),
   focusLayer: (layerId) => {
@@ -187,6 +238,10 @@ const useLayerStore = create<LayerState>()((set, get) => ({
     set({ azimuthalAngle: Math.max(1, Math.min(angle, 360)) }),
   pendingPolygonPoints: [],
   setPendingPolygonPoints: (points) => set({ pendingPolygonPoints: points }),
+  userLocation: null,
+  setUserLocation: (location) => set({ userLocation: location }),
+  userLocationError: null,
+  setUserLocationError: (error) => set({ userLocationError: error }),
   useIgrs: false,
   setUseIgrs: (value) => set({ useIgrs: value }),
 }));
@@ -318,6 +373,59 @@ export const usePendingPolygon = () => {
     (state) => state.setPendingPolygonPoints
   );
   return { pendingPolygonPoints, setPendingPolygonPoints };
+};
+
+export const useUserLocation = () => {
+  const userLocation = useLayerStore((state) => state.userLocation);
+  const setUserLocation = useLayerStore((state) => state.setUserLocation);
+  const userLocationError = useLayerStore((state) => state.userLocationError);
+  const setUserLocationError = useLayerStore(
+    (state) => state.setUserLocationError
+  );
+  return {
+    userLocation,
+    setUserLocation,
+    userLocationError,
+    setUserLocationError,
+  };
+};
+
+// Load layers from autosave on app initialization
+export const loadAutosavedLayers = async () => {
+  const {
+    loadLayers,
+    loadNodeIconMappings,
+    loadLayersFromFile,
+    loadNodeIconMappingsFromFile,
+  } = await import("@/lib/autosave");
+
+  // First try to load from file (if available)
+  let layers = await loadLayersFromFile();
+  let nodeIconMappings = await loadNodeIconMappingsFromFile();
+
+  // If no file found, fall back to autosave
+  if (layers.length === 0) {
+    layers = await loadLayers();
+  }
+  if (Object.keys(nodeIconMappings).length === 0) {
+    nodeIconMappings = await loadNodeIconMappings();
+  }
+
+  // Load the data into the store
+  if (layers.length > 0) {
+    useLayerStore.getState().setLayers(layers);
+    console.log(`Loaded ${layers.length} layer(s) on app startup`);
+  }
+  if (Object.keys(nodeIconMappings).length > 0) {
+    useLayerStore.getState().setNodeIconMappings(nodeIconMappings);
+    console.log(
+      `Loaded ${
+        Object.keys(nodeIconMappings).length
+      } node icon mapping(s) on app startup`
+    );
+  }
+
+  return { layers, nodeIconMappings };
 };
 
 export const useIgrsPreference = () => useLayerStore((state) => state.useIgrs);

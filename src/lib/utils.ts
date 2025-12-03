@@ -768,20 +768,155 @@ export interface DemRasterResult {
   max: number;
 }
 
+// Parse HGT file (SRTM format)
+async function parseHGTFile(file: File): Promise<DemRasterResult> {
+  const arrayBuffer = await file.arrayBuffer();
+  const dataView = new DataView(arrayBuffer);
+
+  // HGT files are square, determine size from file size
+  // File size = width * height * 2 bytes (16-bit integers)
+  const fileSize = arrayBuffer.byteLength;
+  const pixelCount = fileSize / 2;
+  const size = Math.sqrt(pixelCount);
+
+  // Common SRTM resolutions
+  let width: number;
+  let height: number;
+
+  if (size === 1201) {
+    width = 1201;
+    height = 1201;
+  } else if (size === 3601) {
+    width = 3601;
+    height = 3601;
+  } else {
+    // Try to determine from file size
+    width = Math.round(size);
+    height = Math.round(size);
+
+    if (width * height * 2 !== fileSize) {
+      throw new Error(
+        `Invalid HGT file size: ${fileSize} bytes. Expected size for 1201x1201 or 3601x3601 grid.`
+      );
+    }
+  }
+
+  // Extract coordinates from filename if possible
+  // Format: N37W122.hgt or S37E122.hgt (latitude, longitude)
+  const fileName = file.name.toUpperCase().replace(/\.HGT$/, "");
+  let minLat = 0;
+  let minLng = 0;
+  let maxLat = 1;
+  let maxLng = 1;
+
+  // Try to parse coordinates from filename
+  const coordMatch = fileName.match(/([NS])(\d+)([EW])(\d+)/);
+  if (coordMatch) {
+    const latDir = coordMatch[1];
+    const latVal = parseInt(coordMatch[2], 10);
+    const lngDir = coordMatch[3];
+    const lngVal = parseInt(coordMatch[4], 10);
+
+    minLat = latDir === "N" ? latVal : -latVal;
+    minLng = lngDir === "E" ? lngVal : -lngVal;
+    maxLat = minLat + 1;
+    maxLng = minLng + 1;
+  } else {
+    // Use default bounds (India) if coordinates can't be parsed
+    minLat = 6.0;
+    minLng = 68.0;
+    maxLat = 37.0;
+    maxLng = 97.0;
+    console.warn(
+      `Could not parse coordinates from HGT filename "${file.name}". Using default bounds.`
+    );
+  }
+
+  // Read elevation data (16-bit signed integers, big-endian)
+  const elevationData = new Float32Array(width * height);
+  let minVal = Infinity;
+  let maxVal = -Infinity;
+  const NO_DATA_VALUE = -32768;
+
+  for (let i = 0; i < width * height; i++) {
+    // Read 16-bit signed integer (big-endian)
+    const elevation = dataView.getInt16(i * 2, false); // false = big-endian
+
+    if (elevation === NO_DATA_VALUE || elevation < -1000 || elevation > 9000) {
+      // Invalid or no data
+      elevationData[i] = minVal !== Infinity ? minVal : 0;
+    } else {
+      elevationData[i] = elevation;
+      if (elevation < minVal) minVal = elevation;
+      if (elevation > maxVal) maxVal = elevation;
+    }
+  }
+
+  // If no valid data found, set defaults
+  if (
+    !Number.isFinite(minVal) ||
+    !Number.isFinite(maxVal) ||
+    minVal === maxVal
+  ) {
+    minVal = 0;
+    maxVal = 1;
+  }
+
+  // Create canvas for visualization
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d")!;
+  const imgData = ctx.createImageData(width, height);
+
+  for (let i = 0; i < width * height; i++) {
+    const elevation = elevationData[i];
+    const t = (elevation - minVal) / (maxVal - minVal);
+    const shade = Math.max(0, Math.min(255, Math.round(t * 255)));
+    imgData.data[i * 4 + 0] = shade;
+    imgData.data[i * 4 + 1] = shade;
+    imgData.data[i * 4 + 2] = shade;
+    imgData.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  console.log(elevationData, "elevationData");
+
+  // Return bounds as [minLng, minLat, maxLng, maxLat]
+  return {
+    canvas,
+    bounds: [minLng, minLat, maxLng, maxLat],
+    width,
+    height,
+    data: elevationData,
+    min: minVal,
+    max: maxVal,
+  };
+}
+
 export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
   // Better extension detection (handle .tiff and multi-dot filenames)
   const fileName = file.name.toLowerCase();
   let ext = "";
   if (fileName.endsWith(".tiff")) {
     ext = "tiff";
+  } else if (fileName.endsWith(".dett")) {
+    ext = "dett";
+  } else if (fileName.endsWith(".hgt")) {
+    ext = "hgt";
   } else {
     const parts = fileName.split(".");
     ext = parts.length > 1 ? parts[parts.length - 1] : "";
   }
 
-  if (ext !== "tif" && ext !== "tiff") {
+  // Handle HGT files
+  if (ext === "hgt") {
+    return await parseHGTFile(file);
+  }
+
+  if (ext !== "tif" && ext !== "tiff" && ext !== "dett") {
     throw new Error(
-      "Unsupported DEM format. Only GeoTIFF (.tif, .tiff) is supported."
+      "Unsupported DEM format. Only GeoTIFF (.tif, .tiff, .dett) and SRTM HGT (.hgt) are supported."
     );
   }
 
@@ -927,5 +1062,152 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     data: elevationData,
     min: minVal,
     max: maxVal,
+  };
+}
+
+// Generate mesh data from elevation data for SimpleMeshLayer
+export function generateMeshFromElevation(
+  elevationData: {
+    data: Float32Array;
+    width: number;
+    height: number;
+    min: number;
+    max: number;
+  },
+  bounds: [[number, number], [number, number]],
+  elevationScale: number = 1.0
+): {
+  positions: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
+} {
+  const { data, width, height, min, max } = elevationData;
+  const [minLng, minLat] = bounds[0];
+  const [maxLng, maxLat] = bounds[1];
+
+  // Calculate step sizes for longitude and latitude
+  const lngStep = (maxLng - minLng) / (width - 1);
+  const latStep = (maxLat - minLat) / (height - 1);
+
+  // Generate vertices: [x, y, z] for each point
+  const positions: number[] = [];
+  const normals: number[] = [];
+
+  for (let row = 0; row < height; row++) {
+    for (let col = 0; col < width; col++) {
+      const index = row * width + col;
+      const elevation = data[index];
+
+      // Calculate world coordinates
+      const lng = minLng + col * lngStep;
+      const lat = maxLat - row * latStep; // Y is inverted in image space
+      const z = ((elevation - min) / (max - min)) * elevationScale;
+
+      positions.push(lng, lat, z);
+
+      // Calculate normal (simplified - will be improved with face normals)
+      normals.push(0, 0, 1); // Default normal, will be recalculated
+    }
+  }
+
+  // Generate indices for triangles (two triangles per quad)
+  const indices: number[] = [];
+  for (let row = 0; row < height - 1; row++) {
+    for (let col = 0; col < width - 1; col++) {
+      const topLeft = row * width + col;
+      const topRight = row * width + col + 1;
+      const bottomLeft = (row + 1) * width + col;
+      const bottomRight = (row + 1) * width + col + 1;
+
+      // First triangle: topLeft -> topRight -> bottomLeft
+      indices.push(topLeft, topRight, bottomLeft);
+      // Second triangle: topRight -> bottomRight -> bottomLeft
+      indices.push(topRight, bottomRight, bottomLeft);
+    }
+  }
+
+  // Calculate proper normals from faces
+  const positionArray = new Float32Array(positions);
+  const normalArray = new Float32Array(normals.length);
+
+  // Initialize normals to zero
+  for (let i = 0; i < normalArray.length; i++) {
+    normalArray[i] = 0;
+  }
+
+  // Calculate face normals and accumulate to vertex normals
+  for (let i = 0; i < indices.length; i += 3) {
+    const i0 = indices[i] * 3;
+    const i1 = indices[i + 1] * 3;
+    const i2 = indices[i + 2] * 3;
+
+    const v0x = positionArray[i0];
+    const v0y = positionArray[i0 + 1];
+    const v0z = positionArray[i0 + 2];
+
+    const v1x = positionArray[i1];
+    const v1y = positionArray[i1 + 1];
+    const v1z = positionArray[i1 + 2];
+
+    const v2x = positionArray[i2];
+    const v2y = positionArray[i2 + 1];
+    const v2z = positionArray[i2 + 2];
+
+    // Calculate edge vectors
+    const edge1x = v1x - v0x;
+    const edge1y = v1y - v0y;
+    const edge1z = v1z - v0z;
+
+    const edge2x = v2x - v0x;
+    const edge2y = v2y - v0y;
+    const edge2z = v2z - v0z;
+
+    // Calculate cross product (normal)
+    const nx = edge1y * edge2z - edge1z * edge2y;
+    const ny = edge1z * edge2x - edge1x * edge2z;
+    const nz = edge1x * edge2y - edge1y * edge2x;
+
+    // Normalize
+    const length = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (length > 0) {
+      const invLength = 1 / length;
+      const normalX = nx * invLength;
+      const normalY = ny * invLength;
+      const normalZ = nz * invLength;
+
+      // Accumulate to vertex normals
+      normalArray[i0] += normalX;
+      normalArray[i0 + 1] += normalY;
+      normalArray[i0 + 2] += normalZ;
+
+      normalArray[i1] += normalX;
+      normalArray[i1 + 1] += normalY;
+      normalArray[i1 + 2] += normalZ;
+
+      normalArray[i2] += normalX;
+      normalArray[i2 + 1] += normalY;
+      normalArray[i2 + 2] += normalZ;
+    }
+  }
+
+  // Normalize vertex normals
+  for (let i = 0; i < normalArray.length; i += 3) {
+    const length = Math.sqrt(
+      normalArray[i] * normalArray[i] +
+        normalArray[i + 1] * normalArray[i + 1] +
+        normalArray[i + 2] * normalArray[i + 2]
+    );
+    if (length > 0) {
+      const invLength = 1 / length;
+      normalArray[i] *= invLength;
+      normalArray[i + 1] *= invLength;
+      normalArray[i + 2] *= invLength;
+    }
+  }
+
+  return {
+    positions: positionArray,
+    normals: normalArray,
+    indices: new Uint32Array(indices),
   };
 }

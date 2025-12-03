@@ -6,8 +6,8 @@ import { useUdpConfigStore } from "@/store/udp-config-store";
 import { Udp } from "../../plugins/udp";
 
 // Test mode configuration - set to true to use WebSocket instead of UDP
-const IS_TEST = true;
-const WS_IP = "localhost";
+const IS_TEST = false;
+const WS_IP = "192.168.1.213";
 const WS_PORT = 8080;
 
 interface UdpLayerData {

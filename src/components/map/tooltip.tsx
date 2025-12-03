@@ -148,7 +148,7 @@ const Tooltip = () => {
     }
   }, [hoverInfo, mapRef]);
 
-  if (!hoverInfo || !hoverInfo.object) {
+  if (!hoverInfo) {
     return null;
   }
 
@@ -178,13 +178,14 @@ const Tooltip = () => {
     const deckLayerId = layer.id;
     // Check if this ID matches a layer in the store directly
     layerInfo = layers.find((l) => l.id === deckLayerId);
-    // If not found, check if it's a sub-layer (e.g., `${layer.id}-icon-layer`)
+    // If not found, check if it's a sub-layer (e.g., `${layer.id}-icon-layer`, `${layer.id}-bitmap`)
     if (!layerInfo) {
       // Try to extract the base layer ID by removing common suffixes
       const baseId = deckLayerId
         .replace(/-icon-layer$/, "")
         .replace(/-signal-overlay$/, "")
-        .replace(/-bitmap$/, "");
+        .replace(/-bitmap$/, "")
+        .replace(/-mesh$/, "");
       layerInfo = layers.find((l) => l.id === baseId);
     }
   }
@@ -199,6 +200,149 @@ const Tooltip = () => {
   };
   const coordinateLabel = useIgrs ? "IGRS" : "lat, lng";
   const getTooltipContent = () => {
+    // Handle DEM (elevation raster) layers - show elevation at hovered point
+    // Supports .tiff, .tif, .dett, and .hgt files
+    if (
+      layerInfo?.type === "dem" &&
+      layerInfo.elevationData &&
+      layerInfo.bounds
+    ) {
+      const demObject: any = object || {};
+
+      // Try to get coordinates from multiple sources
+      let lng: number | undefined;
+      let lat: number | undefined;
+
+      if (hoverInfo.coordinate) {
+        [lng, lat] = hoverInfo.coordinate;
+      } else if (demObject.geometry?.coordinates) {
+        // GeoJSON Point
+        if (
+          Array.isArray(demObject.geometry.coordinates) &&
+          demObject.geometry.coordinates.length >= 2
+        ) {
+          lng = demObject.geometry.coordinates[0];
+          lat = demObject.geometry.coordinates[1];
+        }
+      } else if (
+        demObject.longitude !== undefined &&
+        demObject.latitude !== undefined
+      ) {
+        lng = demObject.longitude;
+        lat = demObject.latitude;
+      } else if (demObject.position && Array.isArray(demObject.position)) {
+        lng = demObject.position[0];
+        lat = demObject.position[1];
+      }
+
+      if (lng !== undefined && lat !== undefined) {
+        const [[minLng, minLat], [maxLng, maxLat]] = layerInfo.bounds;
+
+        // Ensure the hover point is within the DEM bounds
+        if (lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat) {
+          const { width, height, data, min, max } = layerInfo.elevationData;
+
+          // Map geographic coordinates to raster pixel indices
+          const col = ((lng - minLng) / (maxLng - minLng || 1)) * (width - 1);
+          const row = ((maxLat - lat) / (maxLat - minLat || 1)) * (height - 1);
+
+          const x = Math.min(width - 1, Math.max(0, Math.round(col)));
+          const y = Math.min(height - 1, Math.max(0, Math.round(row)));
+          const index = y * width + x;
+
+          const elevation = data[index];
+
+          // Debug: log sampled DEM elevation information
+          console.log("DEM hover sample", {
+            layerId: layerInfo.id,
+            layerName: layerInfo.name,
+            lng,
+            lat,
+            pixel: { x, y, index },
+            elevation,
+            elevationRange: { min, max },
+            size: { width, height },
+          });
+          const hasValidElevation =
+            Number.isFinite(elevation) &&
+            elevation !== null &&
+            elevation !== undefined;
+
+          // Detect file type from layer name
+          const layerName = (layerInfo.name || "").toLowerCase();
+          const fileType =
+            layerName.endsWith(".tiff") ||
+            layerName.endsWith(".tif") ||
+            layerName.endsWith(".dett")
+              ? "GeoTIFF"
+              : layerName.endsWith(".hgt")
+              ? "SRTM HGT"
+              : "DEM";
+
+          return (
+            <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
+              {layerInfo.name && (
+                <div className="font-semibold text-blue-300 mb-2">
+                  {layerInfo.name}
+                </div>
+              )}
+              <div className="font-semibold mb-1 flex items-center gap-2">
+                <span>Elevation Data</span>
+                <span className="text-xs text-gray-400 font-normal">
+                  ({fileType})
+                </span>
+              </div>
+              <div className="space-y-1">
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-300 text-xs">Latitude:</span>
+                  <span className="font-mono text-xs">{lat.toFixed(5)}°</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-300 text-xs">Longitude:</span>
+                  <span className="font-mono text-xs">{lng.toFixed(5)}°</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-300 text-xs">Pixel Index:</span>
+                  <span className="font-mono text-xs">
+                    ({x}, {y})
+                  </span>
+                </div>
+                <div className="mt-2 pt-1 border-t border-gray-600">
+                  <div className="flex justify-between gap-2">
+                    <span className="text-yellow-300 text-xs font-medium">
+                      Elevation:
+                    </span>
+                    <span className="font-mono text-xs text-yellow-300 font-semibold">
+                      {hasValidElevation
+                        ? `${elevation.toFixed(2)} m`
+                        : "No data"}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex justify-between gap-2 text-[10px] text-gray-500 mt-1">
+                  <span>Elevation Range:</span>
+                  <span className="font-mono">
+                    {min.toFixed(1)}–{max.toFixed(1)} m
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2 text-[10px] text-gray-500">
+                  <span>Raster Size:</span>
+                  <span className="font-mono">
+                    {width} × {height} px
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        }
+      }
+    }
+
+    // For non-DEM content, we require a valid object to render a tooltip
+    if (!object) {
+      return null;
+    }
+
     // Handle UDP layers
     if (
       layer?.id === "udp-network-members-layer" ||
@@ -797,6 +941,23 @@ const Tooltip = () => {
         segmentCount > 0 ? Math.min(...segmentDistances) : null;
       const avgSegmentKm =
         segmentCount > 0 ? segmentsTotalKm / segmentCount : null;
+
+      // Check if this is an azimuthal line (has bearing or name starts with "Azimuthal")
+      const isAzimuthal =
+        layerInfo?.name?.startsWith("Azimuthal") ||
+        layerInfo?.bearing !== undefined ||
+        (object as any).bearing !== undefined;
+
+      // Get bearing from layer info or object, or calculate it
+      let bearing: number | undefined =
+        layerInfo?.bearing ?? (object as any).bearing;
+      if (isAzimuthal && bearing === undefined) {
+        // Calculate bearing from coordinates
+        bearing = calculateBearingDegrees(
+          [object.sourcePosition[0], object.sourcePosition[1]],
+          [object.targetPosition[0], object.targetPosition[1]]
+        );
+      }
 
       return (
         <div
