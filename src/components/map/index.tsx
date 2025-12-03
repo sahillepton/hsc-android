@@ -42,7 +42,9 @@ import {
   destinationPoint,
   generateLayerId,
   isPointNearFirstPoint,
-  makeSectorPolygon,
+  normalizeAngleSigned,
+  computePolygonAreaMeters,
+  computePolygonPerimeterMeters,
 } from "@/lib/layers";
 import { formatArea, formatDistance } from "@/lib/utils";
 import { generateMeshFromElevation } from "@/lib/utils";
@@ -710,8 +712,9 @@ const MapComponent = ({
   );
 
   // UDP layers from separate component
-  const { udpLayers, connectionError, noDataWarning } =
+  const { udpLayers, connectionError, noDataWarning, isConnected } =
     useUdpLayers(handleLayerHover);
+
   const notificationsActive =
     networkLayersVisible && (connectionError || noDataWarning);
   const { host, port } = useUdpConfigStore();
