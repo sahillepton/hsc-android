@@ -1,13 +1,62 @@
-import { MinusIcon, PlusIcon } from "lucide-react";
+import {
+  CircleDot,
+  Compass,
+  ZoomOut,
+  Pentagon,
+  ZoomIn,
+  Waypoints,
+  LayersIcon,
+  CameraIcon,
+  WifiPen,
+  AlertTriangle,
+} from "lucide-react";
 import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { useDrawingMode } from "@/store/layers-store";
+import type { DrawingMode } from "@/lib/definitions";
+import { cn } from "@/lib/utils";
+import TiltControl from "./tilt-control";
+
+type CameraPopoverProps = {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  pitch: number;
+  setPitch: (pitch: number) => void;
+  onCreatePoint: (point: [number, number]) => void;
+};
+
+type AlertButtonProps = {
+  visible: boolean;
+  severity: "error" | "warning";
+  title: string;
+  onClick: () => void;
+};
+
+type IgrsToggleProps = {
+  value: boolean;
+  onToggle: (checked: boolean) => void;
+};
 
 const ZoomControls = ({
   mapRef,
   zoom,
+  onToggleLayersPanel,
+  onOpenConnectionConfig,
+  cameraPopoverProps,
+  alertButtonProps,
+  igrsToggleProps,
 }: {
   mapRef: React.RefObject<any>;
   zoom: number;
+  onToggleLayersPanel?: () => void;
+  onOpenConnectionConfig?: () => void;
+  cameraPopoverProps?: CameraPopoverProps;
+  alertButtonProps?: AlertButtonProps;
+  igrsToggleProps?: IgrsToggleProps;
 }) => {
+  const { drawingMode, setDrawingMode } = useDrawingMode();
+
   const handleZoomIn = () => {
     if (mapRef.current) {
       const map = mapRef.current.getMap();
@@ -24,47 +73,185 @@ const ZoomControls = ({
     }
   };
 
+  const toggleMode = (mode: DrawingMode) => {
+    setDrawingMode(drawingMode === mode ? null : mode);
+  };
+
+  const toolConfigs: Array<{
+    key: DrawingMode;
+    label: string;
+    icon: React.ReactNode;
+  }> = [
+    { key: "point", label: "Point", icon: <CircleDot className="h-4 w-4" /> },
+    {
+      key: "polyline",
+      label: "Path",
+      icon: <Waypoints className="h-4 w-4" />,
+    },
+    {
+      key: "polygon",
+      label: "Polygon",
+      icon: <Pentagon className="h-4 w-4" />,
+    },
+    {
+      key: "azimuthal",
+      label: "Azimuth",
+      icon: <Compass className="h-4 w-4" />,
+    },
+  ];
+
+  const alertColor =
+    alertButtonProps?.severity === "error" ? "text-red-600" : "text-amber-500";
+
   return (
-    <div className="absolute bottom-4 right-4 z-50 flex items-end gap-3">
-      {/* Watermark to the left of zoom controls */}
-      <div className="text-[10px] md:text-xs px-2 py-1 rounded font-bold bg-white text-black tracking-wider select-none pointer-events-none">
-        IGRS WGS84
-      </div>
+    <div className="absolute bottom-1 right-2 z-50 pointer-events-none">
+      <div className="relative pointer-events-auto flex flex-row gap-2">
+        {alertButtonProps?.visible && (
+          <Button
+            size="icon"
+            variant="ghost"
+            className={cn(
+              "h-11 w-11 rounded-sm bg-white",
+              alertColor,
+              "hover:text-current"
+            )}
+            title={alertButtonProps.title}
+            onClick={alertButtonProps.onClick}
+          >
+            <AlertTriangle className="h-4 w-4" />
+          </Button>
+        )}
+        <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
+          <div className="flex items-center gap-1 p-0.5">
+            {onToggleLayersPanel && (
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
+                title="Layers Panel"
+                onClick={onToggleLayersPanel}
+              >
+                <LayersIcon className="h-4 w-4" />
+              </Button>
+            )}
 
-      {/* Zoom Controls */}
-      <div className="flex flex-col bg-white rounded-md shadow-md w-8 overflow-hidden">
-        <Button
-          size="icon"
-          onClick={handleZoomIn}
-          className="bg-white text-black h-8 w-8 rounded-none hover:bg-gray-100"
-        >
-          <PlusIcon className="w-3 h-3" />
-        </Button>
+            {cameraPopoverProps && (
+              <Popover
+                open={cameraPopoverProps.isOpen}
+                onOpenChange={cameraPopoverProps.onOpenChange}
+              >
+                <PopoverTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
+                    title="Camera Controls"
+                  >
+                    <CameraIcon className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="w-[240px] p-3"
+                  align="end"
+                  side="top"
+                  sideOffset={10}
+                  onOpenAutoFocus={(e) => e.preventDefault()}
+                >
+                  <TiltControl
+                    mapRef={mapRef}
+                    pitch={cameraPopoverProps.pitch}
+                    setPitch={cameraPopoverProps.setPitch}
+                    onCreatePoint={cameraPopoverProps.onCreatePoint}
+                  />
+                </PopoverContent>
+              </Popover>
+            )}
 
-        {/* <Separator
-          orientation="horizontal"
-          className="bg-[#e5e5e5] h-px w-5 self-center"
-        /> */}
+            {onOpenConnectionConfig && (
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
+                title="Connection Settings"
+                onClick={onOpenConnectionConfig}
+              >
+                <WifiPen className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
 
-        {/* Zoom Level Display */}
-        <div className="bg-white rounded-none px-2 py-1 flex items-center justify-center">
-          <span className="text-[10px] md:text-xs text-[#797979] font-medium">
-            {zoom.toFixed(1)}
-          </span>
+          <div className="flex items-center gap-0 p-0.5 ">
+            {toolConfigs.map((tool, index) => {
+              const isActive = drawingMode === tool.key;
+              const isLast = index === toolConfigs.length - 1;
+              return (
+                <div
+                  key={tool.key}
+                  className={cn(
+                    "flex flex-col items-center gap-1 text-[11px] font-semibold text-muted-foreground",
+                    !isLast && " border-slate-200"
+                  )}
+                >
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className={cn(
+                      "h-10 w-10 p-0 rounded-none hover:text-foreground bg-transparent cursor-pointer",
+                      isActive
+                        ? "text-zinc-500 bg-gray-500/10"
+                        : "bg-white text-foreground hover:bg-white"
+                    )}
+                    title={
+                      isActive
+                        ? `Stop ${tool.label} sketch`
+                        : `Start ${tool.label} sketch`
+                    }
+                    onClick={() => toggleMode(tool.key)}
+                  >
+                    {tool.icon}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+
+          {igrsToggleProps && (
+            <div className="flex items-center gap-2 px-3 border-l border-slate-200">
+              <span className="text-[10px] font-semibold text-slate-600 uppercase">
+                IGRS
+              </span>
+              <Switch
+                checked={igrsToggleProps.value}
+                onCheckedChange={igrsToggleProps.onToggle}
+                aria-label="Toggle IGRS coordinates"
+              />
+            </div>
+          )}
         </div>
-        {/* 
-        <Separator
-          orientation="horizontal"
-          className="bg-[#e5e5e5] h-px w-5 self-center"
-        /> */}
 
-        <Button
-          size="icon"
-          onClick={handleZoomOut}
-          className="bg-white text-black h-8 w-8 rounded-none hover:bg-gray-100"
-        >
-          <MinusIcon className="w-3 h-3" />
-        </Button>
+        <div className="absolute -top-31 right-0.5 flex flex-col items-center gap-2 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm px-0.5 py-1">
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={handleZoomIn}
+            className="h-10 w-10 hover:bg-transparent cursor-pointer"
+            title="Zoom in"
+          >
+            <ZoomIn className="h-4 w-4" />
+          </Button>
+          <div className="min-w-[36px] text-center text-xs font-semibold text-slate-600">
+            {zoom.toFixed(1)}
+          </div>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={handleZoomOut}
+            className="h-9 w-9 hover:bg-transparent cursor-pointer"
+            title="Zoom out"
+          >
+            <ZoomOut className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
     </div>
   );

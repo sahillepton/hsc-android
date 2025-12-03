@@ -70,53 +70,6 @@ const FileSection = () => {
       );
     }
   };
-  // const extractGeoJsonFromZip = async (file: File): Promise<File[]> => {
-  //   try {
-  //     const JSZip = (await import("jszip")).default;
-  //     const zip = await JSZip.loadAsync(file);
-
-  //     // Find all GeoJSON files in the ZIP (including in subfolders)
-  //     const geojsonFiles = Object.keys(zip.files).filter((name) => {
-  //       const lowerName = name.toLowerCase();
-  //       // Skip directories
-  //       if (zip.files[name].dir) {
-  //         return false;
-  //       }
-  //       // Check for GeoJSON files (but exclude node_icon_mappings.json)
-  //       return (
-  //         (lowerName.endsWith(".geojson") ||
-  //           (lowerName.endsWith(".json") &&
-  //             !lowerName.includes("node_icon_mappings"))) &&
-  //         !lowerName.includes("layers_export") // Exclude the old JSON export format
-  //       );
-  //     });
-
-  //     if (geojsonFiles.length === 0) {
-  //       return [];
-  //     }
-
-  //     // Extract all GeoJSON files
-  //     const extractedFiles: File[] = [];
-  //     for (const fileName of geojsonFiles) {
-  //       try {
-  //         const fileData = await zip.files[fileName].async("blob");
-  //         // Extract just the filename without folder path for cleaner names
-  //         const baseFileName = fileName.split("/").pop() || fileName;
-  //         const extractedFile = new File([fileData], baseFileName, {
-  //           type: "application/json",
-  //         });
-  //         extractedFiles.push(extractedFile);
-  //       } catch (error) {
-  //         console.error(`Error extracting ${fileName} from ZIP:`, error);
-  //       }
-  //     }
-
-  //     return extractedFiles;
-  //   } catch (error) {
-  //     console.error("Error extracting GeoJSON from ZIP:", error);
-  //     return [];
-  //   }
-  // };
 
   const extractTiffFromZip = async (file: File): Promise<File[]> => {
     try {
@@ -1127,8 +1080,8 @@ const FileSection = () => {
               `Vector: ${vectorExtensions
                 .filter((e) => e !== "json")
                 .join(", ")}, JSON\n` +
-              `Raster/DEM: ${rasterExtensions.join(", ")}, ZIP (with TIFF/HGT)\n` +
-              `Note: ZIP files are checked for DEM files (TIFF/HGT) first, then processed as shapefiles if no DEM found.`,
+              `Raster/DEM: ${rasterExtensions.join(", ")}, ZIP (with TIFF)\n` +
+              `Note: ZIP files are checked for TIFF files first, then processed as shapefiles if no TIFF found.`,
             true
           );
         }

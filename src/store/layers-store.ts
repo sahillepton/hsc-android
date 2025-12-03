@@ -1,4 +1,4 @@
-import type { LayerProps, Node } from "@/lib/definitions";
+import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds } from "@/lib/layers";
@@ -17,10 +17,8 @@ interface LayerState {
   setCurrentPath: (currentPath: [number, number][]) => void;
   dragStart: [number, number] | null;
   setDragStart: (dragStart: [number, number] | null) => void;
-  drawingMode: "point" | "polygon" | "line" | "azimuthal" | null;
-  setDrawingMode: (
-    drawingMode: "point" | "polygon" | "line" | "azimuthal" | null
-  ) => void;
+  drawingMode: DrawingMode;
+  setDrawingMode: (drawingMode: DrawingMode) => void;
   selectedNode: Node | null;
   setSelectedNode: (selectedNode: Node | null) => void;
   isNodeDialogOpen: boolean;
@@ -57,6 +55,8 @@ interface LayerState {
   setAzimuthalAngle: (angle: number) => void;
   pendingPolygonPoints: [number, number][];
   setPendingPolygonPoints: (points: [number, number][]) => void;
+  useIgrs: boolean;
+  setUseIgrs: (value: boolean) => void;
   userLocation: {
     lat: number;
     lng: number;
@@ -77,7 +77,10 @@ interface LayerState {
 let autosaveTimeout: NodeJS.Timeout | null = null;
 const AUTOSAVE_DELAY = 500; // 500ms delay
 
-const triggerAutosave = (layers: LayerProps[], nodeIconMappings: Record<string, string>) => {
+const triggerAutosave = (
+  layers: LayerProps[],
+  nodeIconMappings: Record<string, string>
+) => {
   if (autosaveTimeout) {
     clearTimeout(autosaveTimeout);
   }
@@ -239,6 +242,8 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   setUserLocation: (location) => set({ userLocation: location }),
   userLocationError: null,
   setUserLocationError: (error) => set({ userLocationError: error }),
+  useIgrs: false,
+  setUseIgrs: (value) => set({ useIgrs: value }),
 }));
 
 export const useLayers = () => {
@@ -393,11 +398,11 @@ export const loadAutosavedLayers = async () => {
     loadLayersFromFile,
     loadNodeIconMappingsFromFile,
   } = await import("@/lib/autosave");
-  
+
   // First try to load from file (if available)
   let layers = await loadLayersFromFile();
   let nodeIconMappings = await loadNodeIconMappingsFromFile();
-  
+
   // If no file found, fall back to autosave
   if (layers.length === 0) {
     layers = await loadLayers();
@@ -405,7 +410,7 @@ export const loadAutosavedLayers = async () => {
   if (Object.keys(nodeIconMappings).length === 0) {
     nodeIconMappings = await loadNodeIconMappings();
   }
-  
+
   // Load the data into the store
   if (layers.length > 0) {
     useLayerStore.getState().setLayers(layers);
@@ -414,9 +419,15 @@ export const loadAutosavedLayers = async () => {
   if (Object.keys(nodeIconMappings).length > 0) {
     useLayerStore.getState().setNodeIconMappings(nodeIconMappings);
     console.log(
-      `Loaded ${Object.keys(nodeIconMappings).length} node icon mapping(s) on app startup`
+      `Loaded ${
+        Object.keys(nodeIconMappings).length
+      } node icon mapping(s) on app startup`
     );
   }
-  
+
   return { layers, nodeIconMappings };
 };
+
+export const useIgrsPreference = () => useLayerStore((state) => state.useIgrs);
+export const useSetIgrsPreference = () =>
+  useLayerStore((state) => state.setUseIgrs);

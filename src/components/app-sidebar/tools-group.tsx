@@ -2,7 +2,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
-  LineChart,
+  Route,
   Hexagon,
   Compass,
   LogOut,
@@ -28,7 +28,7 @@ const ToolsGroup = ({
 
   const tools = [
     { key: "point", label: "Point", icon: <Circle size={8} /> },
-    { key: "line", label: "Line", icon: <LineChart size={8} /> },
+    { key: "polyline", label: "Path", icon: <Route size={8} /> },
     { key: "polygon", label: "Polygon", icon: <Hexagon size={8} /> },
     { key: "azimuthal", label: "Azimuthal", icon: <Compass size={8} /> },
   ];
