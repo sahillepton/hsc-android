@@ -7,7 +7,6 @@ import { Directory } from "@capacitor/filesystem";
 import { useState, useEffect } from "react";
 import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import ToolsGroup from "./tools-group";
 import NetworkControls from "./network-controls";
 import LayersPanel from "./layers-panel";
 import StorageLayer from "./storage-layer";
@@ -15,12 +14,13 @@ import FileSection from "./file-section";
 import ActionDialog from "./action-dialog";
 import { getStorageDirectory } from "@/lib/capacitor-utils";
 import SidebarDrawHeader from "./sidebar-header";
+import SketchLayersPanel from "./sketch-layers-panel";
 export function AppSidebar({ onClose }: { onClose?: () => void }) {
-  const [isDrawingToolsOpen, setIsDrawingToolsOpen] = useState(false);
   const [currentStorageDir, setCurrentStorageDir] = useState<Directory>(
     Directory.Documents
   );
   const [isLayersOpen, setIsLayersOpen] = useState(false);
+  const [isSketchLayersOpen, setIsSketchLayersOpen] = useState(false);
   const [isNetworkControlsOpen, setIsNetworkControlsOpen] = useState(false);
 
   // Load current storage directory on mount
@@ -56,15 +56,15 @@ export function AppSidebar({ onClose }: { onClose?: () => void }) {
       >
         <SidebarDrawHeader />
         <SidebarContent className="px-2 py-0 space-y-0 gap-0 overflow-y-auto">
-          <ToolsGroup
-            setIsDrawingToolsOpen={setIsDrawingToolsOpen}
-            isDrawingToolsOpen={isDrawingToolsOpen}
-          />
           <NetworkControls
             setIsNetworkControlsOpen={setIsNetworkControlsOpen}
             isNetworkControlsOpen={isNetworkControlsOpen}
           />
 
+          <SketchLayersPanel
+            isOpen={isSketchLayersOpen}
+            setIsOpen={setIsSketchLayersOpen}
+          />
           <LayersPanel
             isLayersOpen={isLayersOpen}
             setIsLayersOpen={setIsLayersOpen}

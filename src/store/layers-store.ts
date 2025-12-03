@@ -1,4 +1,4 @@
-import type { LayerProps, Node } from "@/lib/definitions";
+import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds } from "@/lib/layers";
@@ -16,10 +16,8 @@ interface LayerState {
   setCurrentPath: (currentPath: [number, number][]) => void;
   dragStart: [number, number] | null;
   setDragStart: (dragStart: [number, number] | null) => void;
-  drawingMode: "point" | "polygon" | "line" | "azimuthal" | null;
-  setDrawingMode: (
-    drawingMode: "point" | "polygon" | "line" | "azimuthal" | null
-  ) => void;
+  drawingMode: DrawingMode;
+  setDrawingMode: (drawingMode: DrawingMode) => void;
   selectedNode: Node | null;
   setSelectedNode: (selectedNode: Node | null) => void;
   isNodeDialogOpen: boolean;
@@ -56,6 +54,8 @@ interface LayerState {
   setAzimuthalAngle: (angle: number) => void;
   pendingPolygonPoints: [number, number][];
   setPendingPolygonPoints: (points: [number, number][]) => void;
+  useIgrs: boolean;
+  setUseIgrs: (value: boolean) => void;
 }
 
 const useLayerStore = create<LayerState>()((set, get) => ({
@@ -187,6 +187,8 @@ const useLayerStore = create<LayerState>()((set, get) => ({
     set({ azimuthalAngle: Math.max(1, Math.min(angle, 360)) }),
   pendingPolygonPoints: [],
   setPendingPolygonPoints: (points) => set({ pendingPolygonPoints: points }),
+  useIgrs: false,
+  setUseIgrs: (value) => set({ useIgrs: value }),
 }));
 
 export const useLayers = () => {
@@ -317,3 +319,7 @@ export const usePendingPolygon = () => {
   );
   return { pendingPolygonPoints, setPendingPolygonPoints };
 };
+
+export const useIgrsPreference = () => useLayerStore((state) => state.useIgrs);
+export const useSetIgrsPreference = () =>
+  useLayerStore((state) => state.setUseIgrs);

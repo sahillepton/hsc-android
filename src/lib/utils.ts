@@ -182,6 +182,140 @@ export function getDistance(
   return turf.distance(from, to, { units: "kilometers" }).toFixed(2);
 }
 
+export const calculateIgrs = (lon: number, lat: number): string | null => {
+  if (
+    !Number.isFinite(lon) ||
+    !Number.isFinite(lat) ||
+    lon < 68 ||
+    lon > 104 ||
+    lat < 8 ||
+    lat > 39.5
+  ) {
+    return null;
+  }
+
+  let cm: number | undefined;
+  let origin: number | undefined;
+
+  if (lon <= 68 && lat <= 32.5) {
+    cm = 68;
+    origin = 32.5;
+  } else if (lon <= 68 && lat <= 39.5) {
+    cm = 68;
+    origin = 39.5;
+  } else if (lon <= 74 && lat <= 26) {
+    cm = 74;
+    origin = 26;
+  } else if (lon <= 80 && lat <= 8) {
+    cm = 80;
+    origin = 12;
+  } else if (lon <= 80 && lat <= 19) {
+    cm = 80;
+    origin = 19;
+  } else if (lon < 90 && lat < 26) {
+    cm = 90;
+    origin = 26;
+  } else if (lon <= 90 && lat <= 32.5) {
+    cm = 90;
+    origin = 32.5;
+  } else if (lon <= 100 && lat <= 19) {
+    cm = 100;
+    origin = 19;
+  } else if (lon <= 104 && lat <= 19) {
+    cm = 104;
+    origin = 8;
+  }
+
+  if (cm === undefined || origin === undefined) {
+    return null;
+  }
+
+  const grid = [
+    ["A", "B", "C", "D", "E"],
+    ["F", "G", "H", "J", "K"],
+    ["L", "M", "N", "O", "P"],
+    ["Q", "R", "S", "T", "U"],
+    ["V", "W", "X", "Y", "Z"],
+  ];
+
+  const PI = Math.PI;
+  const inverseFlattening = 300.17255;
+  const num5 = 6377301.243;
+  const scaleFactor = 1;
+  const num10 = 2743195.5;
+  const num11 = 914398.5;
+  const flattening = 1 / inverseFlattening;
+  const num8 = 0.3861;
+  const num9 = 0.785166;
+  const num7 = (cm * PI) / 180;
+  const a2 = (origin * PI) / 180;
+  const num6 = Math.sqrt(2 * flattening - flattening * flattening);
+  const a1 = (lat * PI) / 180;
+  const num4 = (lon * PI) / 180;
+  const a3 = Math.cos(num8) / Math.sqrt(1 - num6 * num6 * Math.sin(num8) ** 2);
+  const a4 = Math.cos(num9) / Math.sqrt(1 - num6 * num6 * Math.sin(num9) ** 2);
+  const num12 =
+    Math.tan(PI / 4 - num8 / 2) /
+    Math.pow(
+      (1 - num6 * Math.sin(num8)) / (1 + num6 * Math.sin(num8)),
+      num6 / 2
+    );
+  const a5 =
+    Math.tan(PI / 4 - num9 / 2) /
+    Math.pow(
+      (1 - num6 * Math.sin(num9)) / (1 + num6 * Math.sin(num9)),
+      num6 / 2
+    );
+  const x1 =
+    Math.tan(PI / 4 - a1 / 2) /
+    Math.pow((1 - num6 * Math.sin(a1)) / (1 + num6 * Math.sin(a1)), num6 / 2);
+  const x2 =
+    Math.tan(PI / 4 - a2 / 2) /
+    Math.pow((1 - num6 * Math.sin(a2)) / (1 + num6 * Math.sin(a2)), num6 / 2);
+  const y = (Math.log(a3) - Math.log(a4)) / (Math.log(num12) - Math.log(a5));
+  const num13 = a3 / (y * Math.pow(num12, y));
+  const num14 = num5 * num13 * Math.pow(x1, y);
+  const num15 = num5 * num13 * Math.pow(x2, y);
+  const num16 = y * (num4 - num7);
+  let tempX = Math.round(num10 + num14 * Math.sin(num16));
+  let tempY = Math.round(num11 + num15 - num14 * Math.cos(num16));
+  tempX = Math.round(tempX * scaleFactor);
+  tempY = Math.round(tempY * scaleFactor);
+
+  let X = Math.floor(tempX / 100000);
+  let Y = Math.floor(tempY / 100000);
+
+  const reduceToGrid = (value: number) => {
+    let result = Math.floor(value);
+    while (result >= 5) {
+      result = Math.floor(result / 5);
+    }
+    if (result < 0) {
+      result = ((result % 5) + 5) % 5;
+    }
+    return result;
+  };
+
+  let c = reduceToGrid(X);
+  let r = reduceToGrid(Y);
+  if (r < 0 || r > 4 || c < 0 || c > 4) {
+    return null;
+  }
+
+  const A1 = grid[r][c];
+
+  c = ((Math.floor(X) % 5) + 5) % 5;
+  r = ((Math.floor(Y) % 5) + 5) % 5;
+  const A2 = grid[r][c];
+
+  tempX = ((tempX % 100000) + 100000) % 100000;
+  tempY = ((tempY % 100000) + 100000) % 100000;
+
+  const east = tempX.toString().padStart(5, "0");
+  const north = tempY.toString().padStart(5, "0");
+  return `${A1}, ${A2} ${east} ${north}`;
+};
+
 /**
  * Formats a key/label into a human-readable format
  * Examples:

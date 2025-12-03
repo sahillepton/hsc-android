@@ -22,6 +22,7 @@ import {
   useHoverInfo,
 } from "@/store/layers-store";
 import LayerPopover from "./layer-popover";
+import { isSketchLayer } from "@/lib/sketch-layers";
 
 const LayersPanel = ({
   setIsLayersOpen,
@@ -34,6 +35,7 @@ const LayersPanel = ({
   const { layers } = useLayers();
   const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
+  const nonSketchLayers = layers.filter((layer) => !isSketchLayer(layer));
   return (
     <SidebarGroup>
       {/* Collapsible Header */}
@@ -55,13 +57,13 @@ const LayersPanel = ({
           isLayersOpen ? "block" : "hidden"
         } transition-all max-h-[200px] overflow-y-auto`}
       >
-        {layers.length === 0 ? (
+        {nonSketchLayers.length === 0 ? (
           <div className="px-3 py-4 text-center text-sm text-muted-foreground">
             No Layer Present
           </div>
         ) : (
           <SidebarMenu className="space-y-2 mt-2">
-            {layers.map((layer) => {
+            {nonSketchLayers.map((layer) => {
               const isProgressiveLayer = (layer.name || "").startsWith(
                 "Progressive Network"
               );
@@ -119,7 +121,7 @@ const LayersPanel = ({
                             hoveredLayerId = (hoveredObject as any).id;
                           } else if (hoverInfo.layer?.id) {
                             const deckLayerId = hoverInfo.layer.id;
-                            hoveredLayerId = layers.find(
+                            hoveredLayerId = nonSketchLayers.find(
                               (l) => l.id === deckLayerId
                             )?.id;
                             if (!hoveredLayerId) {
@@ -127,7 +129,7 @@ const LayersPanel = ({
                                 .replace(/-icon-layer$/, "")
                                 .replace(/-signal-overlay$/, "")
                                 .replace(/-bitmap$/, "");
-                              hoveredLayerId = layers.find(
+                              hoveredLayerId = nonSketchLayers.find(
                                 (l) => l.id === baseId
                               )?.id;
                             }

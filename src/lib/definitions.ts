@@ -16,6 +16,7 @@ export interface LayerProps {
     | "point"
     | "polygon"
     | "line"
+    | "azimuth"
     | "geojson"
     | "nodes"
     | "connections"
@@ -32,6 +33,8 @@ export interface LayerProps {
   path?: [number, number][];
   lineWidth?: number;
   polygon?: [number, number][][];
+  segmentDistancesKm?: number[];
+  totalDistanceKm?: number;
   bounds?: [[number, number], [number, number]];
   bitmap?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
   texture?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
@@ -54,6 +57,11 @@ export interface LayerProps {
   radiusMeters?: number;
   bearing?: number;
   symbol?: string; // Symbol for UDP layers
+  azimuthCenter?: [number, number];
+  azimuthTarget?: [number, number];
+  azimuthNorth?: [number, number];
+  azimuthAngleDeg?: number;
+  distanceMeters?: number;
 }
 
-export type DrawingMode = "point" | "polygon" | "line" | "azimuthal" | null;
+export type DrawingMode = "point" | "polygon" | "polyline" | "azimuthal" | null;

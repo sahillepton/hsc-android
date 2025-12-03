@@ -17,10 +17,7 @@ import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
-import TiltControl from "./tilt-control";
 import { useUdpConfigStore } from "@/store/udp-config-store";
-import { Button } from "../ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
   useCurrentPath,
@@ -32,19 +29,23 @@ import {
   useMousePosition,
   useNetworkLayersVisible,
   useNodeIconMappings,
-  useAzimuthalAngle,
   useHoverInfo,
   usePendingPolygon,
+  useIgrsPreference,
+  useSetIgrsPreference,
 } from "@/store/layers-store";
 import {
   calculateBearingDegrees,
   calculateDistanceMeters,
+  destinationPoint,
   generateLayerId,
   isPointNearFirstPoint,
-  makeSectorPolygon,
+  normalizeAngleSigned,
+  computePolygonAreaMeters,
+  computePolygonPerimeterMeters,
 } from "@/lib/layers";
+import { formatArea, formatDistance } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
-import { LayersIcon, CameraIcon, WifiPen, XIcon, PenIcon } from "lucide-react";
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
@@ -60,6 +61,21 @@ const MapComponent = ({
 }: {
   onToggleLayersPanel?: () => void;
 }) => {
+  const computeSegmentDistancesKm = useCallback((path: [number, number][]) => {
+    if (!Array.isArray(path) || path.length < 2) return [] as number[];
+    return path.slice(0, -1).map((point, idx) => {
+      const next = path[idx + 1];
+      return calculateDistanceMeters(point, next) / 1000;
+    });
+  }, []);
+
+  const arePointsClose = useCallback(
+    (a: [number, number], b: [number, number], thresholdMeters = 25) => {
+      return calculateDistanceMeters(a, b) <= thresholdMeters;
+    },
+    []
+  );
+
   const mapRef = useRef<any>(null);
   const zoomUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -90,13 +106,14 @@ const MapComponent = ({
   const { mousePosition, setMousePosition } = useMousePosition();
   const { layers, addLayer } = useLayers();
   const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
-  const { drawingMode, setDrawingMode } = useDrawingMode();
+  const { drawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
   const { nodeIconMappings } = useNodeIconMappings();
-  const { azimuthalAngle } = useAzimuthalAngle();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
+  const useIgrs = useIgrsPreference();
+  const setUseIgrs = useSetIgrsPreference();
   const previousDrawingModeRef = useRef(drawingMode);
 
   // const { nodeCoordinatesData, setNodeCoordinatesData } =
@@ -113,6 +130,71 @@ const MapComponent = ({
   const [showConnectionError, setShowConnectionError] = useState(false);
   const [isCameraPopoverOpen, setIsCameraPopoverOpen] = useState(false);
   const lastLayerCreationTimeRef = useRef<number>(0);
+
+  const measurementPreview = useMemo(() => {
+    if (!isDrawing) return null;
+
+    if (drawingMode === "polyline" && currentPath.length >= 1) {
+      const path = [...currentPath];
+      if (mousePosition) path.push(mousePosition);
+      if (path.length < 2) return null;
+
+      const segmentDistances = computeSegmentDistancesKm(path);
+      const totalKm = segmentDistances.reduce((sum, dist) => sum + dist, 0);
+      const segments = segmentDistances.map((dist, idx) => ({
+        label: `Segment ${idx + 1}`,
+        lengthKm: dist,
+      }));
+
+      return {
+        type: "polyline" as const,
+        segments,
+        totalKm,
+      };
+    }
+
+    if (drawingMode === "polygon") {
+      const path = [...pendingPolygonPoints];
+      if (mousePosition) path.push(mousePosition);
+      if (path.length < 3) return null;
+      const closedPath = [...path, path[0]];
+      const areaMeters = computePolygonAreaMeters([closedPath]);
+      const perimeterMeters = computePolygonPerimeterMeters([closedPath]);
+      return {
+        type: "polygon" as const,
+        areaMeters,
+        perimeterMeters,
+      };
+    }
+
+    return null;
+  }, [
+    isDrawing,
+    drawingMode,
+    currentPath,
+    mousePosition,
+    pendingPolygonPoints,
+    computeSegmentDistancesKm,
+  ]);
+
+  const polylinePreviewStats = useMemo(() => {
+    if (!measurementPreview || measurementPreview.type !== "polyline") {
+      return null;
+    }
+    const segments = measurementPreview.segments ?? [];
+    if (!segments.length) return null;
+    const max = Math.max(...segments.map((segment) => segment.lengthKm));
+    const min = Math.min(...segments.map((segment) => segment.lengthKm));
+    const avg =
+      segments.reduce((sum, segment) => sum + segment.lengthKm, 0) /
+      segments.length;
+    return {
+      count: segments.length,
+      max,
+      min,
+      avg,
+    };
+  }, [measurementPreview]);
 
   // useEffect(() => {
   //   const loadNodeData = async () => {
@@ -177,37 +259,6 @@ const MapComponent = ({
     setHoverInfo(undefined); // Clear tooltip when creating a layer
   };
 
-  const handleLineDrawing = (point: [number, number]) => {
-    if (!isDrawing) {
-      setCurrentPath([point]);
-      setIsDrawing(true);
-    } else {
-      // Safety check: ensure currentPath exists and has at least one point
-      if (!currentPath || currentPath.length === 0) {
-        console.warn("currentPath is empty, resetting line drawing");
-        setCurrentPath([point]);
-        setIsDrawing(true);
-        return;
-      }
-
-      const finalPath = [currentPath[0], point];
-      const newLayer: LayerProps = {
-        type: "line",
-        id: generateLayerId(),
-        name: `Line ${layers.filter((l) => l.type === "line").length + 1}`,
-        path: finalPath,
-        color: [0, 0, 0], // Black color
-        lineWidth: 5,
-        visible: true,
-      };
-      addLayer(newLayer);
-      lastLayerCreationTimeRef.current = Date.now();
-      setHoverInfo(undefined); // Clear tooltip when creating a layer
-      setCurrentPath([]);
-      setIsDrawing(false);
-    }
-  };
-
   const handlePolygonDrawing = (point: [number, number]) => {
     //   console.log("handlePolygonDrawing called with:", { point, isDrawing, currentPathLength: currentPath.length });
 
@@ -246,46 +297,118 @@ const MapComponent = ({
     }
   };
 
+  const finalizePolyline = useCallback(() => {
+    if (!currentPath || currentPath.length < 2) {
+      setCurrentPath([]);
+      setIsDrawing(false);
+      return;
+    }
+
+    const path = [...currentPath];
+    const segmentDistancesKm = computeSegmentDistancesKm(path);
+    const totalDistanceKm = segmentDistancesKm.reduce(
+      (sum, dist) => sum + dist,
+      0
+    );
+
+    const newLayer: LayerProps = {
+      type: "line",
+      id: generateLayerId(),
+      name: `Path ${
+        layers.filter(
+          (l) => l.type === "line" && !(l.name || "").includes("Connection")
+        ).length + 1
+      }`,
+      path,
+      color: [68, 68, 68],
+      lineWidth: 4,
+      visible: true,
+      segmentDistancesKm,
+      totalDistanceKm,
+    };
+
+    addLayer(newLayer);
+    lastLayerCreationTimeRef.current = Date.now();
+    setHoverInfo(undefined);
+    setCurrentPath([]);
+    setIsDrawing(false);
+  }, [
+    currentPath,
+    computeSegmentDistancesKm,
+    addLayer,
+    layers,
+    setCurrentPath,
+    setIsDrawing,
+    setHoverInfo,
+  ]);
+
+  const handlePolylineDrawing = useCallback(
+    (point: [number, number]) => {
+      if (!isDrawing) {
+        setCurrentPath([point]);
+        setIsDrawing(true);
+        return;
+      }
+
+      const lastPoint = currentPath[currentPath.length - 1];
+      if (
+        lastPoint &&
+        arePointsClose(lastPoint, point) &&
+        currentPath.length >= 2
+      ) {
+        finalizePolyline();
+        return;
+      }
+
+      setCurrentPath([...currentPath, point]);
+    },
+    [
+      isDrawing,
+      currentPath,
+      setCurrentPath,
+      setIsDrawing,
+      arePointsClose,
+      finalizePolyline,
+    ]
+  );
+
   const handleAzimuthalDrawing = (point: [number, number]) => {
     if (!isDrawing) {
-      // First click sets the center
       setCurrentPath([point]);
       setIsDrawing(true);
       return;
     }
 
-    // Second click sets the azimuth and radius
     const center = currentPath[0];
-    const end = point;
-    const radiusMeters = calculateDistanceMeters(center, end);
-    const bearing = calculateBearingDegrees(center, end);
+    if (!center) {
+      setIsDrawing(false);
+      setCurrentPath([]);
+      return;
+    }
 
-    const sectorAngleDeg = azimuthalAngle || 60; // default sector width
-    const sector = makeSectorPolygon(
-      center,
-      radiusMeters,
-      bearing,
-      sectorAngleDeg
-    );
+    const target = point;
+    const distanceMeters = calculateDistanceMeters(center, target);
+    const azimuthAngle = calculateBearingDegrees(center, target);
+    const referenceDistance = Math.max(distanceMeters, 1000);
+    const northPoint = destinationPoint(center, referenceDistance, 0);
 
-    // Build GeoJSON with only the sector polygon (no point or azimuth line)
+    const azimuthCount = layers.filter((l) => l.type === "azimuth").length;
     const newLayer: LayerProps = {
-      type: "polygon",
+      type: "azimuth",
       id: generateLayerId(),
-      name: `Azimuthal ${
-        layers.filter((l) => l.name?.startsWith("Azimuthal")).length + 1
-      }`,
-      polygon: [sector],
-      color: [32, 32, 32, 180],
+      name: `Azimuth ${azimuthCount + 1}`,
+      color: [59, 130, 246],
       visible: true,
-      sectorAngleDeg,
-      radiusMeters,
-      bearing,
+      azimuthCenter: center,
+      azimuthTarget: target,
+      azimuthNorth: northPoint,
+      azimuthAngleDeg: azimuthAngle,
+      distanceMeters,
     };
 
     addLayer(newLayer);
     lastLayerCreationTimeRef.current = Date.now();
-    setHoverInfo(undefined); // Clear tooltip when creating a layer
+    setHoverInfo(undefined);
     setCurrentPath([]);
     setIsDrawing(false);
   };
@@ -316,8 +439,21 @@ const MapComponent = ({
       setIsDrawing(false);
     }
 
-    if (drawingMode !== "polygon" && pendingPolygonPoints.length === 0) {
+    if (
+      previousMode === "polygon" &&
+      drawingMode !== "polygon" &&
+      pendingPolygonPoints.length === 0 &&
+      currentPath.length > 0
+    ) {
       setCurrentPath([]);
+    }
+
+    if (
+      previousMode === "polyline" &&
+      drawingMode !== "polyline" &&
+      currentPath.length >= 2
+    ) {
+      finalizePolyline();
     }
 
     previousDrawingModeRef.current = drawingMode;
@@ -329,6 +465,8 @@ const MapComponent = ({
     setPendingPolygonPoints,
     setCurrentPath,
     setIsDrawing,
+    currentPath,
+    finalizePolyline,
   ]);
 
   const handleClick = (event: any) => {
@@ -378,8 +516,8 @@ const MapComponent = ({
       case "point":
         createPointLayer(clickPoint);
         break;
-      case "line":
-        handleLineDrawing(clickPoint);
+      case "polyline":
+        handlePolylineDrawing(clickPoint);
         break;
       case "polygon":
         handlePolygonDrawing(clickPoint);
@@ -536,6 +674,8 @@ const MapComponent = ({
   // UDP layers from separate component
   const { udpLayers, connectionError, noDataWarning, isConnected } =
     useUdpLayers(handleLayerHover);
+  const notificationsActive =
+    networkLayersVisible && (connectionError || noDataWarning);
   const { host, port } = useUdpConfigStore();
 
   const handleNodeIconClick = useCallback(
@@ -670,6 +810,7 @@ const MapComponent = ({
       (l) => l.type === "line" && (l.name || "").includes("Connection")
     );
     const polygonLayers = visibleLayers.filter((l) => l.type === "polygon");
+    const azimuthLayers = visibleLayers.filter((l) => l.type === "azimuth");
     const geoJsonLayers = visibleLayers.filter((l) => l.type === "geojson");
     const demLayers = visibleLayers.filter((l) => l.type === "dem");
     const annotationLayers = visibleLayers.filter(
@@ -678,6 +819,31 @@ const MapComponent = ({
     const nodeLayers = visibleLayers.filter((l) => l.type === "nodes");
 
     const deckLayers: any[] = [];
+    const measurementCharacterSet = [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      ".",
+      "-",
+      "°",
+      "k",
+      "m",
+      "A",
+      "P",
+      ":",
+      "•",
+      "²",
+      "h",
+      "a",
+      " ",
+    ];
 
     if (pointLayers.length) {
       // Create a unique key based on all radius values to force update
@@ -724,43 +890,6 @@ const MapComponent = ({
           },
         })
       );
-    }
-
-    if (lineLayers.length) {
-      const pathData = lineLayers.flatMap((layer) => {
-        const path = layer.path ?? [];
-        if (path.length < 2) return []; // Need at least 2 points for a line
-        return path.slice(0, -1).map((point, index) => ({
-          sourcePosition: point,
-          targetPosition: path[index + 1],
-          color: layer.color ? [...layer.color] : [0, 0, 0], // Black default
-          width: layer.lineWidth ?? 5,
-          layerId: layer.id,
-          layer: layer,
-        }));
-      });
-
-      if (pathData.length) {
-        deckLayers.push(
-          new LineLayer({
-            id: "line-layer",
-            data: pathData,
-            getSourcePosition: (d: any) => d.sourcePosition,
-            getTargetPosition: (d: any) => d.targetPosition,
-            getColor: (d: any) => {
-              const color = d.color || [0, 0, 0]; // Black default
-              return color.length === 3 ? [...color, 255] : color;
-            },
-            getWidth: (d: any) => Math.max(1, d.width), // Minimum width of 1
-            widthUnits: "pixels", // Use pixels instead of meters
-            widthMinPixels: 1, // Minimum width of 1 pixel
-            widthMaxPixels: 50, // Maximum width of 50 pixels
-            pickable: true,
-            pickingRadius: 300, // Larger picking radius for touch devices
-            onHover: handleLayerHover,
-          })
-        );
-      }
     }
 
     if (connectionLayers.length) {
@@ -813,6 +942,180 @@ const MapComponent = ({
           onHover: handleLayerHover,
         })
       );
+
+      // Polygon labels now shown only in side panel while drawing.
+      // No on-map labels for finalized polygons per latest request.
+    }
+
+    if (lineLayers.length) {
+      const pathData = lineLayers.flatMap((layer) => {
+        const path = layer.path ?? [];
+        if (path.length < 2) return [];
+        return path.slice(0, -1).map((point, index) => ({
+          sourcePosition: point,
+          targetPosition: path[index + 1],
+          color: layer.color ? [...layer.color] : [0, 0, 0],
+          width: layer.lineWidth ?? 5,
+          layerId: layer.id,
+          layerName: layer.name,
+          segmentIndex: index,
+        }));
+      });
+
+      if (pathData.length) {
+        deckLayers.push(
+          new LineLayer({
+            id: "line-layer",
+            data: pathData,
+            getSourcePosition: (d: any) => d.sourcePosition,
+            getTargetPosition: (d: any) => d.targetPosition,
+            getColor: (d: any) => {
+              const color = d.color || [0, 0, 0];
+              return color.length === 3 ? [...color, 255] : color;
+            },
+            getWidth: (d: any) => Math.max(1, d.width),
+            widthUnits: "pixels",
+            widthMinPixels: 1,
+            widthMaxPixels: 50,
+            pickable: true,
+            pickingRadius: 300,
+            onHover: handleLayerHover,
+            capRounded: true,
+            jointRounded: true,
+            parameters: { depthTest: false },
+          })
+        );
+
+        const vertexData = lineLayers.flatMap((layer) => {
+          const path = layer.path ?? [];
+          if (!path.length) return [];
+          return path.map((point, index) => ({
+            position: point,
+            color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
+            radius: index === 0 ? 200 : 180,
+          }));
+        });
+
+        if (vertexData.length) {
+          deckLayers.push(
+            new ScatterplotLayer({
+              id: "line-vertex-layer",
+              data: vertexData,
+              getPosition: (d: any) => d.position,
+              getRadius: (d: any) => d.radius,
+              radiusUnits: "meters",
+              getFillColor: (d: any) => d.color,
+              getLineColor: [255, 255, 255, 200],
+              getLineWidth: 2,
+              stroked: true,
+              pickable: false,
+              radiusMinPixels: 4,
+              radiusMaxPixels: 10,
+              parameters: { depthTest: false },
+            })
+          );
+        }
+
+        // Per-request, no on-map labels for finalized lines; side panel handles display.
+      }
+    }
+
+    if (azimuthLayers.length) {
+      const azimuthLineData = azimuthLayers.flatMap((layer) => {
+        const segments: any[] = [];
+        const center = layer.azimuthCenter;
+        if (center && layer.azimuthNorth) {
+          segments.push({
+            sourcePosition: center,
+            targetPosition: layer.azimuthNorth,
+            color: [148, 163, 184, 220],
+            width: 2,
+            dashArray: [6, 4],
+            layerId: layer.id,
+            segmentType: "north",
+          });
+        }
+        if (center && layer.azimuthTarget) {
+          const baseColor = layer.color
+            ? layer.color.length === 4
+              ? [...layer.color]
+              : [...layer.color, 255]
+            : [59, 130, 246, 255];
+          segments.push({
+            sourcePosition: center,
+            targetPosition: layer.azimuthTarget,
+            color: baseColor,
+            width: 3,
+            layerId: layer.id,
+            segmentType: "target",
+          });
+        }
+        return segments;
+      });
+
+      const azimuthLabelData = azimuthLayers
+        .map((layer) => {
+          if (
+            !layer.azimuthCenter ||
+            !layer.azimuthTarget ||
+            typeof layer.azimuthAngleDeg !== "number"
+          ) {
+            return null;
+          }
+          const [cLng, cLat] = layer.azimuthCenter;
+          const [tLng, tLat] = layer.azimuthTarget;
+          const labelLng = cLng + (tLng - cLng) * 0.4;
+          const labelLat = cLat + (tLat - cLat) * 0.4;
+          let signedAngle = normalizeAngleSigned(layer.azimuthAngleDeg);
+          if (signedAngle === -180) signedAngle = 180;
+          return {
+            position: [labelLng, labelLat] as [number, number],
+            text: `${signedAngle.toFixed(1)}°`,
+          };
+        })
+        .filter(Boolean);
+
+      if (azimuthLineData.length) {
+        deckLayers.push(
+          new LineLayer({
+            id: "azimuth-lines-layer",
+            data: azimuthLineData,
+            pickable: true,
+            pickingRadius: 200,
+            onHover: handleLayerHover,
+            getSourcePosition: (d: any) => d.sourcePosition,
+            getTargetPosition: (d: any) => d.targetPosition,
+            getColor: (d: any) => d.color,
+            getWidth: (d: any) => d.width,
+            getDashArray: (d: any) => d.dashArray ?? [0, 0],
+            dashJustified: true,
+          })
+        );
+      }
+
+      if (azimuthLabelData.length) {
+        deckLayers.push(
+          new TextLayer({
+            id: "azimuth-angle-labels",
+            data: azimuthLabelData as Array<{
+              position: [number, number];
+              text: string;
+            }>,
+            pickable: false,
+            getPosition: (d) => d.position,
+            getText: (d) => d.text,
+            getSize: 14,
+            getColor: [59, 130, 246, 255],
+            getTextAnchor: "middle",
+            getAlignmentBaseline: "center",
+            fontWeight: 600,
+            background: true,
+            getBackgroundColor: [255, 255, 255, 200],
+            padding: [2, 4],
+            characterSet: measurementCharacterSet,
+          })
+        );
+      }
     }
 
     geoJsonLayers.forEach((layer) => {
@@ -963,33 +1266,6 @@ const MapComponent = ({
     }
     if (
       isDrawing &&
-      drawingMode === "line" &&
-      currentPath.length === 1 &&
-      mousePosition
-    ) {
-      const previewLineData = [
-        {
-          sourcePosition: currentPath[0],
-          targetPosition: mousePosition,
-          color: [160, 160, 160],
-          width: 3,
-        },
-      ];
-      previewLayers.push(
-        new LineLayer({
-          id: "preview-line-layer",
-          data: previewLineData,
-          getSourcePosition: (d: any) => d.sourcePosition,
-          getTargetPosition: (d: any) => d.targetPosition,
-          getColor: (d: any) => d.color,
-          getWidth: (d: any) => d.width,
-          pickable: false,
-        })
-      );
-    }
-
-    if (
-      isDrawing &&
       drawingMode === "polygon" &&
       currentPath.length >= 1 &&
       mousePosition
@@ -1028,7 +1304,10 @@ const MapComponent = ({
           })
         );
 
-        if (isPointNearFirstPoint(mousePosition, currentPath[0])) {
+        if (
+          isPointNearFirstPoint(mousePosition, currentPath[0]) &&
+          previewPath.length >= 3
+        ) {
           const closingLineData = [
             {
               sourcePosition: mousePosition,
@@ -1052,6 +1331,54 @@ const MapComponent = ({
       }
     }
 
+    if (isDrawing && drawingMode === "polyline" && currentPath.length >= 1) {
+      const segments =
+        currentPath.length > 1
+          ? currentPath.slice(0, -1).map((point, index) => ({
+              sourcePosition: point,
+              targetPosition: currentPath[index + 1],
+              color: [96, 96, 96],
+              width: 3,
+            }))
+          : [];
+
+      if (segments.length) {
+        previewLayers.push(
+          new LineLayer({
+            id: "preview-polyline-existing",
+            data: segments,
+            getSourcePosition: (d: any) => d.sourcePosition,
+            getTargetPosition: (d: any) => d.targetPosition,
+            getColor: (d: any) => d.color,
+            getWidth: (d: any) => d.width,
+            pickable: false,
+          })
+        );
+      }
+
+      if (mousePosition) {
+        const lastPoint = currentPath[currentPath.length - 1];
+        previewLayers.push(
+          new LineLayer({
+            id: "preview-polyline-next",
+            data: [
+              {
+                sourcePosition: lastPoint,
+                targetPosition: mousePosition,
+                color: [96, 96, 96],
+                width: 3,
+              },
+            ],
+            getSourcePosition: (d: any) => d.sourcePosition,
+            getTargetPosition: (d: any) => d.targetPosition,
+            getColor: (d: any) => d.color,
+            getWidth: (d: any) => d.width,
+            pickable: false,
+          })
+        );
+      }
+    }
+
     if (
       isDrawing &&
       drawingMode === "azimuthal" &&
@@ -1059,25 +1386,67 @@ const MapComponent = ({
       mousePosition
     ) {
       const center = currentPath[0];
-      const radiusMeters = calculateDistanceMeters(center, mousePosition);
-      const bearing = calculateBearingDegrees(center, mousePosition);
-      const sector = makeSectorPolygon(
-        center,
-        radiusMeters,
-        bearing,
-        azimuthalAngle || 60
-      );
+      const distanceMeters = calculateDistanceMeters(center, mousePosition);
+      const referenceDistance = Math.max(distanceMeters, 1000);
+      const northPoint = destinationPoint(center, referenceDistance, 0);
+      const angleDeg = calculateBearingDegrees(center, mousePosition);
+      const labelLng = center[0] + (mousePosition[0] - center[0]) * 0.4;
+      const labelLat = center[1] + (mousePosition[1] - center[1]) * 0.4;
+      const previewAzimuthData = [
+        {
+          sourcePosition: center,
+          targetPosition: northPoint,
+          color: [148, 163, 184],
+          width: 2,
+          dashArray: [6, 4],
+        },
+        {
+          sourcePosition: center,
+          targetPosition: mousePosition,
+          color: [59, 130, 246],
+          width: 3,
+        },
+      ];
       previewLayers.push(
-        new PolygonLayer({
-          id: "preview-azimuthal-layer",
-          data: [sector],
-          getPolygon: (d: [number, number][]) => d,
-          getFillColor: [32, 32, 32, 100],
-          getLineColor: [32, 32, 32],
-          getLineWidth: 2,
+        new LineLayer({
+          id: "preview-azimuth-lines",
+          data: previewAzimuthData,
+          getSourcePosition: (d: any) => d.sourcePosition,
+          getTargetPosition: (d: any) => d.targetPosition,
+          getColor: (d: any) => d.color,
+          getWidth: (d: any) => d.width,
+          getDashArray: (d: any) => d.dashArray ?? [0, 0],
+          dashJustified: true,
           pickable: false,
         })
       );
+      if (distanceMeters > 5) {
+        let signedPreviewAngle = normalizeAngleSigned(angleDeg);
+        if (signedPreviewAngle === -180) signedPreviewAngle = 180;
+        previewLayers.push(
+          new TextLayer({
+            id: "preview-azimuth-angle-label",
+            data: [
+              {
+                position: [labelLng, labelLat] as [number, number],
+                text: `${signedPreviewAngle.toFixed(1)}°`,
+              },
+            ],
+            pickable: false,
+            getPosition: (d: any) => d.position,
+            getText: (d: any) => d.text,
+            getSize: 14,
+            getColor: [59, 130, 246, 255],
+            getTextAnchor: "middle",
+            getAlignmentBaseline: "center",
+            fontWeight: 600,
+            background: true,
+            getBackgroundColor: [255, 255, 255, 220],
+            padding: [2, 4],
+            characterSet: measurementCharacterSet,
+          })
+        );
+      }
     }
 
     if (isDrawing && currentPath.length > 0) {
@@ -1108,7 +1477,6 @@ const MapComponent = ({
     drawingMode,
     currentPath,
     mousePosition,
-    azimuthalAngle,
     handleLayerHover,
     handleNodeIconClick,
     udpLayers,
@@ -1127,28 +1495,91 @@ const MapComponent = ({
         />
       )}
 
-      {/* Connection Error/No Data Indicator Button */}
-      {networkLayersVisible && (connectionError || noDataWarning) && (
-        <div className="absolute top-4 right-4 z-50">
-          <Button
-            onClick={() => setShowConnectionError(!showConnectionError)}
-            variant="outline"
-            size="icon"
-            className="bg-white hover:bg-gray-50 text-red-500 border-0 shadow-lg"
-            title={
-              connectionError
-                ? "Connection Error - Click to view details"
-                : "No Data Warning - Click to view details"
-            }
-          >
-            <span className="text-lg font-bold">!</span>
-          </Button>
+      {measurementPreview && (
+        <div
+          className="absolute right-4 z-40 w-64 rounded-lg border border-black/10 bg-white shadow-xl p-3 space-y-2"
+          style={{ top: notificationsActive ? 40 : 16 }}
+        >
+          <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            <span>Drawing Measurements</span>
+            <span className="text-[10px] font-semibold text-slate-500">
+              {useIgrs ? "IGRS" : "LAT / LNG"}
+            </span>
+          </div>
+          {measurementPreview.type === "polygon" ? (
+            <div className="space-y-1 text-sm text-gray-700">
+              <div className="flex justify-between">
+                <span>Area</span>
+                <span className="font-mono">
+                  {formatArea(measurementPreview.areaMeters)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Perimeter</span>
+                <span className="font-mono">
+                  {formatDistance(measurementPreview.perimeterMeters / 1000)}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="text-xs text-gray-500">Segments</div>
+              <div className="space-y-1 max-h-64 overflow-y-auto text-sm text-gray-700">
+                {measurementPreview.segments.map((segment, idx) => (
+                  <div
+                    key={`${segment.label}-${idx}`}
+                    className="flex justify-between"
+                  >
+                    <span>{segment.label}</span>
+                    <span className="font-mono">
+                      {segment.lengthKm.toFixed(2)} km
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {polylinePreviewStats && (
+                <div className="mt-2 space-y-1 border-t border-dashed border-slate-200 pt-2 text-xs text-gray-700">
+                  <div className="flex justify-between">
+                    <span>Count</span>
+                    <span className="font-mono">
+                      {polylinePreviewStats.count}
+                    </span>
+                  </div>
+                  {polylinePreviewStats.count > 1 && (
+                    <>
+                      <div className="flex justify-between">
+                        <span>Max segment</span>
+                        <span className="font-mono">
+                          {polylinePreviewStats.max.toFixed(2)} km
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Min segment</span>
+                        <span className="font-mono">
+                          {polylinePreviewStats.min.toFixed(2)} km
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Avg segment</span>
+                        <span className="font-mono">
+                          {polylinePreviewStats.avg.toFixed(2)} km
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              <div className="text-xs font-semibold text-gray-800">
+                Total: {measurementPreview.totalKm.toFixed(2)} km
+              </div>
+            </>
+          )}
         </div>
       )}
 
       {/* UDP Connection Error Banner */}
       {networkLayersVisible && connectionError && showConnectionError && (
-        <div className="absolute top-16 right-4 z-50 bg-white rounded-lg shadow-lg p-3 max-w-sm">
+        <div className="absolute bottom-14 right-78 z-50 bg-white rounded-lg shadow-lg p-3 max-w-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
               <div className="font-semibold mb-1.5 text-sm text-red-600">
@@ -1191,7 +1622,7 @@ const MapComponent = ({
 
       {/* UDP No Data Warning Banner */}
       {networkLayersVisible && noDataWarning && showConnectionError && (
-        <div className="absolute top-16 right-4 z-50 bg-white rounded-lg shadow-lg p-3 max-w-sm">
+        <div className="absolute bottom-32 right-4 z-50 bg-white rounded-lg shadow-lg p-3 max-w-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
               <div className="font-semibold mb-1.5 text-sm text-orange-600">
@@ -1345,126 +1776,33 @@ const MapComponent = ({
       </Map>
 
       <Tooltip />
-      <ZoomControls mapRef={mapRef} zoom={mapZoom} />
-
-      {/* Bottom Floating Island */}
-      <div
-        className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-100 cursor-pointer flex items-center justify-center bg-white shadow-lg py-2 px-4 gap-6 rounded-md w-auto"
-        style={{ pointerEvents: "auto" }}
-      >
-        <Button
-          size="icon"
-          className="bg-transparent shadow-none w-auto m-0 hover:bg-transparent"
-          onClick={() => onToggleLayersPanel?.()}
-        >
-          <div className="flex flex-col gap-0.5 items-center justify-center">
-            <LayersIcon className="h-8 w-8 text-black shadow-none" />
-            <span className="text-xs text-black whitespace-nowrap">Layers</span>
-          </div>
-        </Button>
-        <Popover
-          open={isCameraPopoverOpen}
-          onOpenChange={setIsCameraPopoverOpen}
-        >
-          <PopoverTrigger asChild>
-            <Button
-              size="icon"
-              className="bg-transparent shadow-none w-auto m-0 hover:bg-transparent"
-            >
-              <div className="flex flex-col gap-0.5 items-center justify-center">
-                <CameraIcon className="h-8 w-8 text-black shadow-none" />
-                <span className="text-xs text-black whitespace-nowrap">
-                  Camera
-                </span>
-              </div>
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent
-            className="w-[220px] ml-6 p-0 relative"
-            align="center"
-            side="top"
-            sideOffset={12}
-            alignOffset={0}
-            onOpenAutoFocus={(e) => e.preventDefault()}
-          >
-            <Button
-              onClick={() => setIsCameraPopoverOpen(false)}
-              variant="ghost"
-              size="icon"
-              className="absolute top-1.5 -right-1 z-50 bg-transparent hover:bg-transparent"
-              title="Close"
-              style={{ zoom: 0.85 }}
-            >
-              <XIcon className="h-1 w-1 text-gray-600" />
-            </Button>
-            <div className="w-full p-3">
-              <TiltControl
-                mapRef={mapRef}
-                pitch={pitch}
-                setPitch={setPitch}
-                onCreatePoint={createPointLayer}
-              />
-            </div>
-          </PopoverContent>
-        </Popover>
-        <Button
-          size="icon"
-          className="bg-transparent shadow-none w-auto m-0 hover:bg-transparent relative z-50"
-          onClick={() => setIsUdpConfigDialogOpen(true)}
-          title="Configure UDP Server"
-          style={{ pointerEvents: "auto" }}
-        >
-          <div className="flex flex-col gap-0.5 items-center justify-center pointer-events-none">
-            <WifiPen className="h-8 w-8 text-black shadow-none" />
-            <span className="text-xs text-black whitespace-nowrap">
-              Connection
-            </span>
-          </div>
-        </Button>
-        {drawingMode && (
-          <Button
-            size="icon"
-            className="bg-transparent shadow-none w-auto m-0 hover:bg-transparent"
-            onClick={() => {
-              // If polygon mode with 3+ points, save the polygon before exiting
-              if (
-                drawingMode === "polygon" &&
-                pendingPolygonPoints.length >= 3
-              ) {
-                const closedPath = [
-                  ...pendingPolygonPoints,
-                  pendingPolygonPoints[0],
-                ];
-                const newLayer: LayerProps = {
-                  type: "polygon",
-                  id: generateLayerId(),
-                  name: `Polygon ${
-                    layers.filter((l) => l.type === "polygon").length + 1
-                  }`,
-                  polygon: [closedPath],
-                  color: [32, 32, 32, 180],
-                  visible: true,
-                };
-                addLayer(newLayer);
-                lastLayerCreationTimeRef.current = Date.now();
-                setHoverInfo(undefined);
-              }
-              // Exit drawing mode
-              setDrawingMode(null);
-              setIsDrawing(false);
-              setCurrentPath([]);
-              setPendingPolygonPoints([]);
-            }}
-          >
-            <div className="flex flex-col gap-0.5 items-center justify-center">
-              <PenIcon className="h-8 w-8 text-red-600 shadow-none" />
-              <span className="text-xs text-red-600 whitespace-nowrap">
-                Exit Drawing
-              </span>
-            </div>
-          </Button>
-        )}
-      </div>
+      <ZoomControls
+        mapRef={mapRef}
+        zoom={mapZoom}
+        onToggleLayersPanel={onToggleLayersPanel}
+        onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
+        cameraPopoverProps={{
+          isOpen: isCameraPopoverOpen,
+          onOpenChange: setIsCameraPopoverOpen,
+          pitch,
+          setPitch,
+          onCreatePoint: createPointLayer,
+        }}
+        alertButtonProps={{
+          visible: Boolean(
+            networkLayersVisible && (connectionError || noDataWarning)
+          ),
+          severity: connectionError ? "error" : "warning",
+          title: connectionError
+            ? "Connection Error - Click to view details"
+            : "No Data Warning - Click to view details",
+          onClick: () => setShowConnectionError((prev) => !prev),
+        }}
+        igrsToggleProps={{
+          value: useIgrs,
+          onToggle: (checked) => setUseIgrs(checked),
+        }}
+      />
 
       {/* UDP Config Dialog */}
       <UdpConfigDialog
