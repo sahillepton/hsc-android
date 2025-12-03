@@ -11,7 +11,6 @@ export interface Node {
   longitude: number;
 }
 
-
 export interface LayerProps {
   type:
     | "point"
@@ -63,6 +62,7 @@ export interface LayerProps {
   azimuthNorth?: [number, number];
   azimuthAngleDeg?: number;
   distanceMeters?: number;
+  zoomState?: number;
 }
 
 export type DrawingMode = "point" | "polygon" | "polyline" | "azimuthal" | null;

@@ -35,6 +35,7 @@ import {
   useIgrsPreference,
   useSetIgrsPreference,
   useUserLocation,
+  useMapZoom,
 } from "@/store/layers-store";
 import {
   calculateBearingDegrees,
@@ -141,7 +142,7 @@ const MapComponent = ({
   const [selectedNodeForIcon, setSelectedNodeForIcon] = useState<string | null>(
     null
   );
-  const [mapZoom, setMapZoom] = useState(4);
+  const { mapZoom, setMapZoom } = useMapZoom();
   const [isUdpConfigDialogOpen, setIsUdpConfigDialogOpen] = useState(false);
   const [configKey, setConfigKey] = useState(0);
   const [showConnectionError, setShowConnectionError] = useState(false);
@@ -744,6 +745,10 @@ const MapComponent = ({
         name.includes("Connection") ||
         layer.type === "nodes";
       if (isNetworkLayer && !networkLayersVisible) {
+        return false;
+      }
+      // Check zoomState: layer is visible only if current zoom >= layer's zoomState
+      if (layer.zoomState !== undefined && mapZoom < layer.zoomState) {
         return false;
       }
       return true;
@@ -1712,6 +1717,7 @@ const MapComponent = ({
     handleNodeIconClick,
     udpLayers,
     userLocation,
+    mapZoom,
   ]);
 
   return (

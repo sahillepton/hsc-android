@@ -71,6 +71,8 @@ interface LayerState {
   ) => void;
   userLocationError: string | null;
   setUserLocationError: (error: string | null) => void;
+  mapZoom: number;
+  setMapZoom: (zoom: number) => void;
 }
 
 // Debounce autosave to avoid saving too frequently
@@ -244,6 +246,8 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   setUserLocationError: (error) => set({ userLocationError: error }),
   useIgrs: false,
   setUseIgrs: (value) => set({ useIgrs: value }),
+  mapZoom: 4,
+  setMapZoom: (zoom) => set({ mapZoom: zoom }),
 }));
 
 export const useLayers = () => {
@@ -431,3 +435,9 @@ export const loadAutosavedLayers = async () => {
 export const useIgrsPreference = () => useLayerStore((state) => state.useIgrs);
 export const useSetIgrsPreference = () =>
   useLayerStore((state) => state.setUseIgrs);
+
+export const useMapZoom = () => {
+  const mapZoom = useLayerStore((state) => state.mapZoom);
+  const setMapZoom = useLayerStore((state) => state.setMapZoom);
+  return { mapZoom, setMapZoom };
+};

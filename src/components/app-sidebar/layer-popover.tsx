@@ -4,6 +4,7 @@ import { Slider } from "../ui/slider";
 import { Separator } from "../ui/separator";
 import { rgbToHex, hexToRgb, getDistance, getPolygonArea } from "@/lib/utils";
 import { useMemo } from "react";
+import ZoomStateSlider from "./zoom-state-slider";
 
 interface LayerPopoverProps {
   layer: any;
@@ -97,6 +98,9 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
             }}
           />
         </div>
+
+        {/* Zoom State */}
+        <ZoomStateSlider layerId={layer.id} />
 
         {/* Line Width */}
         {isLine && (
