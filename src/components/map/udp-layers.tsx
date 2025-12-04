@@ -622,7 +622,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           const fullErrorMessage = `Failed to connect to WebSocket server!\n\nHost: ${WS_IP}\nPort: ${WS_PORT}\n\nError: ${errorMessage}`;
           setIsConnected(false);
           setConnectionError(fullErrorMessage);
-          alert(fullErrorMessage);
+          //  alert(fullErrorMessage);
         }
       } else {
         // Use UDP (normal mode)
@@ -663,7 +663,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           const fullErrorMessage = `Failed to connect to UDP server!\n\nHost: ${host}\nPort: ${port}\n\nError: ${errorMessage}\n\nPlease check your configuration.`;
           setIsConnected(false);
           setConnectionError(fullErrorMessage);
-          alert(fullErrorMessage);
+          //  alert(fullErrorMessage);
         }
       }
     };
