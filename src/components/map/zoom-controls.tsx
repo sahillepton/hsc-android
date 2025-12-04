@@ -9,6 +9,9 @@ import {
   CameraIcon,
   WifiPen,
   AlertTriangle,
+  Ruler,
+  Network,
+  FileUp,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -41,16 +44,22 @@ type IgrsToggleProps = {
 const ZoomControls = ({
   mapRef,
   zoom,
-  onToggleLayersPanel,
+  onToggleLayersBox,
   onOpenConnectionConfig,
+  onToggleMeasurementBox,
+  onToggleNetworkBox,
+  onUpload,
   cameraPopoverProps,
   alertButtonProps,
   igrsToggleProps,
 }: {
   mapRef: React.RefObject<any>;
   zoom: number;
-  onToggleLayersPanel?: () => void;
+  onToggleLayersBox?: () => void;
   onOpenConnectionConfig?: () => void;
+  onToggleMeasurementBox?: () => void;
+  onToggleNetworkBox?: () => void;
+  onUpload?: () => void;
   cameraPopoverProps?: CameraPopoverProps;
   alertButtonProps?: AlertButtonProps;
   igrsToggleProps?: IgrsToggleProps;
@@ -111,7 +120,7 @@ const ZoomControls = ({
             size="icon"
             variant="ghost"
             className={cn(
-              "h-11 w-11 rounded-sm bg-white",
+              "h-11 w-11 rounded-sm bg-white shadow-2xl border border-black/10 backdrop-blur-sm",
               alertColor,
               "hover:text-current"
             )}
@@ -121,64 +130,101 @@ const ZoomControls = ({
             <AlertTriangle className="h-4 w-4" />
           </Button>
         )}
-        <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
-          <div className="flex items-center gap-1 p-0.5">
-            {onToggleLayersPanel && (
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
-                title="Layers Panel"
-                onClick={onToggleLayersPanel}
-              >
-                <LayersIcon className="h-4 w-4" />
-              </Button>
-            )}
+        <div className="flex items-center p-0.5 gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
+          {onToggleLayersBox && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
+              title="Layers Panel"
+              onClick={onToggleLayersBox}
+            >
+              <LayersIcon className="h-4 w-4" />
+            </Button>
+          )}
 
-            {cameraPopoverProps && (
-              <Popover
-                open={cameraPopoverProps.isOpen}
-                onOpenChange={cameraPopoverProps.onOpenChange}
-              >
-                <PopoverTrigger asChild>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
-                    title="Camera Controls"
-                  >
-                    <CameraIcon className="h-4 w-4" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent
-                  className="w-[240px] p-3"
-                  align="end"
-                  side="top"
-                  sideOffset={10}
-                  onOpenAutoFocus={(e) => e.preventDefault()}
+          {onToggleMeasurementBox && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
+              title="Measurement Box"
+              onClick={onToggleMeasurementBox}
+            >
+              <Ruler className="h-4 w-4" />
+            </Button>
+          )}
+
+          {onToggleNetworkBox && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
+              title="Network Layers"
+              onClick={onToggleNetworkBox}
+            >
+              <Network className="h-4 w-4" />
+            </Button>
+          )}
+
+          {cameraPopoverProps && (
+            <Popover
+              open={cameraPopoverProps.isOpen}
+              onOpenChange={cameraPopoverProps.onOpenChange}
+            >
+              <PopoverTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
+                  title="Camera Controls"
                 >
-                  <TiltControl
-                    mapRef={mapRef}
-                    pitch={cameraPopoverProps.pitch}
-                    setPitch={cameraPopoverProps.setPitch}
-                    onCreatePoint={cameraPopoverProps.onCreatePoint}
-                  />
-                </PopoverContent>
-              </Popover>
-            )}
+                  <CameraIcon className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                className="w-[240px] p-3"
+                align="end"
+                side="top"
+                sideOffset={10}
+                onOpenAutoFocus={(e) => e.preventDefault()}
+              >
+                <TiltControl
+                  mapRef={mapRef}
+                  pitch={cameraPopoverProps.pitch}
+                  setPitch={cameraPopoverProps.setPitch}
+                  onCreatePoint={cameraPopoverProps.onCreatePoint}
+                />
+              </PopoverContent>
+            </Popover>
+          )}
 
-            {onOpenConnectionConfig && (
+          {onOpenConnectionConfig && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
+              title="Connection Settings"
+              onClick={onOpenConnectionConfig}
+            >
+              <WifiPen className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+        <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
+          {onUpload && (
+            <div className="flex items-center gap-0 p-0.5">
               <Button
                 size="icon"
                 variant="ghost"
-                className="h-10 w-10 text-slate-600 hover:text-foreground  rounded-none"
-                title="Connection Settings"
-                onClick={onOpenConnectionConfig}
+                className="h-10 w-10 text-slate-600 hover:text-foreground rounded-none"
+                title="Upload File"
+                onClick={onUpload}
               >
-                <WifiPen className="h-4 w-4" />
+                <FileUp className="h-4 w-4" />
               </Button>
-            )}
-          </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-0 p-0.5 ">
             {toolConfigs.map((tool, index) => {
@@ -196,9 +242,9 @@ const ZoomControls = ({
                     size="icon"
                     variant="ghost"
                     className={cn(
-                      "h-10 w-10 p-0 rounded-none hover:text-foreground bg-transparent cursor-pointer",
+                      "h-10 w-10 p-0 rounded-none hover:text-foreground  bg-transparent cursor-pointer",
                       isActive
-                        ? "text-zinc-500 bg-gray-500/10"
+                        ? "text-zinc-950 bg-blue-600/20 font-bold"
                         : "bg-white text-foreground hover:bg-white"
                     )}
                     title={

@@ -3,7 +3,7 @@ import { Input } from "../ui/input";
 import { Slider } from "../ui/slider";
 import { Separator } from "../ui/separator";
 import { rgbToHex, hexToRgb, getDistance, getPolygonArea } from "@/lib/utils";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 interface LayerPopoverProps {
   layer: any;
@@ -12,6 +12,10 @@ interface LayerPopoverProps {
 }
 
 const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
+  const [widthPreview, setWidthPreview] = useState(layer.lineWidth ?? 5);
+  const [radiusPreview, setRadiusPreview] = useState(
+    layer.type === "point" ? layer.radius ?? 5 : layer.pointRadius ?? 5
+  );
   // Check for line geometry types
   const isLine =
     layer.type === "line" ||
@@ -109,8 +113,9 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                 min={1}
                 max={50}
                 step={1}
-                value={[layer.lineWidth ?? 5]}
-                onValueChange={(values) =>
+                value={[widthPreview]}
+                onValueChange={(values) => setWidthPreview(values[0])}
+                onValueCommit={(values) =>
                   updateLayer(layer.id, {
                     ...layer,
                     lineWidth: values[0],
@@ -120,9 +125,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
               />
               <div className="flex justify-between text-xs text-muted-foreground mt-1">
                 <span>1 px</span>
-                <span className="font-medium">
-                  Current: {layer.lineWidth ?? 5} px
-                </span>
+                <span className="font-medium">Current: {widthPreview} px</span>
                 <span>50 px</span>
               </div>
             </div>
@@ -140,12 +143,9 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                 min={1}
                 max={50}
                 step={1}
-                value={[
-                  layer.type === "point"
-                    ? layer.radius || 5
-                    : layer.pointRadius || 5,
-                ]}
-                onValueChange={(values) => {
+                value={[radiusPreview]}
+                onValueChange={(values) => setRadiusPreview(values[0])}
+                onValueCommit={(values) => {
                   const value = values[0];
                   if (layer.type === "point") {
                     updateLayer(layer.id, {
@@ -163,13 +163,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
               />
               <div className="flex justify-between text-xs text-muted-foreground mt-1">
                 <span>1 px</span>
-                <span className="font-medium">
-                  Current:{" "}
-                  {layer.type === "point"
-                    ? layer.radius || 5
-                    : layer.pointRadius || 5}{" "}
-                  px
-                </span>
+                <span className="font-medium">Current: {radiusPreview} px</span>
                 <span>50 px</span>
               </div>
             </div>

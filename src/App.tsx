@@ -4,9 +4,11 @@ import MapComponent from "./components/map";
 import { SidebarProvider, SidebarTrigger } from "./components/ui/sidebar";
 import { AppSidebar } from "./components/app-sidebar";
 import { loadAutosavedLayers } from "./store/layers-store";
+import LayersBox from "./components/map/layers-box";
 
 const App = () => {
   const [isLayersPanelVisible, setIsLayersPanelVisible] = useState(false);
+  const [isLayersBoxOpen, setIsLayersBoxOpen] = useState(false);
 
   // Load autosaved layers on app initialization
   useEffect(() => {
@@ -22,10 +24,18 @@ const App = () => {
           <AppSidebar onClose={() => setIsLayersPanelVisible(false)} />
         </div>
       )}
+      {isLayersBoxOpen && (
+        <LayersBox onClose={() => setIsLayersBoxOpen(false)} />
+      )}
       <MapComponent
-        onToggleLayersPanel={() =>
-          setIsLayersPanelVisible(!isLayersPanelVisible)
-        }
+        onToggleLayersBox={() => {
+          setIsLayersBoxOpen((prev) => {
+            // If opening layers box, we'll close others via callback
+            return !prev;
+          });
+        }}
+        onCloseLayersBox={() => setIsLayersBoxOpen(false)}
+        isLayersBoxOpen={isLayersBoxOpen}
       />
     </SidebarProvider>
   );

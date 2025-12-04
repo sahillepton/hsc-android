@@ -65,10 +65,7 @@ export function AppSidebar({ onClose }: { onClose?: () => void }) {
             isOpen={isSketchLayersOpen}
             setIsOpen={setIsSketchLayersOpen}
           />
-          <LayersPanel
-            isLayersOpen={isLayersOpen}
-            setIsLayersOpen={setIsLayersOpen}
-          />
+          <LayersPanel isOpen={isLayersOpen} setIsOpen={setIsLayersOpen} />
           <StorageLayer
             currentStorageDir={currentStorageDir}
             setCurrentStorageDir={setCurrentStorageDir}

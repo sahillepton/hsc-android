@@ -49,7 +49,8 @@ const FileSection = () => {
           min: dem.min,
           max: dem.max,
         },
-      };
+        uploadedAt: Date.now(),
+      } as LayerProps & { uploadedAt: number };
       // Use addLayer to ensure proper state updates and prevent overwriting
       addLayer(newLayer);
 
@@ -433,7 +434,8 @@ const FileSection = () => {
         color: [0, 0, 0],
         visible: true,
         annotations: annotations,
-      };
+        uploadedAt: Date.now(),
+      } as LayerProps & { uploadedAt: number };
 
       // Use addLayer to ensure proper state updates and prevent overwriting
       addLayer(newLayer);
@@ -651,7 +653,8 @@ const FileSection = () => {
         pointRadius: extractedPointRadius ?? 5,
         lineWidth: extractedLineWidth ?? 5,
         visible: true,
-      };
+        uploadedAt: Date.now(),
+      } as LayerProps & { uploadedAt: number };
       // Use addLayer to ensure proper state updates and prevent overwriting
       // This prevents overwriting when importing multiple files from ZIP
       addLayer(newLayer);

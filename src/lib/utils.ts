@@ -221,9 +221,12 @@ export const calculateIgrs = (lon: number, lat: number): string | null => {
   } else if (lon <= 100 && lat <= 19) {
     cm = 100;
     origin = 19;
-  } else if (lon <= 104 && lat <= 19) {
+  } else if (lon <= 104 && lat <= 8.0) {
+    // Note: The C++ code has "lon >= 39.5 && lat >= 8.0" but these are redundant
+    // given the outer boundary check (lon >= 68, lat >= 8.0)
+    // Using lat <= 8.0 to match C++ behavior
     cm = 104;
-    origin = 8;
+    origin = 8.0;
   }
 
   if (cm === undefined || origin === undefined) {
@@ -285,10 +288,15 @@ export const calculateIgrs = (lon: number, lat: number): string | null => {
   let X = Math.floor(tempX / 100000);
   let Y = Math.floor(tempY / 100000);
 
+  // Match C++ do-while logic: do { c = c / 5; } while (c > 5);
   const reduceToGrid = (value: number) => {
     let result = Math.floor(value);
-    while (result >= 5) {
+    do {
       result = Math.floor(result / 5);
+    } while (result > 5);
+    // C++ code can result in 5, which is out of bounds (0-4), so clamp it
+    if (result > 4) {
+      result = result % 5;
     }
     if (result < 0) {
       result = ((result % 5) + 5) % 5;
@@ -308,12 +316,13 @@ export const calculateIgrs = (lon: number, lat: number): string | null => {
   r = ((Math.floor(Y) % 5) + 5) % 5;
   const A2 = grid[r][c];
 
+  // C++ code: temp_gr_x %= 100000; temp_gr_y %= 100000;
+  // Using defensive modulo to handle potential negatives (TypeScript improvement)
   tempX = ((tempX % 100000) + 100000) % 100000;
   tempY = ((tempY % 100000) + 100000) % 100000;
 
-  const east = tempX.toString().padStart(5, "0");
-  const north = tempY.toString().padStart(5, "0");
-  return `${A1}, ${A2} ${east} ${north}`;
+  // Match C++ format exactly: QString("%1, %2 %3 %4").arg(A1).arg(A2).arg(temp_gr_x).arg(temp_gr_y)
+  return `${A1}, ${A2} ${tempX} ${tempY}`;
 };
 
 /**
