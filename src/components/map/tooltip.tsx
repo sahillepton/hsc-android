@@ -15,10 +15,6 @@ import {
 } from "@/store/layers-store";
 import { useEffect, useState } from "react";
 import {
-  Phone,
-  Video,
-  Upload,
-  MessageSquare,
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
@@ -462,7 +458,11 @@ const Tooltip = () => {
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-500 hover:bg-emerald-600 text-white rounded-md transition-all"
                 title="Voice Call"
               >
-                <Phone size={12} />
+                <img
+                  src="/Air/01120500.svg"
+                  alt="Call"
+                  className="w-3 h-3"
+                />
                 <span>Call</span>
               </button>
               <button
@@ -473,7 +473,11 @@ const Tooltip = () => {
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs bg-blue-500 hover:bg-blue-600 text-white rounded-md transition-all"
                 title="Video Call"
               >
-                <Video size={12} />
+                <img
+                  src="/Air/01120300.svg"
+                  alt="Video Call"
+                  className="w-3 h-3"
+                />
                 <span>Video</span>
               </button>
               <button
@@ -484,7 +488,11 @@ const Tooltip = () => {
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs bg-orange-500 hover:bg-orange-600 text-white rounded-md transition-all"
                 title="File Transfer"
               >
-                <Upload size={12} />
+                <img
+                  src="/Air/01120200.svg"
+                  alt="FTP"
+                  className="w-3 h-3"
+                />
                 <span>FTP</span>
               </button>
               <button
@@ -495,7 +503,11 @@ const Tooltip = () => {
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs bg-purple-500 hover:bg-purple-600 text-white rounded-md transition-all"
                 title="Send Message"
               >
-                <MessageSquare size={12} />
+                <img
+                  src="/Air/01120100.svg"
+                  alt="Message"
+                  className="w-3 h-3"
+                />
                 <span>Message</span>
               </button>
             </div>

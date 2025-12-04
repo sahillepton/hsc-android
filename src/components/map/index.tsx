@@ -148,6 +148,10 @@ const MapComponent = ({
   const [showConnectionError, setShowConnectionError] = useState(false);
   const [isCameraPopoverOpen, setIsCameraPopoverOpen] = useState(false);
   const lastLayerCreationTimeRef = useRef<number>(0);
+  const [hoveredDemSquare, setHoveredDemSquare] = useState<{
+    layerId: string;
+    polygon: [number, number][];
+  } | null>(null);
 
   const measurementPreview = useMemo(() => {
     if (!isDrawing) return null;
@@ -677,11 +681,13 @@ const MapComponent = ({
       if (timeSinceLastCreation < 500) {
         // Don't show tooltip if layer was created less than 500ms ago
         setHoverInfo(undefined);
+        setHoveredDemSquare(null);
         return;
       }
 
       if (!info) {
         setHoverInfo(undefined);
+        setHoveredDemSquare(null);
         return;
       }
 
@@ -690,6 +696,7 @@ const MapComponent = ({
       // Special handling for DEM BitmapLayers (.tif, .tiff, .dett, .hgt)
       // BitmapLayer hover info often has no `object`, but we still want a tooltip
       let isDemHover = false;
+      let demLayer: LayerProps | undefined;
       if (deckLayerId) {
         const baseId = deckLayerId
           .replace(/-icon-layer$/, "")
@@ -700,13 +707,59 @@ const MapComponent = ({
         const matchingLayer = layers.find((l) => l.id === baseId);
         if (matchingLayer?.type === "dem") {
           isDemHover = true;
+          demLayer = matchingLayer;
         }
       }
 
       if (info.object || (isDemHover && info.coordinate)) {
         setHoverInfo(info);
+        
+        // Calculate and store hovered DEM square polygon
+        if (isDemHover && demLayer && info.coordinate && demLayer.bounds && demLayer.elevationData) {
+          const [lng, lat] = info.coordinate;
+          const [[minLng, minLat], [maxLng, maxLat]] = demLayer.bounds;
+          const { width, height } = demLayer.elevationData;
+          
+          // Ensure the hover point is within the DEM bounds
+          if (lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat) {
+            // Map geographic coordinates to raster pixel indices
+            const col = ((lng - minLng) / (maxLng - minLng || 1)) * (width - 1);
+            const row = ((maxLat - lat) / (maxLat - minLat || 1)) * (height - 1);
+            
+            const x = Math.min(width - 1, Math.max(0, Math.round(col)));
+            const y = Math.min(height - 1, Math.max(0, Math.round(row)));
+            
+            // Calculate the geographic bounds of this pixel square
+            const pixelWidth = (maxLng - minLng) / width;
+            const pixelHeight = (maxLat - minLat) / height;
+            
+            const squareMinLng = minLng + x * pixelWidth;
+            const squareMaxLng = minLng + (x + 1) * pixelWidth;
+            const squareMinLat = maxLat - (y + 1) * pixelHeight;
+            const squareMaxLat = maxLat - y * pixelHeight;
+            
+            // Create polygon rectangle (clockwise: top-left, top-right, bottom-right, bottom-left, back to top-left)
+            const polygon: [number, number][] = [
+              [squareMinLng, squareMaxLat], // top-left
+              [squareMaxLng, squareMaxLat], // top-right
+              [squareMaxLng, squareMinLat], // bottom-right
+              [squareMinLng, squareMinLat], // bottom-left
+              [squareMinLng, squareMaxLat], // close the polygon
+            ];
+            
+            setHoveredDemSquare({
+              layerId: demLayer.id,
+              polygon,
+            });
+          } else {
+            setHoveredDemSquare(null);
+          }
+        } else {
+          setHoveredDemSquare(null);
+        }
       } else {
         setHoverInfo(undefined);
+        setHoveredDemSquare(null);
       }
     },
     [setHoverInfo, layers]
@@ -1704,6 +1757,24 @@ const MapComponent = ({
       );
     }
 
+    // Add DEM hover highlight rectangle (red border)
+    if (hoveredDemSquare) {
+      deckLayers.push(
+        new PolygonLayer({
+          id: "dem-hover-highlight",
+          data: [{ polygon: hoveredDemSquare.polygon }],
+          getPolygon: (d: any) => d.polygon,
+          getFillColor: [255, 0, 0, 30], // Red with transparency
+          getLineColor: [255, 0, 0, 255], // Red border
+          getLineWidth: 2,
+          lineWidthMinPixels: 2,
+          pickable: false,
+          stroked: true,
+          filled: true,
+        })
+      );
+    }
+
     return [...deckLayers, ...previewLayers];
   }, [
     layers,
@@ -1718,6 +1789,7 @@ const MapComponent = ({
     udpLayers,
     userLocation,
     mapZoom,
+    hoveredDemSquare,
   ]);
 
   return (

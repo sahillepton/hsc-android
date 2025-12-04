@@ -1,4 +1,3 @@
-import { MessageSquare, Phone, Upload, Video } from "lucide-react";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { useNodeDialog, useSelectedNode } from "@/store/layers-store";
@@ -74,7 +73,11 @@ const ActionDialog = () => {
                 className="flex-1 bg-green-500 hover:bg-green-600 h-11"
                 size="default"
               >
-                <Phone size={18} className="mr-2" />
+                <img
+                  src="/Air/01120500.svg"
+                  alt="Call"
+                  className="w-[18px] h-[18px] mr-2"
+                />
                 Voice Call
               </Button>
 
@@ -86,7 +89,11 @@ const ActionDialog = () => {
                 className="flex-1 bg-blue-500 hover:bg-blue-600 h-11"
                 size="default"
               >
-                <Video size={18} className="mr-2" />
+                <img
+                  src="/Air/01120300.svg"
+                  alt="Video Call"
+                  className="w-[18px] h-[18px] mr-2"
+                />
                 Video Call
               </Button>
 
@@ -98,7 +105,11 @@ const ActionDialog = () => {
                 className="flex-1 bg-purple-500 hover:bg-purple-600 h-11"
                 size="default"
               >
-                <MessageSquare size={18} className="mr-2" />
+                <img
+                  src="/Air/01120100.svg"
+                  alt="Message"
+                  className="w-[18px] h-[18px] mr-2"
+                />
                 Message
               </Button>
 
@@ -110,7 +121,11 @@ const ActionDialog = () => {
                 className="flex-1 bg-orange-500 hover:bg-orange-600 h-11"
                 size="default"
               >
-                <Upload size={18} className="mr-2" />
+                <img
+                  src="/Air/01120200.svg"
+                  alt="FTP"
+                  className="w-[18px] h-[18px] mr-2"
+                />
                 FTP
               </Button>
             </div>
