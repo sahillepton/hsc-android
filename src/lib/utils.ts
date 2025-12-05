@@ -87,6 +87,74 @@ export function rgbToHex(
   return hex;
 }
 
+/**
+ * Generates a random color that avoids common map background colors.
+ * Map backgrounds are typically light beige, cream, or light gray.
+ * This function ensures generated colors are distinct and visible.
+ */
+export function generateDistinctColor(): [number, number, number] {
+  // Common map background colors to avoid (light beige, cream, light gray)
+  const backgroundColors = [
+    [242, 239, 233], // Light beige
+    [240, 240, 240], // Light gray
+    [255, 255, 255], // White
+    [250, 250, 250], // Off-white
+    [245, 245, 245], // Very light gray
+    [238, 238, 238], // Light gray
+    [248, 248, 248], // Very light gray
+  ];
+
+  const isSimilarToBackground = (
+    color: [number, number, number],
+    threshold: number = 30
+  ): boolean => {
+    return backgroundColors.some((bgColor) => {
+      const diff = Math.sqrt(
+        Math.pow(color[0] - bgColor[0], 2) +
+          Math.pow(color[1] - bgColor[1], 2) +
+          Math.pow(color[2] - bgColor[2], 2)
+      );
+      return diff < threshold;
+    });
+  };
+
+  // Try to generate a distinct color (max 100 attempts to avoid infinite loop)
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const color: [number, number, number] = [
+      Math.floor(Math.random() * 255),
+      Math.floor(Math.random() * 255),
+      Math.floor(Math.random() * 255),
+    ];
+
+    // Ensure the color is not too similar to background colors
+    if (!isSimilarToBackground(color)) {
+      // Also ensure minimum brightness for visibility
+      const brightness =
+        (color[0] * 299 + color[1] * 587 + color[2] * 114) / 1000;
+      if (brightness < 50 || brightness > 200) {
+        // Too dark or too light, try again
+        continue;
+      }
+      return color;
+    }
+  }
+
+  // Fallback: return a vibrant color if we couldn't find a good one
+  const vibrantColors: [number, number, number][] = [
+    [255, 0, 0], // Red
+    [0, 255, 0], // Green
+    [0, 0, 255], // Blue
+    [255, 165, 0], // Orange
+    [128, 0, 128], // Purple
+    [255, 20, 147], // Deep pink
+    [0, 191, 255], // Deep sky blue
+    [50, 205, 50], // Lime green
+  ];
+  return vibrantColors[
+    Math.floor(Math.random() * vibrantColors.length)
+  ] as [number, number, number];
+}
+
 export function hexToRgb(hex: string): [number, number, number] | null {
   hex = hex.replace(/^#/, "");
 
