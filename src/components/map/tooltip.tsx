@@ -7,17 +7,14 @@ import {
   formatLabel,
   calculateIgrs,
 } from "@/lib/utils";
-import { normalizeAngleSigned } from "@/lib/layers";
+import { calculateBearingDegrees, normalizeAngleSigned } from "@/lib/layers";
 import {
   useHoverInfo,
   useLayers,
   useIgrsPreference,
 } from "@/store/layers-store";
 import { useEffect, useState } from "react";
-import {
-  ChevronDown,
-  ChevronUp,
-} from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
 const Tooltip = () => {
   const { hoverInfo } = useHoverInfo();
@@ -458,11 +455,7 @@ const Tooltip = () => {
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-500 hover:bg-emerald-600 text-white rounded-md transition-all"
                 title="Voice Call"
               >
-                <img
-                  src="/Air/01120500.svg"
-                  alt="Call"
-                  className="w-3 h-3"
-                />
+                <img src="/Air/01120500.svg" alt="Call" className="w-3 h-3" />
                 <span>Call</span>
               </button>
               <button
@@ -488,11 +481,7 @@ const Tooltip = () => {
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs bg-orange-500 hover:bg-orange-600 text-white rounded-md transition-all"
                 title="File Transfer"
               >
-                <img
-                  src="/Air/01120200.svg"
-                  alt="FTP"
-                  className="w-3 h-3"
-                />
+                <img src="/Air/01120200.svg" alt="FTP" className="w-3 h-3" />
                 <span>FTP</span>
               </button>
               <button
