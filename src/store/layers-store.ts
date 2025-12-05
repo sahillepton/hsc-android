@@ -2,7 +2,7 @@ import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds } from "@/lib/layers";
-import { saveLayers, saveNodeIconMappings } from "@/lib/autosave";
+import { saveLayers } from "@/lib/autosave";
 
 interface LayerState {
   layers: LayerProps[];
@@ -87,8 +87,8 @@ const triggerAutosave = (
     clearTimeout(autosaveTimeout);
   }
   autosaveTimeout = setTimeout(() => {
-    saveLayers(layers).catch(console.error);
-    saveNodeIconMappings(nodeIconMappings).catch(console.error);
+    // Save layers and node icon mappings together in one file
+    saveLayers(layers, nodeIconMappings).catch(console.error);
   }, AUTOSAVE_DELAY);
 };
 
@@ -396,24 +396,11 @@ export const useUserLocation = () => {
 
 // Load layers from autosave on app initialization
 export const loadAutosavedLayers = async () => {
-  const {
-    loadLayers,
-    loadNodeIconMappings,
-    loadLayersFromFile,
-    loadNodeIconMappingsFromFile,
-  } = await import("@/lib/autosave");
+  const { loadLayers, loadNodeIconMappings } = await import("@/lib/autosave");
 
-  // First try to load from autosave (most recent state)
-  let layers = await loadLayers();
-  let nodeIconMappings = await loadNodeIconMappings();
-
-  // If autosave is empty, fall back to filesystem files (for backward compatibility)
-  if (layers.length === 0) {
-    layers = await loadLayersFromFile();
-  }
-  if (Object.keys(nodeIconMappings).length === 0) {
-    nodeIconMappings = await loadNodeIconMappingsFromFile();
-  }
+  // Load from autosave file (layers.json) - automatically imported on app launch
+  const layers = await loadLayers();
+  const nodeIconMappings = await loadNodeIconMappings();
 
   // Load the data into the store
   if (layers.length > 0) {

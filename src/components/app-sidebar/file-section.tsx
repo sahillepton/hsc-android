@@ -10,8 +10,13 @@ import {
 } from "@/lib/capacitor-utils";
 import { useLayers, useNodeIconMappings } from "@/store/layers-store";
 import { generateLayerId } from "@/lib/layers";
-import { fileToDEMRaster, fileToGeoJSON, generateDistinctColor } from "@/lib/utils";
+import {
+  fileToDEMRaster,
+  fileToGeoJSON,
+  generateDistinctColor,
+} from "@/lib/utils";
 import { Encoding, Filesystem } from "@capacitor/filesystem";
+import { deserializeLayers, serializeLayers } from "@/lib/autosave";
 import { FileDown, Loader2 } from "lucide-react";
 import { useState } from "react";
 
@@ -284,55 +289,77 @@ const FileSection = () => {
           }
         }
 
-        setTimeout(() => {
-          // Replace colors that match map background with distinct colors
-          const processedLayers = importData.layers.map((layer: LayerProps) => {
-            if (layer.color) {
-              const color = Array.isArray(layer.color)
-                ? (layer.color.slice(0, 3) as [number, number, number])
-                : [0, 0, 0];
-              
-              // Check if color is similar to map background colors
-              const backgroundColors = [
-                [242, 239, 233], // Light beige
-                [240, 240, 240], // Light gray
-                [255, 255, 255], // White
-                [250, 250, 250], // Off-white
-                [245, 245, 245], // Very light gray
-                [238, 238, 238], // Light gray
-                [248, 248, 248], // Very light gray
-              ];
-              
-              const isSimilarToBackground = backgroundColors.some((bgColor) => {
-                const diff = Math.sqrt(
-                  Math.pow(color[0] - bgColor[0], 2) +
-                    Math.pow(color[1] - bgColor[1], 2) +
-                    Math.pow(color[2] - bgColor[2], 2)
-                );
-                return diff < 30; // Threshold for similarity
-              });
-              
-              if (isSimilarToBackground) {
-                return {
-                  ...layer,
-                  color: generateDistinctColor(),
-                };
-              }
-            }
-            return layer;
-          });
-          
-          setLayers(processedLayers);
-
-          if (importData.nodeIconMappings) {
-            setNodeIconMappings(importData.nodeIconMappings);
-          }
-
-          setTimeout(() => {
-            showMessage(
-              `Successfully imported ${importData.layers.length} layers from ${file.name}`
+        // Use deserializeLayers to properly load DEM files from DEM_Layers folder
+        setTimeout(async () => {
+          try {
+            // Deserialize layers (this will load DEM files from DEM_Layers folder)
+            const deserializedLayers = await deserializeLayers(
+              importData.layers
             );
-          }, 500);
+
+            // Replace colors that match map background with distinct colors
+            const processedLayers = deserializedLayers.map(
+              (layer: LayerProps) => {
+                if (layer.color) {
+                  const color = Array.isArray(layer.color)
+                    ? (layer.color.slice(0, 3) as [number, number, number])
+                    : [0, 0, 0];
+
+                  // Check if color is similar to map background colors
+                  const backgroundColors = [
+                    [242, 239, 233], // Light beige
+                    [240, 240, 240], // Light gray
+                    [255, 255, 255], // White
+                    [250, 250, 250], // Off-white
+                    [245, 245, 245], // Very light gray
+                    [238, 238, 238], // Light gray
+                    [248, 248, 248], // Very light gray
+                  ];
+
+                  const isSimilarToBackground = backgroundColors.some(
+                    (bgColor) => {
+                      const diff = Math.sqrt(
+                        Math.pow(color[0] - bgColor[0], 2) +
+                          Math.pow(color[1] - bgColor[1], 2) +
+                          Math.pow(color[2] - bgColor[2], 2)
+                      );
+                      return diff < 30; // Threshold for similarity
+                    }
+                  );
+
+                  if (isSimilarToBackground) {
+                    return {
+                      ...layer,
+                      color: generateDistinctColor(),
+                    };
+                  }
+                }
+                return layer;
+              }
+            );
+
+            setLayers(processedLayers);
+
+            if (importData.nodeIconMappings) {
+              setNodeIconMappings(importData.nodeIconMappings);
+            }
+
+            setTimeout(() => {
+              showMessage(
+                `Successfully imported ${importData.layers.length} layers from ${file.name}`
+              );
+            }, 500);
+          } catch (deserializeError) {
+            console.error("Error deserializing layers:", deserializeError);
+            showMessage(
+              `Error importing layers: ${
+                deserializeError instanceof Error
+                  ? deserializeError.message
+                  : "Unknown error"
+              }`,
+              true
+            );
+          }
         }, 300);
 
         return true;
@@ -1443,7 +1470,7 @@ const FileSection = () => {
             }
             exportedCount++;
           } else if (layer.type === "dem" && layer.bitmap) {
-            // Export DEM as TIFF
+            // Export DEM as PNG to DEM_Layers folder (not in ZIP)
             try {
               let canvas: HTMLCanvasElement | null = null;
 
@@ -1470,18 +1497,24 @@ const FileSection = () => {
               }
 
               if (canvas) {
-                // Convert canvas to blob (Promise-based)
-                const blob = await new Promise<Blob | null>((resolve) => {
-                  canvas!.toBlob(resolve, "image/png", 1.0);
+                // Convert canvas to base64 PNG
+                const base64Data = canvas.toDataURL("image/png").split(",")[1];
+
+                // Save to DEM_Layers folder (not in ZIP)
+                const storageDir = await getStorageDirectory();
+                const fileName = `${layer.id}.png`;
+                await Filesystem.writeFile({
+                  path: `DEM_Layers/${fileName}`,
+                  data: base64Data,
+                  directory: storageDir,
+                  encoding: Encoding.UTF8, // Base64 is stored as UTF8 string
+                  recursive: true,
                 });
 
-                if (blob) {
-                  const arrayBuffer = await blob.arrayBuffer();
-                  folder.file(`${sanitizedName}.tiff`, arrayBuffer);
-                  exportedCount++;
-                } else {
-                  errors.push(`${layer.name}: Failed to convert DEM to image`);
-                }
+                exportedCount++;
+                console.log(
+                  `Exported DEM ${layer.name} to DEM_Layers/${fileName}`
+                );
               } else {
                 errors.push(
                   `${layer.name}: Could not export DEM (unsupported format)`
@@ -1524,6 +1557,22 @@ const FileSection = () => {
         const mappingsContent = JSON.stringify(nodeIconMappings, null, 2);
         folder.file("node_icon_mappings.json", mappingsContent);
       }
+
+      // Add layers.json file with all layer data (DEM files referenced by path)
+      // Serialize layers to get proper format with DEM file references
+      const serializedLayers = serializeLayers(layers);
+      // Set bitmapFilePath for DEM layers
+      for (let i = 0; i < serializedLayers.length; i++) {
+        if (serializedLayers[i].type === "dem") {
+          (serializedLayers[i] as any).bitmapFilePath = `${layers[i].id}.png`;
+        }
+      }
+      const layersJson = {
+        version: "1.0",
+        layers: serializedLayers,
+        nodeIconMappings: nodeIconMappings || {},
+      };
+      folder.file("layers.json", JSON.stringify(layersJson, null, 2));
 
       // Generate ZIP file with compression level optimization
       showMessage("Creating ZIP archive...", false);
