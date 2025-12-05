@@ -71,6 +71,8 @@ interface LayerState {
   ) => void;
   userLocationError: string | null;
   setUserLocationError: (error: string | null) => void;
+  showUserLocation: boolean;
+  setShowUserLocation: (show: boolean) => void;
   mapZoom: number;
   setMapZoom: (zoom: number) => void;
 }
@@ -244,6 +246,8 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   setUserLocation: (location) => set({ userLocation: location }),
   userLocationError: null,
   setUserLocationError: (error) => set({ userLocationError: error }),
+  showUserLocation: true,
+  setShowUserLocation: (show) => set({ showUserLocation: show }),
   useIgrs: false,
   setUseIgrs: (value) => set({ useIgrs: value }),
   mapZoom: 4,
@@ -386,11 +390,17 @@ export const useUserLocation = () => {
   const setUserLocationError = useLayerStore(
     (state) => state.setUserLocationError
   );
+  const showUserLocation = useLayerStore((state) => state.showUserLocation);
+  const setShowUserLocation = useLayerStore(
+    (state) => state.setShowUserLocation
+  );
   return {
     userLocation,
     setUserLocation,
     userLocationError,
     setUserLocationError,
+    showUserLocation,
+    setShowUserLocation,
   };
 };
 

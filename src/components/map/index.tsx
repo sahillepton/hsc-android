@@ -12,6 +12,8 @@ import {
 } from "@deck.gl/layers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
+import { MapPin, MapPinOff } from "lucide-react";
+import { Button } from "../ui/button";
 import IconSelection from "./icon-selection";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
@@ -118,7 +120,12 @@ const MapComponent = ({
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const useIgrs = useIgrsPreference();
   const setUseIgrs = useSetIgrsPreference();
-  const { userLocation, userLocationError } = useUserLocation();
+  const {
+    userLocation,
+    userLocationError,
+    showUserLocation,
+    setShowUserLocation,
+  } = useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
 
   // Cache for DEM meshes to avoid regenerating on every render
@@ -713,31 +720,43 @@ const MapComponent = ({
 
       if (info.object || (isDemHover && info.coordinate)) {
         setHoverInfo(info);
-        
+
         // Calculate and store hovered DEM square polygon
-        if (isDemHover && demLayer && info.coordinate && demLayer.bounds && demLayer.elevationData) {
+        if (
+          isDemHover &&
+          demLayer &&
+          info.coordinate &&
+          demLayer.bounds &&
+          demLayer.elevationData
+        ) {
           const [lng, lat] = info.coordinate;
           const [[minLng, minLat], [maxLng, maxLat]] = demLayer.bounds;
           const { width, height } = demLayer.elevationData;
-          
+
           // Ensure the hover point is within the DEM bounds
-          if (lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat) {
+          if (
+            lng >= minLng &&
+            lng <= maxLng &&
+            lat >= minLat &&
+            lat <= maxLat
+          ) {
             // Map geographic coordinates to raster pixel indices
             const col = ((lng - minLng) / (maxLng - minLng || 1)) * (width - 1);
-            const row = ((maxLat - lat) / (maxLat - minLat || 1)) * (height - 1);
-            
+            const row =
+              ((maxLat - lat) / (maxLat - minLat || 1)) * (height - 1);
+
             const x = Math.min(width - 1, Math.max(0, Math.round(col)));
             const y = Math.min(height - 1, Math.max(0, Math.round(row)));
-            
+
             // Calculate the geographic bounds of this pixel square
             const pixelWidth = (maxLng - minLng) / width;
             const pixelHeight = (maxLat - minLat) / height;
-            
+
             const squareMinLng = minLng + x * pixelWidth;
             const squareMaxLng = minLng + (x + 1) * pixelWidth;
             const squareMinLat = maxLat - (y + 1) * pixelHeight;
             const squareMaxLat = maxLat - y * pixelHeight;
-            
+
             // Create polygon rectangle (clockwise: top-left, top-right, bottom-right, bottom-left, back to top-left)
             const polygon: [number, number][] = [
               [squareMinLng, squareMaxLat], // top-left
@@ -746,7 +765,7 @@ const MapComponent = ({
               [squareMinLng, squareMinLat], // bottom-left
               [squareMinLng, squareMaxLat], // close the polygon
             ];
-            
+
             setHoveredDemSquare({
               layerId: demLayer.id,
               polygon,
@@ -991,8 +1010,8 @@ const MapComponent = ({
       );
     }
 
-    // Add user location as a point layer
-    if (userLocation) {
+    // Add user location as a point layer (only if showUserLocation is true)
+    if (userLocation && showUserLocation) {
       console.log("Rendering user location:", userLocation);
 
       // Add accuracy circle (in meters)
@@ -1788,6 +1807,7 @@ const MapComponent = ({
     handleNodeIconClick,
     udpLayers,
     userLocation,
+    showUserLocation,
     mapZoom,
     hoveredDemSquare,
   ]);
@@ -2088,6 +2108,26 @@ const MapComponent = ({
       </Map>
 
       <Tooltip />
+
+      {/* Location Toggle Button - Bottom Left */}
+      <div className="absolute bottom-1 left-2 z-50 pointer-events-none">
+        <div className="pointer-events-auto">
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => setShowUserLocation(!showUserLocation)}
+            className="h-11 w-11 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm text-slate-600 hover:text-foreground hover:bg-white"
+            title={showUserLocation ? "Hide location" : "Show location"}
+          >
+            {showUserLocation ? (
+              <MapPin className="h-4 w-4" />
+            ) : (
+              <MapPinOff className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      </div>
+
       <ZoomControls
         mapRef={mapRef}
         zoom={mapZoom}
