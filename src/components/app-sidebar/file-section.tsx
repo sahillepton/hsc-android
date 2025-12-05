@@ -25,7 +25,7 @@ const FileSection = () => {
   const { nodeIconMappings, setNodeIconMappings } = useNodeIconMappings();
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const uploadDemFile = async (file: File) => {
+  const uploadDemFile = async (file: File, silent: boolean = false) => {
     try {
       const dem = await fileToDEMRaster(file);
 
@@ -58,21 +58,31 @@ const FileSection = () => {
       // Use addLayer to ensure proper state updates and prevent overwriting
       addLayer(newLayer);
 
-      if (isDefaultBounds) {
-        showMessage(
-          `DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.`
-        );
-      } else {
-        showMessage(`Successfully uploaded DEM: ${file.name}`);
+      if (!silent) {
+        if (isDefaultBounds) {
+          showMessage(
+            `DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.`
+          );
+        } else {
+          showMessage(`Successfully uploaded DEM: ${file.name}`);
+        }
       }
+      return { success: true, name: file.name, isDefaultBounds };
     } catch (error) {
       console.error("Error uploading DEM file:", error);
-      showMessage(
-        `Error uploading DEM: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-        true
-      );
+      if (!silent) {
+        showMessage(
+          `Error uploading DEM: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`,
+          true
+        );
+      }
+      return {
+        success: false,
+        name: file.name,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
     }
   };
 
@@ -344,11 +354,10 @@ const FileSection = () => {
               setNodeIconMappings(importData.nodeIconMappings);
             }
 
-            setTimeout(() => {
-              showMessage(
-                `Successfully imported ${importData.layers.length} layers from ${file.name}`
-              );
-            }, 500);
+            // Show only one message after import completes
+            showMessage(
+              `Successfully imported ${importData.layers.length} layers from ${file.name}`
+            );
           } catch (deserializeError) {
             console.error("Error deserializing layers:", deserializeError);
             showMessage(
@@ -556,7 +565,7 @@ const FileSection = () => {
     return null;
   };
 
-  const uploadGeoJsonFile = async (file: File) => {
+  const uploadGeoJsonFile = async (file: File, silent: boolean = false) => {
     try {
       const fileName = file.name.toLowerCase();
       let ext = "";
@@ -592,11 +601,17 @@ const FileSection = () => {
       const rawGeojson = await fileToGeoJSON(file);
 
       if (!rawGeojson) {
-        showMessage(
-          "Invalid vector file format. Could not convert to GeoJSON.",
-          true
-        );
-        return;
+        if (!silent) {
+          showMessage(
+            "Invalid vector file format. Could not convert to GeoJSON.",
+            true
+          );
+        }
+        return {
+          success: false,
+          name: file.name,
+          error: "Invalid vector file format. Could not convert to GeoJSON.",
+        };
       }
 
       let featureCollection: GeoJSON.FeatureCollection | null = null;
@@ -630,30 +645,57 @@ const FileSection = () => {
       }
 
       if (!featureCollection) {
-        showMessage(
-          `Unsupported GeoJSON structure: ${rawGeojson.type ?? "Unknown type"}`,
-          true
-        );
-        return;
+        if (!silent) {
+          showMessage(
+            `Unsupported GeoJSON structure: ${
+              rawGeojson.type ?? "Unknown type"
+            }`,
+            true
+          );
+        }
+        return {
+          success: false,
+          name: file.name,
+          error: `Unsupported GeoJSON structure: ${
+            rawGeojson.type ?? "Unknown type"
+          }`,
+        };
       }
 
       if (!Array.isArray(featureCollection.features)) {
-        showMessage("Invalid GeoJSON format: features is not an array.", true);
-        return;
+        if (!silent) {
+          showMessage(
+            "Invalid GeoJSON format: features is not an array.",
+            true
+          );
+        }
+        return {
+          success: false,
+          name: file.name,
+          error: "Invalid GeoJSON format: features is not an array.",
+        };
       }
 
       if (featureCollection.features.length === 0) {
-        showMessage("Vector file contains no features.", true);
-        return;
+        if (!silent) {
+          showMessage("Vector file contains no features.", true);
+        }
+        return {
+          success: false,
+          name: file.name,
+          error: "Vector file contains no features.",
+        };
       }
 
       const featureCount = featureCollection.features.length;
 
-      // Show uploading message with feature count
-      showMessage(
-        `Uploading ${featureCount.toLocaleString()} features...`,
-        false
-      );
+      // Show uploading message with feature count (only if not silent)
+      if (!silent) {
+        showMessage(
+          `Uploading ${featureCount.toLocaleString()} features...`,
+          false
+        );
+      }
 
       // Process features in batches to avoid blocking UI thread
       const BATCH_SIZE = 1000;
@@ -677,8 +719,14 @@ const FileSection = () => {
       }
 
       if (validFeatures.length === 0) {
-        showMessage("Vector file contains no valid geometries.", true);
-        return;
+        if (!silent) {
+          showMessage("Vector file contains no valid geometries.", true);
+        }
+        return {
+          success: false,
+          name: file.name,
+          error: "Vector file contains no valid geometries.",
+        };
       }
 
       // Extract size values from CSV properties if available
@@ -807,39 +855,23 @@ const FileSection = () => {
 
           // First check for TIFF files (DEM) - process all TIFF files
           const tiffFiles = await extractTiffFromZip(file);
+          const tiffErrors: string[] = [];
           if (tiffFiles.length > 0) {
-            showMessage(
-              `Found ${tiffFiles.length} TIFF file(s) in ZIP. Processing...`,
-              false
-            );
             for (const tiffFile of tiffFiles) {
-              try {
-                await uploadDemFile(tiffFile);
+              const result = await uploadDemFile(tiffFile, true);
+              if (result.success) {
                 tiffCount++;
-                await new Promise((resolve) => setTimeout(resolve, 0));
-              } catch (error) {
-                console.error(
-                  `Error processing ${tiffFile.name} from ZIP:`,
-                  error
-                );
-                showMessage(
-                  `Error processing ${tiffFile.name}: ${
-                    error instanceof Error ? error.message : "Unknown error"
-                  }`,
-                  true
-                );
+              } else {
+                tiffErrors.push(`${tiffFile.name}: ${result.error}`);
               }
+              await new Promise((resolve) => setTimeout(resolve, 0));
             }
           }
 
           // Then check for vector files (GeoJSON, CSV, GPX, KML, KMZ)
           const vectorFiles = await extractVectorFilesFromZip(file);
+          const vectorErrors: string[] = [];
           if (vectorFiles.length > 0) {
-            showMessage(
-              `Found ${vectorFiles.length} vector file(s) in ZIP. Processing...`,
-              false
-            );
-
             // Separate GeoJSON files (for split file handling) from other vector files
             const geojsonFiles = vectorFiles.filter((f) =>
               f.name.toLowerCase().endsWith(".geojson")
@@ -898,22 +930,13 @@ const FileSection = () => {
 
             // Process standalone GeoJSON files - each as a separate layer
             for (const geojsonFile of standaloneGeoJsonFiles) {
-              try {
-                await uploadGeoJsonFile(geojsonFile);
+              const result = await uploadGeoJsonFile(geojsonFile, true);
+              if (result && result.success) {
                 vectorCount++;
-                await new Promise((resolve) => setTimeout(resolve, 0));
-              } catch (error) {
-                console.error(
-                  `Error processing ${geojsonFile.name} from ZIP:`,
-                  error
-                );
-                showMessage(
-                  `Error processing ${geojsonFile.name}: ${
-                    error instanceof Error ? error.message : "Unknown error"
-                  }`,
-                  true
-                );
+              } else if (result) {
+                vectorErrors.push(`${geojsonFile.name}: ${result.error}`);
               }
+              await new Promise((resolve) => setTimeout(resolve, 0));
             }
 
             // Process grouped GeoJSON files (combine split files into one layer)
@@ -954,63 +977,52 @@ const FileSection = () => {
                     { type: "application/json" }
                   );
 
-                  await uploadGeoJsonFile(combinedFile);
-                  vectorCount++;
+                  const result = await uploadGeoJsonFile(combinedFile, true);
+                  if (result && result.success) {
+                    vectorCount++;
+                  } else if (result) {
+                    vectorErrors.push(`${baseName}: ${result.error}`);
+                  }
                 }
               } catch (error) {
                 console.error(
                   `Error combining split files for ${baseName}:`,
                   error
                 );
-                showMessage(
-                  `Error processing split files for ${baseName}: ${
+                vectorErrors.push(
+                  `${baseName}: ${
                     error instanceof Error ? error.message : "Unknown error"
-                  }`,
-                  true
+                  }`
                 );
               }
             }
 
             // Process other vector files (CSV, GPX, KML, KMZ) - each as a separate layer
             for (const vectorFile of otherVectorFiles) {
-              try {
-                await uploadGeoJsonFile(vectorFile);
+              const result = await uploadGeoJsonFile(vectorFile, true);
+              if (result && result.success) {
                 vectorCount++;
-                await new Promise((resolve) => setTimeout(resolve, 0));
-              } catch (error) {
-                console.error(
-                  `Error processing ${vectorFile.name} from ZIP:`,
-                  error
-                );
-                showMessage(
-                  `Error processing ${vectorFile.name}: ${
-                    error instanceof Error ? error.message : "Unknown error"
-                  }`,
-                  true
-                );
+              } else if (result) {
+                vectorErrors.push(`${vectorFile.name}: ${result.error}`);
               }
+              await new Promise((resolve) => setTimeout(resolve, 0));
             }
           }
 
           // Check for shapefiles
           const shapefileZip = await extractShapefileFromZip(file);
+          const shapefileErrors: string[] = [];
           if (shapefileZip) {
-            showMessage("Found shapefile in ZIP. Processing...", false);
-            try {
-              await uploadGeoJsonFile(shapefileZip);
+            const result = await uploadGeoJsonFile(shapefileZip, true);
+            if (result && result.success) {
               shapefileCount++;
-            } catch (error) {
-              console.error("Error processing shapefile from ZIP:", error);
-              showMessage(
-                `Error processing shapefile: ${
-                  error instanceof Error ? error.message : "Unknown error"
-                }`,
-                true
-              );
+            } else if (result) {
+              shapefileErrors.push(`Shapefile: ${result.error}`);
             }
           }
 
           // Check for node_icon_mappings.json
+          let nodeIconMappingsImported = false;
           try {
             const JSZip = (await import("jszip")).default;
             const zip = await JSZip.loadAsync(file);
@@ -1023,26 +1035,38 @@ const FileSection = () => {
               );
               const mappings = JSON.parse(fileData);
               setNodeIconMappings(mappings);
-              showMessage("Imported node icon mappings.", false);
+              nodeIconMappingsImported = true;
             }
           } catch (error) {
             console.error("Error importing node icon mappings:", error);
           }
 
-          // Show final success message with counts
+          // Show ONE final message with all results
           const totalImported = tiffCount + vectorCount + shapefileCount;
+          const allErrors = [
+            ...tiffErrors,
+            ...vectorErrors,
+            ...shapefileErrors,
+          ];
+
           if (totalImported > 0) {
             const parts: string[] = [];
             if (tiffCount > 0)
               parts.push(`${tiffCount} DEM${tiffCount > 1 ? "s" : ""}`);
             if (vectorCount > 0) parts.push(`${vectorCount} vector`);
             if (shapefileCount > 0) parts.push(`${shapefileCount} shapefile`);
-            showMessage(
-              `Successfully imported ${totalImported} layer(s) from ZIP (${parts.join(
-                ", "
-              )}).`,
-              false
-            );
+
+            let message = `Successfully imported ${totalImported} layer(s) from ZIP (${parts.join(
+              ", "
+            )}).`;
+            if (nodeIconMappingsImported) {
+              message += " Node icon mappings imported.";
+            }
+            if (allErrors.length > 0) {
+              message += ` ${allErrors.length} file(s) had errors.`;
+            }
+
+            showMessage(message, allErrors.length > 0);
             setIsImporting(false);
             return;
           } else if (
@@ -1050,10 +1074,13 @@ const FileSection = () => {
             vectorFiles.length > 0 ||
             shapefileZip
           ) {
-            showMessage(
-              "Some files could not be imported. Check errors above.",
-              true
-            );
+            let message = "No files could be imported.";
+            if (allErrors.length > 0) {
+              message += ` Errors: ${allErrors.slice(0, 3).join("; ")}${
+                allErrors.length > 3 ? ` and ${allErrors.length - 3} more` : ""
+              }.`;
+            }
+            showMessage(message, true);
             setIsImporting(false);
             return;
           } else {
