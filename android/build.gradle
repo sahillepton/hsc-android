@@ -2,19 +2,20 @@
 
 buildscript {
     ext {
-        kotlin_version = '1.9.10' // latest stable Kotlin version
+        kotlin_version = '1.9.10' 
     }
 
     repositories {
         google()
         mavenCentral()
+
+        // Capacitor requires access to the shrinkwrap repo
+        maven { url 'https://registry.npmjs.org/-/v1/shrinkwrap' }
     }
 
     dependencies {
         classpath 'com.android.tools.build:gradle:8.7.2'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-        // Removed Google Services plugin since Firebase is not used
-        // classpath 'com.google.gms:google-services:4.4.2'
     }
 }
 
@@ -22,6 +23,12 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+
+        // IMPORTANT: Add Capacitor Android Maven repo
+        maven { url "../../node_modules/@capacitor/android/dist/maven" }
+
+        // Jitpack (some Capacitor plugins depend on this)
+        maven { url "https://www.jitpack.io" }
     }
 }
 
@@ -31,7 +38,6 @@ subprojects {
         javaCompiler = javaToolchains.compilerFor {
             languageVersion = JavaLanguageVersion.of(17)
         }
-        // Disable androidTest compilation if not needed
         if (name.toLowerCase().contains("androidtest")) {
             enabled = false
         }

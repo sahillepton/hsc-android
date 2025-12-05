@@ -40,12 +40,17 @@ android {
 
 // Dependencies for Capacitor plugins
 dependencies {
+    implementation project(':capacitor-android')
+    implementation project(':capacitor-cordova-android-plugins')
+
     implementation fileTree(dir: "libs", include: ["*.jar"])
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     implementation 'androidx.core:core-ktx:1.15.0'
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.11.0'
+    implementation "androidx.core:core-splashscreen:1.0.1"
 }
+
 
 // Disable androidTest compilation globally (avoids JDK 17 toolchain errors)
 tasks.withType(JavaCompile).configureEach {
