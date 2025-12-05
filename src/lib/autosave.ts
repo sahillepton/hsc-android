@@ -50,15 +50,26 @@ export const saveLayers = async (layers: LayerProps[]): Promise<void> => {
   try {
     const serialized = serializeLayers(layers);
     const data = JSON.stringify(serialized);
+    
+    // Check data size (Capacitor Preferences has a limit, typically 1MB)
+    const dataSizeMB = new Blob([data]).size / (1024 * 1024);
+    if (dataSizeMB > 0.9) {
+      console.warn(
+        `Autosave data is large (${dataSizeMB.toFixed(2)}MB). Some layers may not persist.`
+      );
+    }
 
     await Preferences.set({
       key: AUTOSAVE_KEY,
       value: data,
     });
 
-    console.log(`Autosaved ${layers.length} layer(s)`);
+    console.log(`Autosaved ${layers.length} layer(s) (${dataSizeMB.toFixed(2)}MB)`);
   } catch (error) {
     console.error("Error autosaving layers:", error);
+    // Log layer types for debugging
+    const layerTypes = layers.map((l) => l.type).join(", ");
+    console.error(`Failed to autosave layers. Types: ${layerTypes}`);
     // Don't throw - autosave failures shouldn't break the app
   }
 };

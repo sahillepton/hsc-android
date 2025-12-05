@@ -403,16 +403,16 @@ export const loadAutosavedLayers = async () => {
     loadNodeIconMappingsFromFile,
   } = await import("@/lib/autosave");
 
-  // First try to load from file (if available)
-  let layers = await loadLayersFromFile();
-  let nodeIconMappings = await loadNodeIconMappingsFromFile();
+  // First try to load from autosave (most recent state)
+  let layers = await loadLayers();
+  let nodeIconMappings = await loadNodeIconMappings();
 
-  // If no file found, fall back to autosave
+  // If autosave is empty, fall back to filesystem files (for backward compatibility)
   if (layers.length === 0) {
-    layers = await loadLayers();
+    layers = await loadLayersFromFile();
   }
   if (Object.keys(nodeIconMappings).length === 0) {
-    nodeIconMappings = await loadNodeIconMappings();
+    nodeIconMappings = await loadNodeIconMappingsFromFile();
   }
 
   // Load the data into the store

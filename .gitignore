@@ -9,6 +9,9 @@ build/
 *.aab
 
 # Files for the ART/Dalvik VM
+
+android/
+
 *.dex
 
 # Java class files
