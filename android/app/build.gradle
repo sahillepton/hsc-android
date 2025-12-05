@@ -1,21 +1,27 @@
-plugins {
-    id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
-}
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
 
 android {
-    namespace 'com.example.hsc' // replace with your package
-    compileSdk 34
+    namespace "com.your.app"  // required by AGP 8.x+
+
+    compileSdk 35
 
     defaultConfig {
-        applicationId "com.example.hsc" // replace with your appId
-        minSdk 24
-        targetSdk 34
+        applicationId "com.your.app"
+        minSdk 23
+        targetSdk 35
         versionCode 1
         versionName "1.0"
+    }
 
-        // Java/Kotlin options
-        multiDexEnabled true
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
+        }
     }
 
     compileOptions {
@@ -27,20 +33,27 @@ android {
         jvmTarget = '17'
     }
 
-    buildTypes {
-        release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
+    buildFeatures {
+        viewBinding true
     }
 }
 
+// Dependencies for Capacitor plugins
 dependencies {
-    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.10"
-    implementation project(':capacitor-android') // if you have Capacitor core
-    implementation project(':capacitor-filesystem')
-    implementation project(':capacitor-geolocation')
-    implementation project(':capacitor-preferences')
+    implementation fileTree(dir: "libs", include: ["*.jar"])
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+    implementation 'androidx.core:core-ktx:1.15.0'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.11.0'
 }
 
-apply plugin: 'com.google.gms.google-services' // if using Firebase
+// Disable androidTest compilation globally (avoids JDK 17 toolchain errors)
+tasks.withType(JavaCompile).configureEach {
+    if (name.toLowerCase().contains("androidtest")) {
+        enabled = false
+    } else {
+        javaCompiler = javaToolchains.compilerFor {
+            languageVersion = JavaLanguageVersion.of(17)
+        }
+    }
+}

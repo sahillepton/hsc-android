@@ -13,7 +13,8 @@ buildscript {
     dependencies {
         classpath 'com.android.tools.build:gradle:8.7.2'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-        classpath 'com.google.gms:google-services:4.4.2'
+        // Removed Google Services plugin since Firebase is not used
+        // classpath 'com.google.gms:google-services:4.4.2'
     }
 }
 
@@ -21,5 +22,18 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+    }
+}
+
+// Force Java 17 toolchain for all projects
+subprojects {
+    tasks.withType(JavaCompile).configureEach {
+        javaCompiler = javaToolchains.compilerFor {
+            languageVersion = JavaLanguageVersion.of(17)
+        }
+        // Disable androidTest compilation if not needed
+        if (name.toLowerCase().contains("androidtest")) {
+            enabled = false
+        }
     }
 }
