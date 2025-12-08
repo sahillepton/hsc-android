@@ -85,22 +85,24 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
           />
         </div>
 
-        {/* Color */}
-        <div className="mb-2">
-          <label className="text-xs font-medium text-muted-foreground">
-            Color
-          </label>
-          <Input
-            type="color"
-            value={rgbToHex(layer.color)}
-            tabIndex={-1}
-            className="mt-1 h-10 w-full rounded-lg cursor-pointer"
-            onChange={(e) => {
-              const color = hexToRgb(e.target.value);
-              if (color) updateLayer(layer.id, { ...layer, color });
-            }}
-          />
-        </div>
+        {/* Color - Don't show for raster layers (DEM) */}
+        {layer.type !== "dem" && (
+          <div className="mb-2">
+            <label className="text-xs font-medium text-muted-foreground">
+              Color
+            </label>
+            <Input
+              type="color"
+              value={rgbToHex(layer.color)}
+              tabIndex={-1}
+              className="mt-1 h-10 w-full rounded-lg cursor-pointer"
+              onChange={(e) => {
+                const color = hexToRgb(e.target.value);
+                if (color) updateLayer(layer.id, { ...layer, color });
+              }}
+            />
+          </div>
+        )}
 
         {/* Line Width */}
         {isLine && (

@@ -10,12 +10,8 @@ const App = () => {
   const [isLayersPanelVisible, setIsLayersPanelVisible] = useState(false);
   const [isLayersBoxOpen, setIsLayersBoxOpen] = useState(false);
 
-  // Load autosaved layers on app initialization
-  useEffect(() => {
-    loadAutosavedLayers().catch((error) => {
-      console.error("Failed to load autosaved layers:", error);
-    });
-  }, []);
+  // Don't auto-load session on app start - user must press restore button
+  // Session will only be restored when user explicitly clicks the restore button
 
   return (
     <SidebarProvider>

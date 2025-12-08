@@ -369,10 +369,48 @@ export function csvToGeoJSON(
 ) {
   const result = Papa.parse(csvString, { header: true, skipEmptyLines: true });
 
+  // Find case-insensitive column names
+  const findColumn = (row: any, fieldName: string): string | null => {
+    if (!row) return null;
+    const lowerField = fieldName.toLowerCase();
+    const actualKeys = Object.keys(row);
+
+    // Try exact match first
+    if (row[fieldName] !== undefined) return fieldName;
+
+    // Try case-insensitive match
+    for (const key of actualKeys) {
+      if (key.toLowerCase() === lowerField) {
+        return key;
+      }
+    }
+
+    return null;
+  };
+
+  // Get first row to determine column names
+  const firstRow = result.data[0] as any;
+  if (!firstRow) {
+    return {
+      type: "FeatureCollection",
+      features: [],
+    };
+  }
+
+  const latColumn = findColumn(firstRow, latField);
+  const lonColumn = findColumn(firstRow, lonField);
+
+  if (!latColumn || !lonColumn) {
+    throw new Error(
+      `Could not find required columns "${latField}" and "${lonField}" (case-insensitive). ` +
+        `Found columns: ${Object.keys(firstRow).join(", ")}`
+    );
+  }
+
   const features = result.data
     .map((row: any) => {
-      const lat = parseFloat(row[latField]);
-      const lon = parseFloat(row[lonField]);
+      const lat = parseFloat(row[latColumn]);
+      const lon = parseFloat(row[lonColumn]);
 
       if (isNaN(lat) || isNaN(lon)) return null;
 
@@ -403,8 +441,9 @@ export async function shpToGeoJSON(file: File) {
 
     if (!isZip && file.name.toLowerCase().endsWith(".shp")) {
       throw new Error(
-        "Shapefile must be uploaded as a ZIP archive containing .shp, .shx, and .dbf files. " +
-          "Please compress all shapefile components into a ZIP file and upload that instead."
+        "Shapefiles require multiple component files (.shp, .shx, .dbf) to work properly. " +
+          "Please compress all shapefile components (.shp, .shx, .dbf, and optionally .prj) into a ZIP file and upload that instead. " +
+          "A standalone .shp file cannot be processed without its companion files."
       );
     }
 
@@ -930,14 +969,80 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
   }
 
   // Lazy-load geotiff to avoid bundling if unused
-  const geotiff = await import("geotiff");
-  const arrayBuffer = await file.arrayBuffer();
-  const tiff = await geotiff.fromArrayBuffer(arrayBuffer);
-  const image = await tiff.getImage();
+  let geotiff;
+  let arrayBuffer;
+  let tiff;
+  let image;
 
-  const width = image.getWidth();
-  const height = image.getHeight();
-  const raster = await image.readRasters({ interleave: true, samples: [0] });
+  try {
+    geotiff = await import("geotiff");
+  } catch (error) {
+    throw new Error(
+      "Failed to load GeoTIFF library. Please ensure the file is a valid GeoTIFF format."
+    );
+  }
+
+  try {
+    arrayBuffer = await file.arrayBuffer();
+  } catch (error) {
+    throw new Error(
+      `Failed to read file: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }`
+    );
+  }
+
+  try {
+    tiff = await geotiff.fromArrayBuffer(arrayBuffer);
+  } catch (error) {
+    throw new Error(
+      `Invalid GeoTIFF file. The file may be corrupted or not a valid TIFF format: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }`
+    );
+  }
+
+  try {
+    image = await tiff.getImage();
+  } catch (error) {
+    throw new Error(
+      `Failed to read image from GeoTIFF: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }`
+    );
+  }
+
+  let width: number;
+  let height: number;
+  let raster: any;
+
+  try {
+    width = image.getWidth();
+    height = image.getHeight();
+
+    if (!width || !height || width <= 0 || height <= 0) {
+      throw new Error("Invalid image dimensions");
+    }
+  } catch (error) {
+    throw new Error(
+      `Failed to get image dimensions: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }`
+    );
+  }
+
+  try {
+    raster = await image.readRasters({ interleave: true, samples: [0] });
+    if (!raster || !raster.length || raster.length !== width * height) {
+      throw new Error("Invalid raster data");
+    }
+  } catch (error) {
+    throw new Error(
+      `Failed to read raster data from GeoTIFF: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }`
+    );
+  }
 
   // Try to get bounding box using different methods
   let bounds: [number, number, number, number];

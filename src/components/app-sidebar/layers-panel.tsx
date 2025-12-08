@@ -5,9 +5,8 @@ import {
   EyeIcon,
   EyeOffIcon,
   LocateFixed,
-  Trash2,
   Settings2,
-  // ArrowUp,
+  ArrowUp,
 } from "lucide-react";
 import {
   SidebarGroup,
@@ -36,8 +35,7 @@ const LayersPanel = ({
   variant = "accordion",
   enableSelection = false,
 }: LayersPanelProps) => {
-  // const { layers, bringLayerToTop } = useLayers();
-  const { layers } = useLayers();
+  const { layers, bringLayerToTop } = useLayers();
   const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
   const nonSketchLayers = layers.filter((layer) => !isSketchLayer(layer));
@@ -154,11 +152,11 @@ const LayersPanel = ({
     return (
       <div className="space-y-3">
         {enableSelection && nonSketchLayers.length > 0 && (
-          <div className="flex items-center justify-between px-3 py-2 text-[13px]">
+          <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-[2] bg-white">
             <label className="flex items-center gap-2 font-medium text-foreground">
               <input
                 type="checkbox"
-                className="h-4 w-4 rounded -mt-1 border-border"
+                className="h-4 w-4 rounded -mt-0.5 border-border"
                 checked={
                   selectedIds.length > 0 &&
                   selectedIds.length === nonSketchLayers.length
@@ -179,89 +177,108 @@ const LayersPanel = ({
           </div>
         )}
         <div className="grid gap-3 text-xs">
-          {nonSketchLayers.map((layer) => {
-            const isProgressiveLayer = (layer.name || "").startsWith(
-              "Progressive Network"
-            );
-            const isSelected = selectedIds.includes(layer.id);
-            const uploadedDate = formatDate(
-              (layer as any).uploadedAt || (layer as any).createdAt
-            );
+          {nonSketchLayers
+            .sort((a, b) => {
+              // Sort by uploadedAt/createdAt timestamp (newest first)
+              const aTime = (a as any).uploadedAt || (a as any).createdAt || 0;
+              const bTime = (b as any).uploadedAt || (b as any).createdAt || 0;
+              return bTime - aTime; // Descending order (newest first)
+            })
+            .map((layer) => {
+              const isSelected = selectedIds.includes(layer.id);
+              const uploadedDate = formatDate(
+                (layer as any).uploadedAt || (layer as any).createdAt
+              );
 
-            return (
-              <div
-                key={layer.id}
-                className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
-              >
-                <div className="absolute right-3 top-3 flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    title={`Focus layer: ${layer.name}`}
-                    onClick={() => focusLayer(layer.id)}
-                  >
-                    <LocateFixed size={10} />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() =>
-                      handleToggleVisibility(layer.id, layer.visible === false)
-                    }
-                    title={
-                      layer.visible === false
-                        ? `Show layer: ${layer.name}`
-                        : `Hide layer: ${layer.name}`
-                    }
-                  >
-                    {layer.visible === true ? (
-                      <EyeIcon size={10} />
-                    ) : (
-                      <EyeOffIcon size={10} />
+              return (
+                <div
+                  key={layer.id}
+                  className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
+                >
+                  <div className="absolute right-3 top-3 flex items-center gap-1">
+                    {/* Don't show bring to top for raster layers (DEM) */}
+                    {layer.type !== "dem" && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title={`Bring to top: ${layer.name}`}
+                        onClick={() => bringLayerToTop(layer.id)}
+                      >
+                        <ArrowUp size={10} />
+                      </Button>
                     )}
-                  </Button>
-                  <LayerPopover layer={layer} updateLayer={updateLayer}>
                     <Button
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7"
-                      title={`Layer settings: ${layer.name}`}
+                      title={`Focus layer: ${layer.name}`}
+                      onClick={() => focusLayer(layer.id)}
                     >
-                      <Settings2 size={10} />
+                      <LocateFixed size={10} />
                     </Button>
-                  </LayerPopover>
-                </div>
-
-                <div className="min-w-0 pr-14">
-                  <div className="flex items-start gap-2">
-                    {enableSelection && (
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 -ml-1 h-4 w-4 rounded border-border"
-                        checked={isSelected}
-                        onChange={() => toggleSelect(layer.id)}
-                      />
-                    )}
-                    <div className="flex items-center gap-2">
-                      <div className="text-sm font-semibold text-foreground">
-                        {layer.name}
-                      </div>
-                      <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 bg-slate-100">
-                        {layer.type}
-                      </span>
-                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() =>
+                        handleToggleVisibility(
+                          layer.id,
+                          layer.visible === false
+                        )
+                      }
+                      title={
+                        layer.visible === false
+                          ? `Show layer: ${layer.name}`
+                          : `Hide layer: ${layer.name}`
+                      }
+                    >
+                      {layer.visible === true ? (
+                        <EyeIcon size={10} />
+                      ) : (
+                        <EyeOffIcon size={10} />
+                      )}
+                    </Button>
+                    <LayerPopover layer={layer} updateLayer={updateLayer}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title={`Layer settings: ${layer.name}`}
+                      >
+                        <Settings2 size={10} />
+                      </Button>
+                    </LayerPopover>
                   </div>
-                  {uploadedDate && (
-                    <div className="text-[10px] text-muted-foreground mt-1">
-                      Uploaded: {uploadedDate}
+
+                  <div className="min-w-0 pr-14">
+                    <div className="flex items-start gap-2">
+                      {enableSelection && (
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 -ml-1 h-4 w-4 rounded border-border"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(layer.id)}
+                        />
+                      )}
+                      <div className="flex items-center gap-2">
+                        <div className="text-sm font-semibold text-foreground">
+                          {layer.name}
+                        </div>
+                        <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 bg-slate-100">
+                          {layer.type}
+                        </span>
+                      </div>
                     </div>
-                  )}
+                    {uploadedDate && (
+                      <div className="text-[10px] text-muted-foreground mt-1">
+                        Uploaded: {uploadedDate}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
         </div>
       </div>
     );

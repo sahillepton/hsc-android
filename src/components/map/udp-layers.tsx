@@ -6,7 +6,7 @@ import { useUdpConfigStore } from "@/store/udp-config-store";
 import { Udp } from "../../plugins/udp";
 
 // Test mode configuration - set to true to use WebSocket instead of UDP
-const IS_TEST = true;
+const IS_TEST = false;
 const WS_IP = "192.168.1.213";
 const WS_PORT = 8080;
 
@@ -92,8 +92,6 @@ const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
     let offset = 160;
     const members = [];
 
-    console.log("🔍 Parsing Opcode 102 - numMembers:", numMembers);
-
     for (let i = 0; i < numMembers; i++) {
       // opcode102B - globalData (40 bytes = 320 bits)
       const globalId = readU32(offset);
@@ -122,14 +120,6 @@ const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
       const c2Critical = readBits(regionalOffset + 128, 8);
       const controllingNodeId = readBits(regionalOffset + 136, 8);
       const ctn = readString(regionalOffset + 152, 5);
-
-      console.log(`🔍 Member ${i + 1}:`, {
-        globalId,
-        callsign,
-        isMotherAc,
-        controllingNodeId,
-        role,
-      });
 
       // opcode102G - metadata (8 bytes, part of regionalData at regionalOffset+192)
       const metadataOffset = regionalOffset + 192;
@@ -506,7 +496,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         // Use WebSocket for testing
         try {
           const wsUrl = `ws://${WS_IP}:${WS_PORT}`;
-          console.log(`🔌 Connecting to WebSocket: ${wsUrl}`);
           websocket = new WebSocket(wsUrl);
           websocket.binaryType = "arraybuffer";
 
@@ -514,12 +503,10 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             connectionEstablished = true;
             setIsConnected(true);
             setConnectionError(null);
-            console.log(`✅ WebSocket connected to ${wsUrl}`);
 
             // Send registration message
             try {
               websocket?.send("bridge-register");
-              console.log("📤 Sent registration message to WebSocket server");
             } catch (sendError) {
               console.warn(
                 "⚠️ Could not send registration message:",
@@ -540,7 +527,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             try {
               setNoDataWarning(null);
               setIsConnected(true);
-              console.log("🔍 Message received:", event.data);
               if (noDataTimeout) {
                 clearTimeout(noDataTimeout);
                 noDataTimeout = null;
@@ -601,11 +587,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           };
 
           websocket.onclose = (event) => {
-            console.log(
-              `🔌 WebSocket closed: ${event.code} - ${
-                event.reason || "No reason"
-              }`
-            );
             setIsConnected(false);
             if (event.code !== 1000) {
               setConnectionError(
@@ -627,12 +608,10 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       } else {
         // Use UDP (normal mode)
         try {
-          console.log(`🔌 Connecting to UDP: ${host}:${port}`);
           await Udp.create({ address: host, port });
           connectionEstablished = true;
           setIsConnected(true);
           setConnectionError(null);
-          console.log(`✅ UDP connected to ${host}:${port}`);
 
           // Check for no data after 15 seconds
           noDataTimeout = setTimeout(() => {
@@ -649,7 +628,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               port: port,
               data: "bridge-register",
             });
-            console.log("📤 Sent registration message to UDP server");
           } catch (sendError) {
             console.warn("⚠️ Could not send registration message:", sendError);
             setConnectionError(
@@ -677,32 +655,20 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         rawLength: buffer.byteLength,
       };
 
-      console.log("📡 Message received:", enrichedData);
-
       if (enrichedData.type === "networkMemberPositions") {
         // Store positions in Map, then merge with metadata
         setUdpData((prev) => {
           const newPositions = new Map(prev.networkMemberPositions);
           (enrichedData.data || []).forEach((member: any) => {
             newPositions.set(member.globalId, member);
-            console.log(`📍 Stored position for member ${member.globalId}`);
           });
 
           // Merge positions with metadata
           const merged = Array.from(newPositions.values()).map((pos) => {
             const meta = prev.networkMemberMetadata.get(pos.globalId);
             const result = meta ? { ...pos, ...meta } : pos;
-            console.log(`🔄 Merged member ${pos.globalId}:`, {
-              hasPosition: true,
-              hasMetadata: !!meta,
-              controllingNodeId: result.controllingNodeId,
-            });
             return result;
           });
-
-          console.log(
-            `✅ Total merged members after position update: ${merged.length}`
-          );
 
           return {
             ...prev,
@@ -716,10 +682,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           const newMetadata = new Map(prev.networkMemberMetadata);
           (enrichedData.data || []).forEach((member: any) => {
             newMetadata.set(member.globalId, member);
-            console.log(`📋 Stored metadata for member ${member.globalId}:`, {
-              controllingNodeId: member.controllingNodeId,
-              isMotherAc: member.isMotherAc,
-            });
           });
 
           // Merge positions with metadata
@@ -727,17 +689,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             (pos) => {
               const meta = newMetadata.get(pos.globalId);
               const result = meta ? { ...pos, ...meta } : pos;
-              console.log(`🔄 Merged member ${pos.globalId}:`, {
-                hasPosition: true,
-                hasMetadata: !!meta,
-                controllingNodeId: result.controllingNodeId,
-              });
               return result;
             }
-          );
-
-          console.log(
-            `✅ Total merged members after metadata update: ${merged.length}`
           );
 
           return {
@@ -766,10 +719,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           ...prev,
           geoMessages: enrichedData.data || [],
         }));
-      } else if (enrichedData.type === "targets105") {
-        // Opcode 105 contains SA leader relationships
-        // We can use this data for additional topology connections
-        console.log("📡 SA Leader data received:", enrichedData.data);
       }
     };
 
@@ -867,11 +816,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     const targetsLayerId = "udp-targets-layer";
     const geoMessagesLayerId = "udp-geo-messages-layer";
 
-    console.log(
-      "🔗 Building topology layers with members:",
-      udpData.networkMembers
-    );
-
     // Create topology connections
     const connections: any[] = [];
 
@@ -885,27 +829,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           !isNaN(d.latitude)
       );
 
-      console.log("🔗 Valid members for topology:", validMembers.length);
-
-      // Log all members with their metadata
-      validMembers.forEach((member: any, index: number) => {
-        console.log(`📊 Member ${index + 1} data:`, {
-          globalId: member.globalId,
-          callsign: member.callsign,
-          isMotherAc: member.isMotherAc,
-          controllingNodeId: member.controllingNodeId,
-          role: member.role,
-          hasPosition: !!(member.latitude && member.longitude),
-          hasMetadata: !!(member.callsign || member.role !== undefined),
-        });
-      });
-
       // Build connections based on controllingNodeId
       validMembers.forEach((member: any) => {
-        console.log(
-          `🔍 Checking member ${member.globalId}, controllingNodeId: ${member.controllingNodeId}`
-        );
-
         if (member.controllingNodeId && member.controllingNodeId !== 0) {
           const controller = validMembers.find(
             (m: any) => m.globalId === member.controllingNodeId
@@ -918,22 +843,9 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               type: "control",
               color: [0, 150, 255, 200], // Blue for control relationships
             });
-            console.log(
-              `✅ Control connection: ${controller.globalId} → ${member.globalId}`
-            );
-          } else {
-            console.log(
-              `❌ Controller not found for member ${member.globalId}, looking for globalId ${member.controllingNodeId}`
-            );
           }
-        } else {
-          console.log(
-            `⚠️ Member ${member.globalId} has no controller (controllingNodeId: ${member.controllingNodeId})`
-          );
         }
       });
-
-      console.log(`🔗 Total topology connections: ${connections.length}`);
     }
 
     // Add topology line layers
@@ -951,11 +863,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           widthMinPixels: 1,
           widthMaxPixels: 4,
         })
-      );
-      console.log(
-        "✅ Added topology LineLayer with",
-        connections.length,
-        "connections"
       );
     }
 

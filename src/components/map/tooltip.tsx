@@ -3,7 +3,6 @@ import {
   formatDistance,
   getDistance,
   getPolygonArea,
-  rgbToHex,
   formatLabel,
   calculateIgrs,
 } from "@/lib/utils";
@@ -189,6 +188,44 @@ const Tooltip = () => {
   };
   const coordinateLabel = useIgrs ? "IGRS" : "lat, lng";
   const getTooltipContent = () => {
+    // Handle user location layer - show "Your Location" heading
+    if (layer?.id === "user-location-layer") {
+      let lng: number | undefined;
+      let lat: number | undefined;
+
+      if (hoverInfo.coordinate) {
+        [lng, lat] = hoverInfo.coordinate;
+      } else if (
+        (object as any)?.position &&
+        Array.isArray((object as any).position)
+      ) {
+        [lng, lat] = (object as any).position;
+      }
+
+      return (
+        <div
+          className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
+          style={{ zoom: 0.9 }}
+        >
+          <div className="font-semibold text-base tracking-tight text-blue-600 mb-1">
+            Your Location
+          </div>
+          {lng !== undefined && lat !== undefined && (
+            <div className="space-y-1">
+              <div className="flex justify-between gap-2">
+                <span className="text-zinc-800 text-xs font-semibold">
+                  {coordinateLabel}:
+                </span>
+                <span className="text-xs text-zinc-600">
+                  {formatCoordinatePair([lng, lat])}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // Handle DEM (elevation raster) layers - show elevation at hovered point
     // Supports .tiff, .tif, .dett, and .hgt files
     if (
@@ -257,66 +294,63 @@ const Tooltip = () => {
             elevation !== null &&
             elevation !== undefined;
 
-          // Detect file type from layer name
-          const layerName = (layerInfo.name || "").toLowerCase();
-          const fileType =
-            layerName.endsWith(".tiff") ||
-            layerName.endsWith(".tif") ||
-            layerName.endsWith(".dett")
-              ? "GeoTIFF"
-              : layerName.endsWith(".hgt")
-              ? "SRTM HGT"
-              : "DEM";
-
           return (
-            <div className="bg-black bg-opacity-80 text-white p-3 rounded shadow-lg text-sm max-w-xs">
+            <div className="bg-white bg-opacity-80 text-white p-1 rounded shadow-lg text-sm max-w-xs">
               {layerInfo.name && (
-                <div className="font-semibold text-blue-300 mb-2">
+                <div className="font-semibold text-blue-600 mb-2 uppercase tracking-tight">
                   {layerInfo.name}
                 </div>
               )}
-              <div className="font-semibold mb-1 flex items-center gap-2">
-                <span>Elevation Data</span>
-                <span className="text-xs text-gray-400 font-normal">
-                  ({fileType})
-                </span>
-              </div>
               <div className="space-y-1">
                 <div className="flex justify-between gap-2">
-                  <span className="text-gray-300 text-xs">Latitude:</span>
-                  <span className="text-xs">{lat.toFixed(5)}°</span>
+                  <span className="text-zinc-800 text-xs font-semibold">
+                    Latitude:
+                  </span>
+                  <span className="text-xs text-zinc-600">
+                    {lat.toFixed(5)}°
+                  </span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-gray-300 text-xs">Longitude:</span>
-                  <span className="text-xs">{lng.toFixed(5)}°</span>
+                  <span className="text-zinc-800 text-xs font-semibold">
+                    Longitude:
+                  </span>
+                  <span className="text-xs text-zinc-600">
+                    {lng.toFixed(5)}°
+                  </span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-gray-300 text-xs">Pixel Index:</span>
-                  <span className="text-xs">
+                  <span className="text-zinc-800 text-xs font-semibold">
+                    Pixel Index:
+                  </span>
+                  <span className="text-xs text-zinc-600">
                     ({x}, {y})
                   </span>
                 </div>
-                <div className="mt-2 pt-1 border-t border-gray-600">
+                <div className=" border-zinc-600">
                   <div className="flex justify-between gap-2">
-                    <span className="text-yellow-300 text-xs font-medium">
+                    <span className="text-zinc-800 text-xs font-semibold">
                       Elevation:
                     </span>
-                    <span className="text-xs text-yellow-300 font-semibold">
+                    <span className="text-xs text-zinc-600">
                       {hasValidElevation
                         ? `${elevation.toFixed(2)} m`
                         : "No data"}
                     </span>
                   </div>
                 </div>
-                <div className="flex justify-between gap-2 text-[10px] text-gray-500 mt-1">
-                  <span>Elevation Range:</span>
-                  <span className="">
+                <div className="flex justify-between gap-2 text-[10px] text-zinc-800 mt-1">
+                  <span className="text-zinc-800 text-xs font-semibold">
+                    Elevation Range:
+                  </span>
+                  <span className="text-xs text-zinc-600">
                     {min.toFixed(1)}–{max.toFixed(1)} m
                   </span>
                 </div>
-                <div className="flex justify-between gap-2 text-[10px] text-gray-500">
-                  <span>Raster Size:</span>
-                  <span className="">
+                <div className="flex justify-between gap-2 text-[10px] text-zinc-600">
+                  <span className="text-zinc-800 text-xs font-semibold">
+                    Raster Size:
+                  </span>
+                  <span className="text-xs text-zinc-600">
                     {width} × {height} px
                   </span>
                 </div>

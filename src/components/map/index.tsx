@@ -56,7 +56,9 @@ import {
 } from "@/lib/utils";
 import { generateMeshFromElevation } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
-import { showMessage } from "@/lib/capacitor-utils";
+import { Directory } from "@capacitor/filesystem";
+import { downloadAllLayers } from "@/components/app-sidebar/file-section";
+import { toast } from "@/lib/toast";
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
@@ -105,6 +107,56 @@ const MapComponent = ({
     };
   }, []);
 
+  // Reset view to India when app resumes from background (fixes layer rendering issue)
+  useEffect(() => {
+    let appStateListener: any;
+    let visibilityListener: any;
+
+    const setupAppLifecycle = async () => {
+      try {
+        // Try to use Capacitor App plugin if available
+        const { App } = await import("@capacitor/app");
+
+        // Listen for app state changes (foreground/background)
+        appStateListener = await App.addListener(
+          "appStateChange",
+          ({ isActive }) => {
+            if (isActive && mapRef.current) {
+              // App came to foreground - reset view to India to force re-render
+              setTimeout(() => {
+                handleResetHome();
+              }, 100);
+            }
+          }
+        );
+      } catch (error) {
+        // Capacitor App plugin not available, use browser visibility API as fallback
+        const handleVisibilityChange = () => {
+          if (!document.hidden && mapRef.current) {
+            // App came to foreground - reset view to India to force re-render
+            setTimeout(() => {
+              handleResetHome();
+            }, 100);
+          }
+        };
+
+        visibilityListener = handleVisibilityChange;
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+      }
+    };
+
+    setupAppLifecycle();
+
+    return () => {
+      if (appStateListener) {
+        appStateListener.remove();
+      }
+      if (visibilityListener) {
+        document.removeEventListener("visibilitychange", visibilityListener);
+      }
+    };
+  }, []);
+
   // Show UDP config dialog on app start (only once) if no config exists
   useEffect(() => {
     const hasShownConfig = sessionStorage.getItem("udp-config-shown");
@@ -130,21 +182,12 @@ const MapComponent = ({
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const useIgrs = useIgrsPreference();
   const setUseIgrs = useSetIgrsPreference();
-  const { userLocation, userLocationError } = useUserLocation();
+  const { userLocation, showUserLocation, setShowUserLocation } =
+    useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
 
   // Cache for DEM meshes to avoid regenerating on every render
   const demMeshCache = useRef<{ [key: string]: any }>({});
-
-  // Debug: Log user location changes
-  useEffect(() => {
-    if (userLocation) {
-      console.log("User location in map component:", userLocation);
-    }
-    if (userLocationError) {
-      console.error("User location error:", userLocationError);
-    }
-  }, [userLocation, userLocationError]);
 
   // const { nodeCoordinatesData, setNodeCoordinatesData } =
   //   useProgressiveNodes(networkLayersVisible);
@@ -166,6 +209,106 @@ const MapComponent = ({
 
   const handleUpload = () => {
     fileInputRef.current?.click();
+  };
+
+  // Export layers using FileSection's downloadAllLayers with fixed Documents directory
+  const handleExportLayers = async () => {
+    if (layers.length === 0) {
+      toast.error("No layers to export.");
+      return;
+    }
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const zipFileName = `layers_export_${timestamp}.zip`;
+      await downloadAllLayers(
+        layers,
+        nodeIconMappings,
+        Directory.Documents,
+        `HSC_Layers/${zipFileName}`
+      );
+    } catch (error) {
+      toast.error(
+        `Failed to export layers: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+    }
+  };
+
+  // Save session manually
+  const handleSaveSession = async () => {
+    const toastId = toast.loading("Saving session...");
+    try {
+      const { saveLayers } = await import("@/lib/autosave");
+      await saveLayers(layers);
+      toast.update(toastId, "Session saved successfully", "success");
+    } catch (error) {
+      toast.update(
+        toastId,
+        `Failed to save session: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+        "error"
+      );
+    }
+  };
+
+  // Restore session manually (only when button is pressed)
+  const handleRestoreSession = async () => {
+    const toastId = toast.loading("Restoring session...");
+    try {
+      const { loadLayers } = await import("@/lib/autosave");
+      const restoredLayers = await loadLayers();
+      if (restoredLayers.length > 0) {
+        setLayers(restoredLayers);
+        toast.update(
+          toastId,
+          `Restored ${restoredLayers.length} layer(s) from session`,
+          "success"
+        );
+      } else {
+        toast.update(toastId, "No session data found", "error");
+      }
+    } catch (error) {
+      toast.update(
+        toastId,
+        `Failed to restore session: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+        "error"
+      );
+    }
+  };
+
+  // Reset to home view (India bounds with fixed zoom)
+  const handleResetHome = () => {
+    if (mapRef.current) {
+      const map = mapRef.current.getMap();
+      // Reset to initial view state with fixed zoom level
+      map.easeTo({
+        center: [81.5, 20.5], // Center of India
+        zoom: 3, // Fixed zoom level (same as initialViewState)
+        pitch: 0,
+        bearing: 0,
+        duration: 1000,
+      });
+    }
+  };
+
+  // Toggle user location visibility and focus to location when enabling
+  const handleToggleUserLocation = () => {
+    const willShow = !showUserLocation;
+    setShowUserLocation(willShow);
+
+    // If enabling location and we have user location, focus/pan to it
+    if (willShow && userLocation && mapRef.current) {
+      const map = mapRef.current.getMap();
+      map.easeTo({
+        center: [userLocation.lng, userLocation.lat],
+        zoom: Math.max(map.getZoom(), 14), // Zoom to at least level 14, or keep current if higher
+        duration: 1000,
+      });
+    }
   };
 
   const handleFileChange = async (
@@ -200,10 +343,48 @@ const MapComponent = ({
     return null;
   };
 
-  // Upload DEM file
+  // Upload DEM file with error handling for large files
   const uploadDemFile = async (file: File) => {
+    const toastId = toast.loading(`Uploading ${file.name}...`);
     try {
-      const dem = await fileToDEMRaster(file);
+      // Check file size and warn for very large files
+      const fileSizeMB = file.size / (1024 * 1024);
+      if (fileSizeMB > 50) {
+        toast.update(
+          toastId,
+          `Large file detected (${fileSizeMB.toFixed(
+            1
+          )}MB). Processing may take a while...`,
+          "loading"
+        );
+      }
+
+      // Add timeout for large file processing (5 minutes max)
+      const processingTimeout = setTimeout(() => {
+        toast.update(
+          toastId,
+          "File processing is taking longer than expected. Please wait...",
+          "loading"
+        );
+      }, 60000); // 1 minute warning
+
+      let dem;
+      try {
+        dem = await Promise.race([
+          fileToDEMRaster(file),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Processing timeout after 5 minutes")),
+              300000
+            )
+          ),
+        ]);
+        clearTimeout(processingTimeout);
+      } catch (processingError) {
+        clearTimeout(processingTimeout);
+        throw processingError;
+      }
+
       const isDefaultBounds =
         dem.bounds[0] === 68.0 &&
         dem.bounds[1] === 6.0 &&
@@ -234,112 +415,74 @@ const MapComponent = ({
       addLayer(newLayer);
 
       if (isDefaultBounds) {
-        showMessage(
-          `DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.`
+        toast.update(
+          toastId,
+          "DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.",
+          "success"
         );
       } else {
-        showMessage(`Successfully uploaded DEM: ${file.name}`);
+        toast.update(
+          toastId,
+          `Successfully uploaded DEM: ${file.name}`,
+          "success"
+        );
       }
     } catch (error) {
-      console.error("Error uploading DEM file:", error);
-      showMessage(
-        `Error uploading DEM: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-        true
-      );
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+
+      // Provide helpful error messages for common issues
+      let userMessage = `Error uploading DEM: ${errorMessage}`;
+      if (errorMessage.includes("timeout") || errorMessage.includes("time")) {
+        userMessage = `File too large or processing timeout. Try a smaller file or wait longer.`;
+      } else if (
+        errorMessage.includes("memory") ||
+        errorMessage.includes("Memory")
+      ) {
+        userMessage = `File too large for available memory. Try a smaller file.`;
+      }
+
+      toast.update(toastId, userMessage, "error");
     }
   };
 
   // Upload GeoJSON/Vector file
-  const uploadGeoJsonFile = async (file: File) => {
+  const uploadGeoJsonFile = async (
+    file: File,
+    suppressToast: boolean = false
+  ) => {
+    const toastId = suppressToast
+      ? null
+      : toast.loading(`Uploading ${file.name}...`);
     try {
       const rawGeojson = await fileToGeoJSON(file);
 
-      if (!rawGeojson) {
-        showMessage(
-          "Invalid vector file format. Could not convert to GeoJSON.",
-          true
-        );
-        return;
-      }
-
-      let featureCollection: GeoJSON.FeatureCollection | null = null;
+      // Convert to FeatureCollection format
+      let features: GeoJSON.Feature[] = [];
 
       if (rawGeojson.type === "FeatureCollection") {
-        featureCollection = rawGeojson as GeoJSON.FeatureCollection;
+        features = (rawGeojson as GeoJSON.FeatureCollection).features || [];
       } else if (rawGeojson.type === "Feature") {
-        featureCollection = {
-          type: "FeatureCollection",
-          features: [rawGeojson as GeoJSON.Feature],
-        };
+        features = [rawGeojson as GeoJSON.Feature];
       } else if (
         (rawGeojson as any).features &&
         Array.isArray((rawGeojson as any).features)
       ) {
-        featureCollection = {
-          type: "FeatureCollection",
-          features: (rawGeojson as any).features,
-        };
+        features = (rawGeojson as any).features;
       } else if ((rawGeojson as any).geometry) {
-        featureCollection = {
-          type: "FeatureCollection",
-          features: [
-            {
-              type: "Feature",
-              geometry: (rawGeojson as any).geometry,
-              properties: (rawGeojson as any).properties ?? {},
-            },
-          ],
-        };
+        features = [
+          {
+            type: "Feature",
+            geometry: (rawGeojson as any).geometry,
+            properties: (rawGeojson as any).properties ?? {},
+          },
+        ];
       }
 
-      if (!featureCollection) {
-        showMessage(
-          `Unsupported GeoJSON structure: ${rawGeojson.type ?? "Unknown type"}`,
-          true
-        );
-        return;
-      }
+      // Filter out invalid features
+      const validFeatures = features.filter((f) => f && f.geometry);
 
-      if (!Array.isArray(featureCollection.features)) {
-        showMessage("Invalid GeoJSON format: features is not an array.", true);
-        return;
-      }
-
-      if (featureCollection.features.length === 0) {
-        showMessage("Vector file contains no features.", true);
-        return;
-      }
-
-      const featureCount = featureCollection.features.length;
-      showMessage(
-        `Uploading ${featureCount.toLocaleString()} features...`,
-        false
-      );
-
-      // Process features in batches
-      const BATCH_SIZE = 1000;
-      const validFeatures: GeoJSON.Feature[] = [];
-
-      for (let i = 0; i < featureCollection.features.length; i += BATCH_SIZE) {
-        const batch = featureCollection.features.slice(i, i + BATCH_SIZE);
-        const batchValid = batch.filter(
-          (feature) => feature && feature.geometry
-        );
-        validFeatures.push(...batchValid);
-
-        if (i + BATCH_SIZE < featureCollection.features.length) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-      }
-
-      if (validFeatures.length === 0) {
-        showMessage("Vector file contains no valid geometries.", true);
-        return;
-      }
-
-      // Extract size values from CSV properties if available
+      // Extract size values from properties if available
       const firstFeature = validFeatures[0];
       const hasPoints = validFeatures.some(
         (f) => f.geometry?.type === "Point" || f.geometry?.type === "MultiPoint"
@@ -377,43 +520,31 @@ const MapComponent = ({
       } as LayerProps & { uploadedAt: number };
 
       addLayer(newLayer);
-      showMessage(
-        `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`
-      );
-    } catch (error) {
-      console.error("Error uploading file:", error);
-
-      let errorMessage = "Unknown error";
-      if (error instanceof Error) {
-        const errorMsg = error.message.toLowerCase();
-        if (
-          errorMsg.includes("memory") ||
-          errorMsg.includes("heap") ||
-          errorMsg.includes("allocation")
-        ) {
-          errorMessage =
-            "File is too large for Android. Please split the file into smaller parts or reduce the number of features.";
-        } else if (
-          errorMsg.includes("timeout") ||
-          errorMsg.includes("exceeded") ||
-          errorMsg.includes("too long")
-        ) {
-          errorMessage =
-            "Processing took too long. The file may be too large. Please try a smaller file or split it into parts.";
-        } else if (errorMsg.includes("quota") || errorMsg.includes("storage")) {
-          errorMessage =
-            "Storage quota exceeded. Please free up space or use a smaller file.";
-        } else {
-          errorMessage = error.message;
-        }
+      if (toastId) {
+        toast.update(
+          toastId,
+          `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`,
+          "success"
+        );
       }
-
-      showMessage(`Error uploading file: ${errorMessage}`, true);
+    } catch (error) {
+      if (toastId) {
+        toast.update(
+          toastId,
+          `Error uploading file: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`,
+          "error"
+        );
+      } else {
+        throw error;
+      }
     }
   };
 
   // Upload annotation file
   const uploadAnnotationFile = async (file: File) => {
+    const toastId = toast.loading(`Uploading ${file.name}...`);
     try {
       const geojson = await fileToGeoJSON(file);
 
@@ -422,15 +553,16 @@ const MapComponent = ({
         geojson.type !== "FeatureCollection" ||
         !Array.isArray(geojson.features)
       ) {
-        showMessage(
+        toast.update(
+          toastId,
           "Invalid annotation file format. Could not convert to GeoJSON.",
-          true
+          "error"
         );
         return;
       }
 
       if (geojson.features.length === 0) {
-        showMessage("Annotation file contains no features.", true);
+        toast.update(toastId, "Annotation file contains no features.", "error");
         return;
       }
 
@@ -505,9 +637,10 @@ const MapComponent = ({
       });
 
       if (annotations.length === 0) {
-        showMessage(
+        toast.update(
+          toastId,
           "No valid annotations found. Features must have text/label/name/annotation properties.",
-          true
+          "error"
         );
         return;
       }
@@ -523,22 +656,25 @@ const MapComponent = ({
       } as LayerProps & { uploadedAt: number };
 
       addLayer(newLayer);
-      showMessage(
-        `Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`
+      toast.update(
+        toastId,
+        `Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`,
+        "success"
       );
     } catch (error) {
-      console.error("Error uploading annotation file:", error);
-      showMessage(
+      toast.update(
+        toastId,
         `Error uploading annotation file: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
-        true
+        "error"
       );
     }
   };
 
   // Import layers from JSON export
   const importLayersFromJson = async (file: File): Promise<boolean> => {
+    const toastId = toast.loading(`Importing ${file.name}...`);
     try {
       const text = await file.text();
       const importData = JSON.parse(text);
@@ -554,6 +690,7 @@ const MapComponent = ({
               `Importing may take a moment and could affect performance. Continue?`
           );
           if (!proceed) {
+            toast.dismiss(toastId);
             return true;
           }
         }
@@ -566,19 +703,20 @@ const MapComponent = ({
           }
 
           setTimeout(() => {
-            showMessage(
-              `Successfully imported ${importData.layers.length} layers from ${file.name}`
+            toast.update(
+              toastId,
+              `Successfully imported ${importData.layers.length} layers from ${file.name}`,
+              "success"
             );
           }, 500);
         }, 300);
 
         return true;
       } else {
+        toast.dismiss(toastId);
         return false;
       }
     } catch (error) {
-      console.error("Error importing layers from JSON:", error);
-
       let errorMessage = "Failed to import layers";
       if (error instanceof Error) {
         const errorMsg = error.message.toLowerCase();
@@ -596,17 +734,14 @@ const MapComponent = ({
         }
       }
 
-      showMessage(errorMessage, true);
+      toast.update(toastId, errorMessage, "error");
       return false;
     }
   };
 
-  // Extract TIFF files from ZIP
-  const extractTiffFromZip = async (file: File): Promise<File[]> => {
+  // Extract TIFF files from ZIP (with pre-loaded zip object)
+  const extractTiffFromZipWithZip = async (zip: any): Promise<File[]> => {
     try {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(file);
-
       const tiffFiles = Object.keys(zip.files).filter((name) => {
         const lowerName = name.toLowerCase();
         if (zip.files[name].dir) {
@@ -627,7 +762,13 @@ const MapComponent = ({
       const extractedFiles: File[] = [];
       for (const fileName of tiffFiles) {
         try {
-          const fileData = await zip.files[fileName].async("blob");
+          // Check file size before extracting (limit to 50MB per file)
+          const fileEntry = zip.files[fileName];
+          if (fileEntry._data?.uncompressedSize > 50 * 1024 * 1024) {
+            continue; // Skip files larger than 50MB
+          }
+
+          const fileData = await fileEntry.async("blob");
           const baseFileName = fileName.split("/").pop() || fileName;
           const lowerName = fileName.toLowerCase();
           let mimeType = "image/tiff";
@@ -639,23 +780,21 @@ const MapComponent = ({
           });
           extractedFiles.push(extractedFile);
         } catch (error) {
-          console.error(`Error extracting ${fileName} from ZIP:`, error);
+          // Skip files that fail to extract
         }
       }
 
       return extractedFiles;
     } catch (error) {
-      console.error("Error extracting TIFF from ZIP:", error);
       return [];
     }
   };
 
-  // Extract vector files from ZIP
-  const extractVectorFilesFromZip = async (file: File): Promise<File[]> => {
+  // Extract vector files from ZIP (with pre-loaded zip object)
+  const extractVectorFilesFromZipWithZip = async (
+    zip: any
+  ): Promise<File[]> => {
     try {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(file);
-
       const vectorFiles = Object.keys(zip.files).filter((name) => {
         const lowerName = name.toLowerCase();
         if (zip.files[name].dir) {
@@ -684,7 +823,13 @@ const MapComponent = ({
       const extractedFiles: File[] = [];
       for (const fileName of vectorFiles) {
         try {
-          const fileData = await zip.files[fileName].async("blob");
+          // Check file size before extracting (limit to 50MB per file)
+          const fileEntry = zip.files[fileName];
+          if (fileEntry._data?.uncompressedSize > 50 * 1024 * 1024) {
+            continue; // Skip files larger than 50MB
+          }
+
+          const fileData = await fileEntry.async("blob");
           const baseFileName = fileName.split("/").pop() || fileName;
           const lowerName = fileName.toLowerCase();
           let mimeType = "application/octet-stream";
@@ -704,23 +849,21 @@ const MapComponent = ({
           });
           extractedFiles.push(extractedFile);
         } catch (error) {
-          console.error(`Error extracting ${fileName} from ZIP:`, error);
+          // Skip files that fail to extract
         }
       }
 
       return extractedFiles;
     } catch (error) {
-      console.error("Error extracting vector files from ZIP:", error);
       return [];
     }
   };
 
-  // Extract shapefile from ZIP
-  const extractShapefileFromZip = async (file: File): Promise<File | null> => {
+  // Extract shapefile from ZIP (with pre-loaded zip object)
+  const extractShapefileFromZipWithZip = async (
+    zip: any
+  ): Promise<File | null> => {
     try {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(file);
-
       const shapefileComponents = Object.keys(zip.files).filter((name) => {
         const lowerName = name.toLowerCase();
         if (zip.files[name].dir) {
@@ -778,15 +921,16 @@ const MapComponent = ({
 
       return null;
     } catch (error) {
-      console.error("Error extracting shapefile from ZIP:", error);
       return null;
     }
   };
 
   // Main file import handler (matches FileSection's handleFileImport)
   const processUploadedFile = async (file: File) => {
+    const toastId = toast.loading(`Uploading ${file.name}...`);
     try {
       if (!file) {
+        toast.dismiss(toastId);
         return;
       }
 
@@ -812,251 +956,245 @@ const MapComponent = ({
 
       // Handle ZIP files
       if (ext === "zip") {
+        let zip: any = null;
         try {
           const JSZip = (await import("jszip")).default;
-          const testZip = await JSZip.loadAsync(file);
-          const fileNames = Object.keys(testZip.files);
-          console.log(
-            `ZIP contains ${fileNames.length} entries:`,
-            fileNames.slice(0, 10)
+          toast.update(toastId, "Reading ZIP file...", "loading");
+          zip = await JSZip.loadAsync(file);
+
+          // Check file size - warn if too large
+          const totalSize = Object.values(zip.files).reduce(
+            (sum: number, file: any) => {
+              return sum + (file._data?.uncompressedSize || 0);
+            },
+            0
           );
+
+          if (totalSize > 100 * 1024 * 1024) {
+            // 100MB
+            toast.update(
+              toastId,
+              "ZIP file is large, processing may take a while...",
+              "loading"
+            );
+          }
         } catch (zipError) {
-          console.error("Error reading ZIP file:", zipError);
-          showMessage(
+          toast.update(
+            toastId,
             `Error reading ZIP file: ${
               zipError instanceof Error
                 ? zipError.message
                 : "Invalid ZIP format"
             }`,
-            true
+            "error"
           );
+          return;
+        }
+
+        if (!zip) {
+          toast.update(toastId, "Failed to load ZIP file.", "error");
           return;
         }
 
         let tiffCount = 0;
         let vectorCount = 0;
         let shapefileCount = 0;
+        let tiffFiles: File[] = [];
+        let vectorFiles: File[] = [];
+        let shapefileZip: File | null = null;
 
-        // Process TIFF files first
-        const tiffFiles = await extractTiffFromZip(file);
-        if (tiffFiles.length > 0) {
-          showMessage(
-            `Found ${tiffFiles.length} TIFF file(s) in ZIP. Processing...`,
-            false
-          );
-          for (const tiffFile of tiffFiles) {
-            try {
-              await uploadDemFile(tiffFile);
-              tiffCount++;
-              await new Promise((resolve) => setTimeout(resolve, 0));
-            } catch (error) {
-              console.error(
-                `Error processing ${tiffFile.name} from ZIP:`,
-                error
-              );
-              showMessage(
-                `Error processing ${tiffFile.name}: ${
-                  error instanceof Error ? error.message : "Unknown error"
-                }`,
-                true
-              );
-            }
-          }
-        }
-
-        // Process vector files
-        const vectorFiles = await extractVectorFilesFromZip(file);
-        if (vectorFiles.length > 0) {
-          showMessage(
-            `Found ${vectorFiles.length} vector file(s) in ZIP. Processing...`,
-            false
-          );
-
-          const geojsonFiles = vectorFiles.filter((f) =>
-            f.name.toLowerCase().endsWith(".geojson")
-          );
-          const otherVectorFiles = vectorFiles.filter(
-            (f) => !f.name.toLowerCase().endsWith(".geojson")
-          );
-
-          // Group split GeoJSON files
-          const fileGroups: Record<string, File[]> = {};
-          const partFileBaseNames = new Set<string>();
-
-          for (const geojsonFile of geojsonFiles) {
-            const fileName = geojsonFile.name.toLowerCase();
-            const partMatch = fileName.match(/^(.+?)_part(\d+)\.geojson$/);
-
-            if (partMatch) {
-              const baseName = partMatch[1];
-              partFileBaseNames.add(baseName);
-              if (!fileGroups[baseName]) {
-                fileGroups[baseName] = [];
-              }
-              fileGroups[baseName].push(geojsonFile);
-            }
-          }
-
-          const standaloneGeoJsonFiles: File[] = [];
-
-          for (const geojsonFile of geojsonFiles) {
-            const fileName = geojsonFile.name.toLowerCase();
-            const partMatch = fileName.match(/^(.+?)_part(\d+)\.geojson$/);
-
-            if (!partMatch) {
-              const baseName = fileName.replace(/\.geojson$/, "");
-              if (partFileBaseNames.has(baseName)) {
-                if (fileGroups[baseName]) {
-                  fileGroups[baseName].unshift(geojsonFile);
-                }
-              } else {
-                standaloneGeoJsonFiles.push(geojsonFile);
-              }
-            }
-          }
-
-          // Sort file groups by part number
-          for (const [_, groupedFiles] of Object.entries(fileGroups)) {
-            groupedFiles.sort((a: File, b: File) => {
-              const aMatch = a.name.match(/_part(\d+)/);
-              const bMatch = b.name.match(/_part(\d+)/);
-              if (!aMatch) return -1;
-              if (!bMatch) return 1;
-              return parseInt(aMatch[1]) - parseInt(bMatch[1]);
-            });
-          }
-
-          // Process standalone GeoJSON files
-          for (const geojsonFile of standaloneGeoJsonFiles) {
-            try {
-              await uploadGeoJsonFile(geojsonFile);
-              vectorCount++;
-              await new Promise((resolve) => setTimeout(resolve, 0));
-            } catch (error) {
-              console.error(
-                `Error processing ${geojsonFile.name} from ZIP:`,
-                error
-              );
-              showMessage(
-                `Error processing ${geojsonFile.name}: ${
-                  error instanceof Error ? error.message : "Unknown error"
-                }`,
-                true
-              );
-            }
-          }
-
-          // Process grouped GeoJSON files (combine split files)
-          for (const [baseName, groupedFiles] of Object.entries(fileGroups)) {
-            try {
-              const allFeatures: GeoJSON.Feature[] = [];
-              let firstFileData: any = null;
-
-              for (let i = 0; i < groupedFiles.length; i++) {
-                const file = groupedFiles[i];
-                const text = await file.text();
-                const geojson = JSON.parse(text) as GeoJSON.FeatureCollection;
-
-                if (i === 0) {
-                  firstFileData = geojson as any;
-                }
-
-                if (geojson.features) {
-                  allFeatures.push(...geojson.features);
-                }
-                await new Promise((resolve) => setTimeout(resolve, 0));
-              }
-
-              if (allFeatures.length > 0) {
-                const layerName = firstFileData?.__layerName || baseName;
-                const combinedFeatureCollection: GeoJSON.FeatureCollection = {
-                  type: "FeatureCollection",
-                  features: allFeatures,
-                };
-
-                const combinedBlob = new Blob(
-                  [JSON.stringify(combinedFeatureCollection)],
-                  { type: "application/json" }
-                );
-                const combinedFile = new File(
-                  [combinedBlob],
-                  `${layerName}.geojson`,
-                  { type: "application/json" }
-                );
-
-                await uploadGeoJsonFile(combinedFile);
-                vectorCount++;
-              }
-            } catch (error) {
-              console.error(
-                `Error combining split files for ${baseName}:`,
-                error
-              );
-              showMessage(
-                `Error processing split files for ${baseName}: ${
-                  error instanceof Error ? error.message : "Unknown error"
-                }`,
-                true
-              );
-            }
-          }
-
-          // Process other vector files
-          for (const vectorFile of otherVectorFiles) {
-            try {
-              await uploadGeoJsonFile(vectorFile);
-              vectorCount++;
-              await new Promise((resolve) => setTimeout(resolve, 0));
-            } catch (error) {
-              console.error(
-                `Error processing ${vectorFile.name} from ZIP:`,
-                error
-              );
-              showMessage(
-                `Error processing ${vectorFile.name}: ${
-                  error instanceof Error ? error.message : "Unknown error"
-                }`,
-                true
-              );
-            }
-          }
-        }
-
-        // Check for shapefiles
-        const shapefileZip = await extractShapefileFromZip(file);
-        if (shapefileZip) {
-          showMessage("Found shapefile in ZIP. Processing...", false);
-          try {
-            await uploadGeoJsonFile(shapefileZip);
-            shapefileCount++;
-          } catch (error) {
-            console.error("Error processing shapefile from ZIP:", error);
-            showMessage(
-              `Error processing shapefile: ${
-                error instanceof Error ? error.message : "Unknown error"
-              }`,
-              true
-            );
-          }
-        }
-
-        // Check for node_icon_mappings.json
         try {
-          const JSZip = (await import("jszip")).default;
-          const zip = await JSZip.loadAsync(file);
-          const nodeIconMappingsFile = Object.keys(zip.files).find((name) =>
-            name.toLowerCase().includes("node_icon_mappings.json")
-          );
-          if (nodeIconMappingsFile) {
-            const fileData = await zip.files[nodeIconMappingsFile].async(
-              "string"
+          // Process TIFF files first
+          tiffFiles = await extractTiffFromZipWithZip(zip);
+          if (tiffFiles.length > 0) {
+            toast.update(
+              toastId,
+              `Processing ${tiffFiles.length} TIFF file(s)...`,
+              "loading"
             );
-            const mappings = JSON.parse(fileData);
-            setNodeIconMappings(mappings);
-            showMessage("Imported node icon mappings.", false);
+            for (let i = 0; i < tiffFiles.length; i++) {
+              try {
+                await uploadDemFile(tiffFiles[i]);
+                tiffCount++;
+                // Yield to UI thread every few files
+                if (i % 3 === 0) {
+                  await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+              } catch (error) {
+                // Individual file errors are handled by uploadDemFile
+              }
+            }
           }
-        } catch (error) {
-          console.error("Error importing node icon mappings:", error);
+
+          // Process vector files
+          vectorFiles = await extractVectorFilesFromZipWithZip(zip);
+          if (vectorFiles.length > 0) {
+            toast.update(
+              toastId,
+              `Processing ${vectorFiles.length} vector file(s)...`,
+              "loading"
+            );
+
+            const geojsonFiles = vectorFiles.filter((f) =>
+              f.name.toLowerCase().endsWith(".geojson")
+            );
+            const otherVectorFiles = vectorFiles.filter(
+              (f) => !f.name.toLowerCase().endsWith(".geojson")
+            );
+
+            // Group split GeoJSON files
+            const fileGroups: Record<string, File[]> = {};
+            const partFileBaseNames = new Set<string>();
+
+            for (const geojsonFile of geojsonFiles) {
+              const fileName = geojsonFile.name.toLowerCase();
+              const partMatch = fileName.match(/^(.+?)_part(\d+)\.geojson$/);
+
+              if (partMatch) {
+                const baseName = partMatch[1];
+                partFileBaseNames.add(baseName);
+                if (!fileGroups[baseName]) {
+                  fileGroups[baseName] = [];
+                }
+                fileGroups[baseName].push(geojsonFile);
+              }
+            }
+
+            const standaloneGeoJsonFiles: File[] = [];
+
+            for (const geojsonFile of geojsonFiles) {
+              const fileName = geojsonFile.name.toLowerCase();
+              const partMatch = fileName.match(/^(.+?)_part(\d+)\.geojson$/);
+
+              if (!partMatch) {
+                const baseName = fileName.replace(/\.geojson$/, "");
+                if (partFileBaseNames.has(baseName)) {
+                  if (fileGroups[baseName]) {
+                    fileGroups[baseName].unshift(geojsonFile);
+                  }
+                } else {
+                  standaloneGeoJsonFiles.push(geojsonFile);
+                }
+              }
+            }
+
+            // Sort file groups by part number
+            for (const [_, groupedFiles] of Object.entries(fileGroups)) {
+              groupedFiles.sort((a: File, b: File) => {
+                const aMatch = a.name.match(/_part(\d+)/);
+                const bMatch = b.name.match(/_part(\d+)/);
+                if (!aMatch) return -1;
+                if (!bMatch) return 1;
+                return parseInt(aMatch[1]) - parseInt(bMatch[1]);
+              });
+            }
+
+            // Process standalone GeoJSON files
+            for (const geojsonFile of standaloneGeoJsonFiles) {
+              try {
+                await uploadGeoJsonFile(geojsonFile, true);
+                vectorCount++;
+                await new Promise((resolve) => setTimeout(resolve, 0));
+              } catch (error) {
+                // Individual file errors are handled by uploadGeoJsonFile
+              }
+            }
+
+            // Process grouped GeoJSON files (combine split files)
+            for (const [baseName, groupedFiles] of Object.entries(fileGroups)) {
+              try {
+                const allFeatures: GeoJSON.Feature[] = [];
+                let firstFileData: any = null;
+
+                for (let i = 0; i < groupedFiles.length; i++) {
+                  const file = groupedFiles[i];
+                  const text = await file.text();
+                  const geojson = JSON.parse(text) as GeoJSON.FeatureCollection;
+
+                  if (i === 0) {
+                    firstFileData = geojson as any;
+                  }
+
+                  if (geojson.features) {
+                    allFeatures.push(...geojson.features);
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+
+                if (allFeatures.length > 0) {
+                  const layerName = firstFileData?.__layerName || baseName;
+                  const combinedFeatureCollection: GeoJSON.FeatureCollection = {
+                    type: "FeatureCollection",
+                    features: allFeatures,
+                  };
+
+                  const combinedBlob = new Blob(
+                    [JSON.stringify(combinedFeatureCollection)],
+                    { type: "application/json" }
+                  );
+                  const combinedFile = new File(
+                    [combinedBlob],
+                    `${layerName}.geojson`,
+                    { type: "application/json" }
+                  );
+
+                  await uploadGeoJsonFile(combinedFile, true);
+                  vectorCount++;
+                }
+              } catch (error) {
+                // Individual file errors are handled by uploadGeoJsonFile
+              }
+            }
+
+            // Process other vector files
+            for (const vectorFile of otherVectorFiles) {
+              try {
+                await uploadGeoJsonFile(vectorFile, true);
+                vectorCount++;
+                await new Promise((resolve) => setTimeout(resolve, 0));
+              } catch (error) {
+                // Individual file errors are handled by uploadGeoJsonFile
+              }
+            }
+          }
+
+          // Check for shapefiles
+          shapefileZip = await extractShapefileFromZipWithZip(zip);
+          if (shapefileZip) {
+            try {
+              await uploadGeoJsonFile(shapefileZip, true);
+              shapefileCount++;
+            } catch (error) {
+              // Individual file errors are handled by uploadGeoJsonFile
+            }
+          }
+
+          // Check for node_icon_mappings.json
+          try {
+            const nodeIconMappingsFile = Object.keys(zip.files).find((name) =>
+              name.toLowerCase().includes("node_icon_mappings.json")
+            );
+            if (nodeIconMappingsFile) {
+              const fileData = await zip.files[nodeIconMappingsFile].async(
+                "string"
+              );
+              const mappings = JSON.parse(fileData);
+              setNodeIconMappings(mappings);
+            }
+          } catch (error) {
+            // Silently fail for node icon mappings
+          }
+        } catch (zipProcessError) {
+          toast.update(
+            toastId,
+            `Error processing ZIP file: ${
+              zipProcessError instanceof Error
+                ? zipProcessError.message
+                : "Unknown error"
+            }`,
+            "error"
+          );
+          return;
         }
 
         // Show final success message
@@ -1067,11 +1205,12 @@ const MapComponent = ({
             parts.push(`${tiffCount} DEM${tiffCount > 1 ? "s" : ""}`);
           if (vectorCount > 0) parts.push(`${vectorCount} vector`);
           if (shapefileCount > 0) parts.push(`${shapefileCount} shapefile`);
-          showMessage(
+          toast.update(
+            toastId,
             `Successfully imported ${totalImported} layer(s) from ZIP (${parts.join(
               ", "
             )}).`,
-            false
+            "success"
           );
           return;
         } else if (
@@ -1079,15 +1218,13 @@ const MapComponent = ({
           vectorFiles.length > 0 ||
           shapefileZip
         ) {
-          showMessage(
-            "Some files could not be imported. Check errors above.",
-            true
-          );
+          toast.update(toastId, "Some files could not be imported.", "error");
           return;
         } else {
-          showMessage(
+          toast.update(
+            toastId,
             "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files.",
-            true
+            "error"
           );
           return;
         }
@@ -1156,27 +1293,20 @@ const MapComponent = ({
         } else if (mimeType.includes("tiff") || mimeType.includes("tif")) {
           await uploadDemFile(file);
         } else {
-          showMessage(
-            `Unsupported file type: .${ext} (${
-              file.type || "unknown type"
-            }). Supported formats:\n` +
-              `Layer Export: JSON (with layers array)\n` +
-              `Vector: ${vectorExtensions
-                .filter((e) => e !== "json")
-                .join(", ")}, JSON\n` +
-              `Raster/DEM: ${rasterExtensions.join(", ")}, ZIP (with TIFF)\n` +
-              `Note: ZIP files are checked for TIFF files first, then processed as shapefiles if no TIFF found.`,
-            true
+          toast.update(
+            toastId,
+            `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, TIFF, GPX, KML, KMZ, or shapefile.`,
+            "error"
           );
         }
       }
     } catch (error) {
-      console.error("Error importing file:", error);
-      showMessage(
+      toast.update(
+        toastId,
         `Error importing file: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
-        true
+        "error"
       );
     }
   };
@@ -1372,7 +1502,7 @@ const MapComponent = ({
       path,
       color: [68, 68, 68],
       lineWidth: 4,
-      visible: true,
+      visible: false, // Hidden by default - user can toggle visibility in layers panel
       segmentDistancesKm,
       totalDistanceKm,
     };
@@ -1479,7 +1609,7 @@ const MapComponent = ({
         }`,
         polygon: [closedPath],
         color: [32, 32, 32, 180],
-        visible: true,
+        visible: false, // Hidden by default - user can toggle visibility in layers panel
       };
       addLayer(newLayer);
       lastLayerCreationTimeRef.current = Date.now();
@@ -1919,6 +2049,55 @@ const MapComponent = ({
       " ",
     ];
 
+    // Add raster layers FIRST so they render at the bottom (behind other layers)
+    demLayers.forEach((layer) => {
+      if (!layer.bounds || !layer.elevationData) {
+        return;
+      }
+
+      try {
+        // Check if mesh is already cached to avoid regenerating on every render
+        const cacheKey = `${layer.id}-${layer.elevationData.width}-${layer.elevationData.height}`;
+        let mesh = demMeshCache.current[cacheKey];
+
+        if (!mesh) {
+          // Generate mesh from elevation data
+          // Use a smaller elevation scale for better visibility (100 meters instead of 1000)
+          mesh = generateMeshFromElevation(
+            layer.elevationData,
+            layer.bounds,
+            100 // elevation scale in meters (reduced for better visibility)
+          );
+
+          // Cache the mesh to avoid regenerating on every render
+          demMeshCache.current[cacheKey] = mesh;
+        }
+
+        // Always render as BitmapLayer (more reliable and visible than 3D mesh)
+        if (layer.bitmap) {
+          const bounds: [number, number, number, number] = [
+            layer.bounds[0][0], // minLng
+            layer.bounds[0][1], // minLat
+            layer.bounds[1][0], // maxLng
+            layer.bounds[1][1], // maxLat
+          ];
+
+          deckLayers.push(
+            new BitmapLayer({
+              id: `${layer.id}-bitmap`,
+              image: layer.bitmap,
+              bounds: bounds,
+              pickable: true,
+              visible: layer.visible !== false,
+              onHover: handleLayerHover,
+            })
+          );
+        }
+      } catch (error) {
+        // Silently handle errors
+      }
+    });
+
     if (pointLayers.length) {
       // Create a unique key based on all radius values to force update
       const radiusKey = pointLayers
@@ -1966,68 +2145,48 @@ const MapComponent = ({
       );
     }
 
-    // Add user location as a point layer
-    if (userLocation) {
-      console.log("Rendering user location:", userLocation);
-
-      // Add accuracy circle (in meters)
-      if (userLocation.accuracy > 0) {
-        deckLayers.push(
-          new ScatterplotLayer({
-            id: "user-location-accuracy",
-            data: [{ position: [userLocation.lng, userLocation.lat] }],
-            getPosition: (d: any) => d.position,
-            getRadius: userLocation.accuracy,
-            radiusUnits: "meters",
-            getFillColor: [34, 197, 94, 30], // Light green with transparency
-            getLineColor: [34, 197, 94, 100], // Green border
-            getLineWidth: 1,
-            stroked: true,
-            filled: true,
-            pickable: false,
-            radiusMinPixels: 0,
-            radiusMaxPixels: 1000,
-          })
-        );
-      }
-
-      // Add user location point
-      deckLayers.push(
-        new ScatterplotLayer({
-          id: "user-location-layer",
-          data: [{ position: [userLocation.lng, userLocation.lat] }],
-          getPosition: (d: any) => d.position,
-          getRadius: 12,
-          radiusUnits: "pixels",
-          getFillColor: [34, 197, 94, 255], // Green color
-          getLineColor: [22, 163, 74, 255], // Darker green border
-          getLineWidth: 3,
-          stroked: true,
-          pickable: true,
-          pickingRadius: 300,
-          radiusMinPixels: 10,
-          radiusMaxPixels: 20,
-          onHover: handleLayerHover,
-        })
-      );
-    }
+    // User location layers will be added at the end to render on top
 
     if (lineLayers.length) {
       const pathData = lineLayers.flatMap((layer) => {
         const path = layer.path ?? [];
         if (path.length < 2) return []; // Need at least 2 points for a line
-        return path.slice(0, -1).map((point, index) => ({
-          sourcePosition: point,
-          targetPosition: path[index + 1],
-          color: layer.color ? [...layer.color] : [0, 0, 0], // Black default
-          width: layer.lineWidth ?? 5,
-          layerId: layer.id,
-          layer: layer,
-          bearing: layer.bearing, // Include bearing for azimuthal lines
-        }));
+
+        return path
+          .slice(0, -1)
+          .map((point, index) => {
+            const nextPoint = path[index + 1];
+            // Validate coordinates are valid numbers
+            if (
+              !Array.isArray(point) ||
+              point.length < 2 ||
+              !Array.isArray(nextPoint) ||
+              nextPoint.length < 2 ||
+              typeof point[0] !== "number" ||
+              typeof point[1] !== "number" ||
+              typeof nextPoint[0] !== "number" ||
+              typeof nextPoint[1] !== "number" ||
+              isNaN(point[0]) ||
+              isNaN(point[1]) ||
+              isNaN(nextPoint[0]) ||
+              isNaN(nextPoint[1])
+            ) {
+              return null;
+            }
+            return {
+              sourcePosition: point,
+              targetPosition: nextPoint,
+              color: layer.color ? [...layer.color] : [0, 0, 0], // Black default
+              width: layer.lineWidth ?? 5,
+              layerId: layer.id,
+              layer: layer,
+              bearing: layer.bearing, // Include bearing for azimuthal lines
+            };
+          })
+          .filter((item): item is NonNullable<typeof item> => item !== null);
       });
 
-      if (pathData.length) {
+      if (pathData.length > 0) {
         deckLayers.push(
           new LineLayer({
             id: "line-layer",
@@ -2051,16 +2210,42 @@ const MapComponent = ({
     }
 
     if (connectionLayers.length) {
-      const connectionPathData = connectionLayers.flatMap((layer) =>
-        (layer.path ?? []).slice(0, -1).map((point, index) => ({
-          sourcePosition: point,
-          targetPosition: layer.path![index + 1],
-          color: layer.color ? [...layer.color] : [128, 128, 128], // Create a copy of the color array
-          width: layer.lineWidth ?? 5,
-        }))
-      );
+      const connectionPathData = connectionLayers.flatMap((layer) => {
+        const path = layer.path ?? [];
+        if (path.length < 2) return [];
 
-      if (connectionPathData.length) {
+        return path
+          .slice(0, -1)
+          .map((point, index) => {
+            const nextPoint = path[index + 1];
+            // Validate coordinates are valid numbers
+            if (
+              !Array.isArray(point) ||
+              point.length < 2 ||
+              !Array.isArray(nextPoint) ||
+              nextPoint.length < 2 ||
+              typeof point[0] !== "number" ||
+              typeof point[1] !== "number" ||
+              typeof nextPoint[0] !== "number" ||
+              typeof nextPoint[1] !== "number" ||
+              isNaN(point[0]) ||
+              isNaN(point[1]) ||
+              isNaN(nextPoint[0]) ||
+              isNaN(nextPoint[1])
+            ) {
+              return null;
+            }
+            return {
+              sourcePosition: point,
+              targetPosition: nextPoint,
+              color: layer.color ? [...layer.color] : [128, 128, 128], // Create a copy of the color array
+              width: layer.lineWidth ?? 5,
+            };
+          })
+          .filter((item): item is NonNullable<typeof item> => item !== null);
+      });
+
+      if (connectionPathData.length > 0) {
         deckLayers.push(
           new LineLayer({
             id: "connection-line-layer",
@@ -2105,25 +2290,50 @@ const MapComponent = ({
       // No on-map labels for finalized polygons per latest request.
     }
 
+    // Line layer with vertex rendering (duplicate id but different purpose - needs to be merged or renamed)
     if (lineLayers.length) {
       const pathData = lineLayers.flatMap((layer) => {
         const path = layer.path ?? [];
         if (path.length < 2) return [];
-        return path.slice(0, -1).map((point, index) => ({
-          sourcePosition: point,
-          targetPosition: path[index + 1],
-          color: layer.color ? [...layer.color] : [0, 0, 0],
-          width: layer.lineWidth ?? 5,
-          layerId: layer.id,
-          layerName: layer.name,
-          segmentIndex: index,
-        }));
+
+        return path
+          .slice(0, -1)
+          .map((point, index) => {
+            const nextPoint = path[index + 1];
+            // Validate coordinates are valid numbers
+            if (
+              !Array.isArray(point) ||
+              point.length < 2 ||
+              !Array.isArray(nextPoint) ||
+              nextPoint.length < 2 ||
+              typeof point[0] !== "number" ||
+              typeof point[1] !== "number" ||
+              typeof nextPoint[0] !== "number" ||
+              typeof nextPoint[1] !== "number" ||
+              isNaN(point[0]) ||
+              isNaN(point[1]) ||
+              isNaN(nextPoint[0]) ||
+              isNaN(nextPoint[1])
+            ) {
+              return null;
+            }
+            return {
+              sourcePosition: point,
+              targetPosition: nextPoint,
+              color: layer.color ? [...layer.color] : [0, 0, 0],
+              width: layer.lineWidth ?? 5,
+              layerId: layer.id,
+              layerName: layer.name,
+              segmentIndex: index,
+            };
+          })
+          .filter((item): item is NonNullable<typeof item> => item !== null);
       });
 
-      if (pathData.length) {
+      if (pathData.length > 0) {
         deckLayers.push(
           new LineLayer({
-            id: "line-layer",
+            id: "line-layer-vertices",
             data: pathData,
             getSourcePosition: (d: any) => d.sourcePosition,
             getTargetPosition: (d: any) => d.targetPosition,
@@ -2147,14 +2357,29 @@ const MapComponent = ({
         const vertexData = lineLayers.flatMap((layer) => {
           const path = layer.path ?? [];
           if (!path.length) return [];
-          return path.map((point, index) => ({
-            position: point,
-            color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
-            radius: index === 0 ? 200 : 180,
-          }));
+          return path
+            .map((point, index) => {
+              // Validate coordinates
+              if (
+                !Array.isArray(point) ||
+                point.length < 2 ||
+                typeof point[0] !== "number" ||
+                typeof point[1] !== "number" ||
+                isNaN(point[0]) ||
+                isNaN(point[1])
+              ) {
+                return null;
+              }
+              return {
+                position: point,
+                color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
+                radius: index === 0 ? 200 : 180,
+              };
+            })
+            .filter((item): item is NonNullable<typeof item> => item !== null);
         });
 
-        if (vertexData.length) {
+        if (vertexData.length > 0) {
           deckLayers.push(
             new ScatterplotLayer({
               id: "line-vertex-layer",
@@ -2173,8 +2398,6 @@ const MapComponent = ({
             })
           );
         }
-
-        // Per-request, no on-map labels for finalized lines; side panel handles display.
       }
     }
 
@@ -2311,144 +2534,6 @@ const MapComponent = ({
           onHover: handleLayerHover,
         })
       );
-    });
-
-    demLayers.forEach((layer) => {
-      if (!layer.bounds || !layer.elevationData) {
-        console.warn("DEM layer missing bounds or elevationData:", {
-          id: layer.id,
-          name: layer.name,
-          hasBounds: !!layer.bounds,
-          hasElevationData: !!layer.elevationData,
-        });
-        return;
-      }
-
-      try {
-        // Check if mesh is already cached to avoid regenerating on every render
-        const cacheKey = `${layer.id}-${layer.elevationData.width}-${layer.elevationData.height}`;
-        let mesh = demMeshCache.current[cacheKey];
-
-        if (!mesh) {
-          console.log("Generating mesh for DEM layer (first time):", {
-            id: layer.id,
-            name: layer.name,
-            bounds: layer.bounds,
-            elevationDataSize:
-              layer.elevationData.width * layer.elevationData.height,
-          });
-
-          // Generate mesh from elevation data
-          // Use a smaller elevation scale for better visibility (100 meters instead of 1000)
-          mesh = generateMeshFromElevation(
-            layer.elevationData,
-            layer.bounds,
-            100 // elevation scale in meters (reduced for better visibility)
-          );
-
-          console.log("Generated mesh:", {
-            positions: mesh.positions.length,
-            normals: mesh.normals.length,
-            indices: mesh.indices.length,
-          });
-
-          // Cache the mesh to avoid regenerating on every render
-          demMeshCache.current[cacheKey] = mesh;
-        } else {
-          // Mesh already cached, skip generation
-          console.log("Using cached mesh for DEM layer:", layer.id);
-        }
-
-        // Always render as BitmapLayer (more reliable and visible than 3D mesh)
-        if (layer.bitmap) {
-          const bounds: [number, number, number, number] = [
-            layer.bounds[0][0], // minLng
-            layer.bounds[0][1], // minLat
-            layer.bounds[1][0], // maxLng
-            layer.bounds[1][1], // maxLat
-          ];
-
-          console.log("Rendering DEM as BitmapLayer:", {
-            id: layer.id,
-            name: layer.name,
-            bounds,
-            hasBitmap: !!layer.bitmap,
-            visible: layer.visible !== false,
-          });
-
-          deckLayers.push(
-            new BitmapLayer({
-              id: `${layer.id}-bitmap`,
-              image: layer.bitmap,
-              bounds: bounds,
-              pickable: true,
-              visible: layer.visible !== false,
-              onHover: handleLayerHover,
-            })
-          );
-          console.log(
-            "Successfully added DEM bitmap layer to deck.gl:",
-            layer.id
-          );
-        } else {
-          console.warn("DEM layer missing bitmap:", {
-            id: layer.id,
-            name: layer.name,
-            hasBitmap: !!layer.bitmap,
-            hasTexture: !!layer.texture,
-          });
-        }
-
-        // Optionally try to add as 3D mesh layer (may not always work)
-        // Commented out for now since BitmapLayer is more reliable
-        /*
-        try {
-          deckLayers.push(
-            new SimpleMeshLayer({
-              id: `${layer.id}-mesh`,
-              data: [{}], // Single data point - mesh positions are already in world coords
-              mesh: meshData as any,
-              getPosition: () => [0, 0, 0], // Mesh positions are already in world coordinates
-              getColor: layer.color
-                ? ((layer.color.length === 4
-                    ? layer.color
-                    : [...layer.color, 255]) as [
-                    number,
-                    number,
-                    number,
-                    number
-                  ])
-                : [128, 128, 128, 255],
-              getOrientation: [0, 0, 0],
-              getScale: [1, 1, 1],
-              getTranslation: [0, 0, 0],
-              coordinateSystem: 1, // Use LNGLAT coordinate system
-              wireframe: false,
-              material: {
-                ambient: 0.5,
-                diffuse: 0.6,
-                shininess: 32,
-                specularColor: [60, 60, 60],
-              },
-              pickable: true,
-              pickingRadius: 300,
-              visible: layer.visible !== false,
-              onHover: handleLayerHover,
-            } as any)
-          );
-          console.log("Added DEM 3D mesh layer to deck.gl:", layer.id);
-        } catch (meshError) {
-          console.warn("Failed to create 3D mesh:", meshError);
-        }
-        */
-      } catch (error) {
-        console.error(`Error creating mesh for DEM layer ${layer.id}:`, error);
-        console.warn("DEM layer missing elevation data:", {
-          id: layer.id,
-          name: layer.name,
-          hasElevationData: !!layer.elevationData,
-        });
-      }
     });
 
     annotationLayers.forEach((layer) => {
@@ -2732,6 +2817,7 @@ const MapComponent = ({
       );
     }
 
+    // Return layers (user location will be added separately after default layers)
     return [...deckLayers, ...previewLayers];
   }, [
     layers,
@@ -2745,6 +2831,7 @@ const MapComponent = ({
     handleNodeIconClick,
     udpLayers,
     userLocation,
+    showUserLocation,
   ]);
 
   return (
@@ -3012,7 +3099,7 @@ const MapComponent = ({
               type: "raster",
               source: "offline-tiles",
               paint: {
-                "raster-opacity": 0.8,
+                "raster-opacity": 0.9,
               },
             });
           }
@@ -3041,6 +3128,51 @@ const MapComponent = ({
             cityNamesLayer,
             indiaPlacesLayer,
             indiaDistrictsLayer,
+            // Add user location layers LAST so they render on top of everything
+            ...(userLocation && showUserLocation
+              ? [
+                  // Add accuracy circle (in meters)
+                  ...(userLocation.accuracy > 0
+                    ? [
+                        new ScatterplotLayer({
+                          id: "user-location-accuracy",
+                          data: [
+                            { position: [userLocation.lng, userLocation.lat] },
+                          ],
+                          getPosition: (d: any) => d.position,
+                          getRadius: userLocation.accuracy,
+                          radiusUnits: "meters",
+                          getFillColor: [59, 130, 246, 20], // Light blue with transparency
+                          getLineColor: [59, 130, 246, 100], // Blue border
+                          getLineWidth: 1,
+                          stroked: true,
+                          filled: true,
+                          pickable: false,
+                          radiusMinPixels: 0,
+                          radiusMaxPixels: 1000,
+                        }),
+                      ]
+                    : []),
+                  // Add user location marker using IconLayer with proper location icon
+                  new IconLayer({
+                    id: "user-location-layer",
+                    data: [{ position: [userLocation.lng, userLocation.lat] }],
+                    getIcon: () => ({
+                      url: "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJDNy41ODIgMiA0IDUuNTgyIDQgMTBDNCAxNi4wODggMTIgMjIgMTIgMjJDMTIgMjIgMjAgMTYuMDg4IDIwIDEwQzIwIDUuNTgyIDE2LjQxOCAyIDEyIDJaIiBmaWxsPSIjM0I4MkY2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMCIgcj0iMyIgZmlsbD0id2hpdGUiLz4KPC9zdmc+",
+                      width: 24,
+                      height: 24,
+                      anchorY: 24,
+                    }),
+                    getPosition: (d: any) => d.position,
+                    sizeScale: 1,
+                    sizeMinPixels: 24,
+                    sizeMaxPixels: 48,
+                    pickable: true,
+                    pickingRadius: 300,
+                    onHover: handleLayerHover,
+                  }),
+                ]
+              : []),
           ]}
         />
         <NavigationControl
@@ -3054,7 +3186,7 @@ const MapComponent = ({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".json,.geojson,.shp,.zip,.csv,.gpx,.kml,.kmz,.tif,.tiff,.hgt"
+        accept="*/*"
         multiple
         style={{ display: "none" }}
         onChange={handleFileChange}
@@ -3071,6 +3203,9 @@ const MapComponent = ({
           }
           onToggleLayersBox?.();
         }}
+        isLayersBoxOpen={isLayersBoxOpen}
+        isMeasurementBoxOpen={isMeasurementBoxOpen}
+        isNetworkBoxOpen={isNetworkBoxOpen}
         onToggleMeasurementBox={() => {
           const willBeOpen = !isMeasurementBoxOpen;
           // If opening measurement box, close other panels
@@ -3090,6 +3225,12 @@ const MapComponent = ({
           setIsNetworkBoxOpen((prev) => !prev);
         }}
         onUpload={handleUpload}
+        onExportLayers={handleExportLayers}
+        onSaveSession={handleSaveSession}
+        onRestoreSession={handleRestoreSession}
+        onToggleUserLocation={handleToggleUserLocation}
+        onResetHome={handleResetHome}
+        showUserLocation={showUserLocation}
         onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
         cameraPopoverProps={{
           isOpen: isCameraPopoverOpen,

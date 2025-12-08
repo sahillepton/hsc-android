@@ -71,11 +71,13 @@ interface LayerState {
   ) => void;
   userLocationError: string | null;
   setUserLocationError: (error: string | null) => void;
+  showUserLocation: boolean;
+  setShowUserLocation: (show: boolean) => void;
 }
 
 // Debounce autosave to avoid saving too frequently
 let autosaveTimeout: NodeJS.Timeout | null = null;
-const AUTOSAVE_DELAY = 500; // 500ms delay
+const AUTOSAVE_DELAY = 2 * 60 * 1000; // 2 minutes delay
 
 const triggerAutosave = (
   layers: LayerProps[],
@@ -242,6 +244,8 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   setUserLocation: (location) => set({ userLocation: location }),
   userLocationError: null,
   setUserLocationError: (error) => set({ userLocationError: error }),
+  showUserLocation: false,
+  setShowUserLocation: (show) => set({ showUserLocation: show }),
   useIgrs: false,
   setUseIgrs: (value) => set({ useIgrs: value }),
 }));
@@ -382,11 +386,17 @@ export const useUserLocation = () => {
   const setUserLocationError = useLayerStore(
     (state) => state.setUserLocationError
   );
+  const showUserLocation = useLayerStore((state) => state.showUserLocation);
+  const setShowUserLocation = useLayerStore(
+    (state) => state.setShowUserLocation
+  );
   return {
     userLocation,
     setUserLocation,
     userLocationError,
     setUserLocationError,
+    showUserLocation,
+    setShowUserLocation,
   };
 };
 

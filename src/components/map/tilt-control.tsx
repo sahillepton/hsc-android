@@ -1,12 +1,4 @@
-import {
-  CameraIcon,
-  Globe,
-  Mountain,
-  TrendingUp,
-  Wifi,
-  WifiOff,
-  Navigation,
-} from "lucide-react";
+import { CameraIcon } from "lucide-react";
 import { useState } from "react";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
@@ -23,8 +15,6 @@ const TiltControl = ({
   setPitch: (pitch: number) => void;
   onCreatePoint?: (position: [number, number]) => void;
 }) => {
-  const [is3DTerrainMode, setIs3DTerrainMode] = useState(false);
-  const [isOfflineMode, setIsOfflineMode] = useState(true);
   const [latitude, setLatitude] = useState("");
   const [longitude, setLongitude] = useState("");
 
@@ -158,148 +148,6 @@ const TiltControl = ({
               </Button>
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* Offline Mode Toggle */}
-      <div className="pt-1 flex flex-row gap-1.5" style={{ zoom: 0.85 }}>
-        <button
-          onClick={() => {
-            setIsOfflineMode(!isOfflineMode);
-            if (mapRef.current) {
-              const map = mapRef.current.getMap();
-              const offlineLayer = map.getLayer("offline-tiles-layer");
-
-              if (isOfflineMode) {
-                // Switch to online mode - hide offline tiles
-                if (offlineLayer) {
-                  map.setLayoutProperty(
-                    "offline-tiles-layer",
-                    "visibility",
-                    "none"
-                  );
-                }
-                map.setMaxBounds(null); // Remove bounds restriction
-              } else {
-                // Switch to offline mode - show offline tiles
-                if (offlineLayer) {
-                  map.setLayoutProperty(
-                    "offline-tiles-layer",
-                    "visibility",
-                    "visible"
-                  );
-                }
-                // No bounds restriction - allow free panning
-              }
-            }
-          }}
-          className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors flex items-center justify-center gap-1.5 ${
-            isOfflineMode
-              ? "bg-blue-500 text-white hover:bg-blue-600"
-              : "bg-blue-100 text-blue-700 hover:bg-blue-200"
-          }`}
-        >
-          {isOfflineMode ? (
-            <WifiOff className="size-3" />
-          ) : (
-            <Wifi className="size-3" />
-          )}
-          <span className="whitespace-nowrap">
-            {isOfflineMode ? "Offline" : "Online"}
-          </span>
-        </button>
-        <button
-          onClick={() => {
-            if (mapRef.current) {
-              mapRef.current.getMap().easeTo({ bearing: 0, duration: 500 });
-            }
-          }}
-          className="flex-1 px-2 py-1.5 text-xs rounded transition-colors bg-indigo-500 text-white hover:bg-indigo-600 flex items-center justify-center gap-1.5"
-          title="Reset map rotation to north"
-        >
-          <Navigation className="size-3" />
-          <span className="whitespace-nowrap">Reset</span>
-        </button>
-        <button
-          onClick={() => {
-            setIs3DTerrainMode(!is3DTerrainMode);
-            if (mapRef.current) {
-              const map = mapRef.current.getMap();
-              if (!is3DTerrainMode) {
-                // Enable enhanced 3D terrain
-                map.setTerrain({
-                  source: "mapbox-dem",
-                  exaggeration: 5.0,
-                });
-                map.easeTo({
-                  pitch: 60,
-                  zoom: Math.max(map.getZoom(), 10),
-                  duration: 1000,
-                });
-                setPitch(60);
-              } else {
-                // Return to normal terrain
-                map.setTerrain({
-                  source: "mapbox-dem",
-                  exaggeration: 4.0,
-                });
-                map.easeTo({
-                  pitch: 0,
-                  duration: 1000,
-                });
-                setPitch(0);
-              }
-            }
-          }}
-          className={`w-full px-2.5 py-1.5 flex-1 text-xs rounded transition-colors flex items-center justify-center gap-1.5 ${
-            is3DTerrainMode
-              ? "bg-emerald-500 text-white hover:bg-emerald-600"
-              : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-          }`}
-        >
-          <Globe className="size-3" />
-          {is3DTerrainMode ? "2D" : "3D"}
-        </button>
-      </div>
-
-      {/* 3D Terrain Mode */}
-      <div className="pt-1 mt-1" style={{ zoom: 0.85 }}>
-        <div className="flex flex-col gap-1.5">
-          {is3DTerrainMode && (
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => {
-                  if (mapRef.current) {
-                    mapRef.current.getMap().easeTo({
-                      pitch: 75,
-                      zoom: Math.max(mapRef.current.getMap().getZoom(), 12),
-                      duration: 1000,
-                    });
-                    setPitch(75);
-                  }
-                }}
-                className="flex-1 px-2.5 py-1.5 text-xs rounded bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors flex items-center justify-center gap-1.5"
-              >
-                <Mountain className="size-3" />
-                Extreme View
-              </button>
-
-              <button
-                onClick={() => {
-                  if (mapRef.current) {
-                    mapRef.current.getMap().setTerrain({
-                      source: "mapbox-dem",
-                      exaggeration: 6.0,
-                    });
-                  }
-                }}
-                className="flex-1 px-2.5 py-1.5 text-xs rounded bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors flex items-center justify-center gap-1.5"
-              >
-                <TrendingUp className="size-3" />
-                Boost Height
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </div>

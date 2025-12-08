@@ -1,46 +1,55 @@
 plugins {
-    id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
+  id 'com.android.application'
+  id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace 'com.example.hsc' // replace with your package
-    compileSdk 34
+  namespace 'com.example.app'
+  compileSdk 35
 
-    defaultConfig {
-        applicationId "com.example.hsc" // replace with your appId
-        minSdk 24
-        targetSdk 34
-        versionCode 1
-        versionName "1.0"
+  defaultConfig {
+    applicationId "com.example.app"
+    minSdk 24
+    targetSdk 35
+    versionCode 1
+    versionName "1.0"
+    multiDexEnabled true
+  }
 
-        // Java/Kotlin options
-        multiDexEnabled true
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_21
+    targetCompatibility JavaVersion.VERSION_21
+  }
+
+  kotlin {
+    compilerOptions {
+      jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
     }
+  }
 
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+  buildTypes {
+    release {
+      minifyEnabled false
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
     }
-
-    kotlinOptions {
-        jvmTarget = '17'
-    }
-
-    buildTypes {
-        release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
-    }
+  }
 }
 
 dependencies {
-    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.10"
-    implementation project(':capacitor-android') // if you have Capacitor core
-    implementation project(':capacitor-filesystem')
-    implementation project(':capacitor-geolocation')
-    implementation project(':capacitor-preferences')
+  implementation project(':capacitor-android')
+
+  // Optional: you can keep these or remove (Capacitor build file also adds plugins)
+  implementation project(':capacitor-filesystem')
+  implementation project(':capacitor-geolocation')
+  implementation project(':capacitor-preferences')
+
+  implementation "androidx.appcompat:appcompat:1.7.0"
+  implementation "androidx.core:core-ktx:1.15.0"
 }
 
-apply plugin: 'com.google.gms.google-services' // if using Firebase
+/**
+ * ✅ REQUIRED for Capacitor native plugins to be included/registered
+ * (This is what your file is missing right now)
+ */
+apply from: file("capacitor.build.gradle")
+apply from: file("../capacitor-cordova-android-plugins/cordova.variables.gradle")

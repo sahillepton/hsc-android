@@ -165,6 +165,11 @@
   resolved "https://registry.npmjs.org/@capacitor/android/-/android-7.4.4.tgz"
   integrity sha512-y8knfV1JXNrd6XZZLZireGT+EBCN0lvOo+HZ/s7L8LkrPBu4nY5UZn0Wxz4yOezItEII9rqYJSHsS5fMJG9gdw==
 
+"@capacitor/app@^7.1.0":
+  version "7.1.0"
+  resolved "https://registry.yarnpkg.com/@capacitor/app/-/app-7.1.0.tgz#d275eebbb0fec6104b3f9c41f09f7598d7808b47"
+  integrity sha512-W7m09IWrUjZbo7AKeq+rc/KyucxrJekTBg0l4QCm/yDtCejE3hebxp/W2esU26KKCzMc7H3ClkUw32E9lZkwRA==
+
 "@capacitor/cli@^7.4.3":
   version "7.4.4"
   resolved "https://registry.npmjs.org/@capacitor/cli/-/cli-7.4.4.tgz"
@@ -202,23 +207,23 @@
   dependencies:
     tslib "^2.1.0"
 
-"@capacitor/filesystem@^7.1.4":
-  version "7.1.4"
-  resolved "https://registry.npmjs.org/@capacitor/filesystem/-/filesystem-7.1.4.tgz"
-  integrity sha512-BdUnOVulHAtruW2GeC9o7e9LO5aFcVYqNn3dLypJSOck/WipUFNfI0QWoUS0FVGeqBbDJgFGi3zjXJx0lzbDkA==
+"@capacitor/filesystem@^7.1.5":
+  version "7.1.5"
+  resolved "https://registry.yarnpkg.com/@capacitor/filesystem/-/filesystem-7.1.5.tgz#44e8f8c3b96e4f929a7b35068a9dfe8296e2aee3"
+  integrity sha512-ZzJxpEh6SwKhF1cqSVmIAkEyNG3ozf3Lwg8rUNltX6CGdd94UJV45asqmFoP6X6aT5eVu7FPjPU5SHxi6XOFgA==
   dependencies:
     "@capacitor/synapse" "^1.0.3"
 
 "@capacitor/geolocation@^7.1.6":
   version "7.1.6"
-  resolved "https://registry.npmjs.org/@capacitor/geolocation/-/geolocation-7.1.6.tgz"
+  resolved "https://registry.yarnpkg.com/@capacitor/geolocation/-/geolocation-7.1.6.tgz#d767366b4e8ccf546be12e067db70bbca0437fbc"
   integrity sha512-K+SXF8X01sEyCLb1ITqir5Gi3qMNnua7TMdxKmxYBAJATUGoHzJQ0itslkoP4HM6JZac+f8lTpRl1RMWKErRIg==
   dependencies:
     "@capacitor/synapse" "^1.0.3"
 
 "@capacitor/preferences@^7.0.2":
   version "7.0.2"
-  resolved "https://registry.npmjs.org/@capacitor/preferences/-/preferences-7.0.2.tgz"
+  resolved "https://registry.yarnpkg.com/@capacitor/preferences/-/preferences-7.0.2.tgz#9557bd817b2f4cde942d3ce1cdf5abdb1292357f"
   integrity sha512-JVCy0/oc6RsRencLOZ8rMqjNxAlHs7awPJU/MXqangsJ48oO2PnYGHfCvci6WgIJlqyC0QhvWZaO1BR1lVkHWQ==
 
 "@capacitor/share@^7.0.2":

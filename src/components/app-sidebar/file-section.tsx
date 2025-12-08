@@ -2,20 +2,21 @@ import type { LayerProps } from "@/lib/definitions";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SidebarGroup, SidebarGroupContent } from "../ui/sidebar";
-import {
-  getStorageDirectory,
-  getStorageDirectoryName,
-  getStorageDirectoryPath,
-  showMessage,
-} from "@/lib/capacitor-utils";
+import { showMessage } from "@/lib/capacitor-utils";
+import { toast } from "@/lib/toast";
 import { useLayers, useNodeIconMappings } from "@/store/layers-store";
 import { generateLayerId } from "@/lib/layers";
 import { fileToDEMRaster, fileToGeoJSON } from "@/lib/utils";
-import { Encoding, Filesystem } from "@capacitor/filesystem";
+import { Encoding, Filesystem, Directory } from "@capacitor/filesystem";
 import { FileDown, Loader2 } from "lucide-react";
 import { useState } from "react";
 
-const FileSection = () => {
+type FileSectionProps = {
+  fixedDirectory?: Directory;
+  fixedPath?: string;
+};
+
+const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
   const { layers, setLayers, addLayer } = useLayers();
   const { nodeIconMappings, setNodeIconMappings } = useNodeIconMappings();
   const [isExporting, setIsExporting] = useState(false);
@@ -1508,20 +1509,18 @@ const FileSection = () => {
 
       // Save ZIP to device
       // For binary files, use base64 encoding with the base64 string
-      const storageDir = await getStorageDirectory();
-      const dirName = getStorageDirectoryName(storageDir);
-      const dirPath = getStorageDirectoryPath(storageDir);
+      const storageDir = fixedDirectory || Directory.Documents;
+      const savePath = fixedPath || `HSC_Layers/${zipFileName}`;
 
       const result = await Filesystem.writeFile({
-        path: `HSC_Layers/${zipFileName}`,
+        path: savePath,
         data: zipBase64,
         directory: storageDir,
         encoding: Encoding.UTF8, // Base64 data is stored as UTF8 string
         recursive: true,
       });
 
-      const fullPath = `${dirName}${dirPath}HSC_Layers/${zipFileName}`;
-      let message = `Successfully exported ${exportedCount} layer(s) to ZIP file:\n\n📁 Path: ${fullPath}\n\n📍 Full URI: ${result.uri}`;
+      let message = `Successfully exported ${exportedCount} layer(s) to ZIP file:\n\n📁 Path: ${savePath}\n\n📍 Full URI: ${result.uri}`;
 
       if (errors.length > 0) {
         message += `\n\n⚠️ ${errors.length} layer(s) had errors:\n${errors
@@ -1624,6 +1623,383 @@ const FileSection = () => {
       </SidebarGroupContent>
     </SidebarGroup>
   );
+};
+
+// Export downloadAllLayers function for use in other components
+export const downloadAllLayers = async (
+  layers: LayerProps[],
+  nodeIconMappings: Record<string, string>,
+  fixedDirectory?: Directory,
+  fixedPath?: string
+) => {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const folderName = `layers_export_${timestamp}`;
+  const zipFileName = `${folderName}.zip`;
+
+  const toastId = toast.loading(`Exporting ${layers.length} layer(s)...`);
+
+  // Import JSZip dynamically
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  const folder = zip.folder(folderName);
+
+  if (!folder) {
+    throw new Error("Failed to create ZIP folder");
+  }
+
+  let exportedCount = 0;
+  const errors: string[] = [];
+
+  // Process each layer (same logic as in FileSection component)
+  for (let layerIndex = 0; layerIndex < layers.length; layerIndex++) {
+    const layer = layers[layerIndex];
+
+    if (layers.length > 5) {
+      toast.update(
+        toastId,
+        `Exporting layer ${layerIndex + 1} of ${layers.length}: ${
+          layer.name
+        }...`,
+        "loading"
+      );
+    }
+    try {
+      const sanitizedName = layer.name
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .substring(0, 100);
+
+      if (layer.type === "geojson" && layer.geojson) {
+        const featureCount = layer.geojson.features?.length || 0;
+        const MAX_FEATURES_PER_FILE = 2000;
+
+        if (featureCount > MAX_FEATURES_PER_FILE) {
+          const totalParts = Math.ceil(featureCount / MAX_FEATURES_PER_FILE);
+
+          for (let partIndex = 0; partIndex < totalParts; partIndex++) {
+            const startIdx = partIndex * MAX_FEATURES_PER_FILE;
+            const endIdx = Math.min(
+              startIdx + MAX_FEATURES_PER_FILE,
+              featureCount
+            );
+            const partFeatures = layer.geojson.features.slice(startIdx, endIdx);
+
+            const partFeatureCollection: GeoJSON.FeatureCollection = {
+              type: "FeatureCollection",
+              features: partFeatures,
+            };
+
+            const fileName =
+              partIndex === 0
+                ? `${sanitizedName}.geojson`
+                : `${sanitizedName}_part${partIndex + 1}.geojson`;
+
+            if (partIndex === 0) {
+              (partFeatureCollection as any).__split = true;
+              (partFeatureCollection as any).__totalParts = totalParts;
+              (partFeatureCollection as any).__layerName = layer.name;
+            }
+
+            const geojsonContent = JSON.stringify(partFeatureCollection);
+            folder.file(fileName, geojsonContent);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        } else {
+          const geojsonContent = JSON.stringify(layer.geojson);
+          folder.file(`${sanitizedName}.geojson`, geojsonContent);
+        }
+        exportedCount++;
+      } else if (
+        layer.type === "point" ||
+        layer.type === "line" ||
+        layer.type === "polygon"
+      ) {
+        let feature: GeoJSON.Feature | null = null;
+
+        if (layer.type === "point" && layer.position) {
+          feature = {
+            type: "Feature",
+            geometry: { type: "Point", coordinates: layer.position },
+            properties: {
+              name: layer.name,
+              color: layer.color,
+              radius: layer.radius,
+            },
+          };
+        } else if (layer.type === "line" && layer.path) {
+          feature = {
+            type: "Feature",
+            geometry: { type: "LineString", coordinates: layer.path },
+            properties: {
+              name: layer.name,
+              color: layer.color,
+              lineWidth: layer.lineWidth,
+            },
+          };
+        } else if (layer.type === "polygon" && layer.polygon) {
+          feature = {
+            type: "Feature",
+            geometry: { type: "Polygon", coordinates: layer.polygon },
+            properties: {
+              name: layer.name,
+              color: layer.color,
+              sectorAngleDeg: layer.sectorAngleDeg,
+              radiusMeters: layer.radiusMeters,
+              bearing: layer.bearing,
+            },
+          };
+        }
+
+        if (feature) {
+          const featureCollection: GeoJSON.FeatureCollection = {
+            type: "FeatureCollection",
+            features: [feature],
+          };
+          const geojsonContent = JSON.stringify(featureCollection, null, 2);
+          folder.file(`${sanitizedName}.geojson`, geojsonContent);
+          exportedCount++;
+        }
+      } else if (layer.type === "annotation" && layer.annotations) {
+        const annotationCount = layer.annotations.length;
+        const MAX_FEATURES_PER_FILE = 2000;
+
+        if (annotationCount > MAX_FEATURES_PER_FILE) {
+          const totalParts = Math.ceil(annotationCount / MAX_FEATURES_PER_FILE);
+
+          for (let partIndex = 0; partIndex < totalParts; partIndex++) {
+            const startIdx = partIndex * MAX_FEATURES_PER_FILE;
+            const endIdx = Math.min(
+              startIdx + MAX_FEATURES_PER_FILE,
+              annotationCount
+            );
+            const batch = layer.annotations.slice(startIdx, endIdx);
+
+            const features: GeoJSON.Feature[] = batch.map((ann) => ({
+              type: "Feature",
+              geometry: { type: "Point", coordinates: ann.position },
+              properties: {
+                text: ann.text,
+                color: ann.color,
+                fontSize: ann.fontSize,
+              },
+            }));
+
+            const fileName =
+              partIndex === 0
+                ? `${sanitizedName}.geojson`
+                : `${sanitizedName}_part${partIndex + 1}.geojson`;
+
+            const featureCollection: GeoJSON.FeatureCollection = {
+              type: "FeatureCollection",
+              features,
+            };
+
+            if (partIndex === 0) {
+              (featureCollection as any).__split = true;
+              (featureCollection as any).__totalParts = totalParts;
+              (featureCollection as any).__layerName = layer.name;
+            }
+
+            const geojsonContent = JSON.stringify(featureCollection);
+            folder.file(fileName, geojsonContent);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        } else {
+          const features: GeoJSON.Feature[] = layer.annotations.map((ann) => ({
+            type: "Feature",
+            geometry: { type: "Point", coordinates: ann.position },
+            properties: {
+              text: ann.text,
+              color: ann.color,
+              fontSize: ann.fontSize,
+            },
+          }));
+          const featureCollection: GeoJSON.FeatureCollection = {
+            type: "FeatureCollection",
+            features,
+          };
+          const geojsonContent = JSON.stringify(featureCollection, null, 2);
+          folder.file(`${sanitizedName}.geojson`, geojsonContent);
+        }
+        exportedCount++;
+      } else if (layer.type === "nodes" && layer.nodes) {
+        const nodeCount = layer.nodes.length;
+        const MAX_FEATURES_PER_FILE = 2000;
+
+        if (nodeCount > MAX_FEATURES_PER_FILE) {
+          const totalParts = Math.ceil(nodeCount / MAX_FEATURES_PER_FILE);
+
+          for (let partIndex = 0; partIndex < totalParts; partIndex++) {
+            const startIdx = partIndex * MAX_FEATURES_PER_FILE;
+            const endIdx = Math.min(
+              startIdx + MAX_FEATURES_PER_FILE,
+              nodeCount
+            );
+            const batch = layer.nodes.slice(startIdx, endIdx);
+
+            const features: GeoJSON.Feature[] = batch.map((node) => ({
+              type: "Feature",
+              geometry: {
+                type: "Point",
+                coordinates: [node.longitude, node.latitude],
+              },
+              properties: {
+                userId: node.userId,
+                snr: node.snr,
+                rssi: node.rssi,
+                distance: node.distance,
+                hopCount: node.hopCount,
+                connectedNodeIds: node.connectedNodeIds,
+              },
+            }));
+
+            const fileName =
+              partIndex === 0
+                ? `${sanitizedName}.geojson`
+                : `${sanitizedName}_part${partIndex + 1}.geojson`;
+
+            const featureCollection: GeoJSON.FeatureCollection = {
+              type: "FeatureCollection",
+              features,
+            };
+
+            if (partIndex === 0) {
+              (featureCollection as any).__split = true;
+              (featureCollection as any).__totalParts = totalParts;
+              (featureCollection as any).__layerName = layer.name;
+            }
+
+            const geojsonContent = JSON.stringify(featureCollection);
+            folder.file(fileName, geojsonContent);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        } else {
+          const features: GeoJSON.Feature[] = layer.nodes.map((node) => ({
+            type: "Feature",
+            geometry: {
+              type: "Point",
+              coordinates: [node.longitude, node.latitude],
+            },
+            properties: {
+              userId: node.userId,
+              snr: node.snr,
+              rssi: node.rssi,
+              distance: node.distance,
+              hopCount: node.hopCount,
+              connectedNodeIds: node.connectedNodeIds,
+            },
+          }));
+          const featureCollection: GeoJSON.FeatureCollection = {
+            type: "FeatureCollection",
+            features,
+          };
+          const geojsonContent = JSON.stringify(featureCollection, null, 2);
+          folder.file(`${sanitizedName}.geojson`, geojsonContent);
+        }
+        exportedCount++;
+      } else if (layer.type === "dem" && layer.bitmap) {
+        try {
+          let canvas: HTMLCanvasElement | null = null;
+
+          if (layer.bitmap instanceof HTMLCanvasElement) {
+            canvas = layer.bitmap;
+          } else if (
+            layer.bitmap instanceof ImageBitmap ||
+            layer.bitmap instanceof HTMLImageElement
+          ) {
+            canvas = document.createElement("canvas");
+            canvas.width =
+              layer.bitmap instanceof ImageBitmap
+                ? layer.bitmap.width
+                : layer.bitmap.naturalWidth;
+            canvas.height =
+              layer.bitmap instanceof ImageBitmap
+                ? layer.bitmap.height
+                : layer.bitmap.naturalHeight;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(layer.bitmap, 0, 0);
+            }
+          }
+
+          if (canvas) {
+            const blob = await new Promise<Blob | null>((resolve) => {
+              canvas!.toBlob(resolve, "image/png", 1.0);
+            });
+
+            if (blob) {
+              const arrayBuffer = await blob.arrayBuffer();
+              folder.file(`${sanitizedName}.tiff`, arrayBuffer);
+              exportedCount++;
+            } else {
+              errors.push(`${layer.name}: Failed to convert DEM to image`);
+            }
+          } else {
+            errors.push(
+              `${layer.name}: Could not export DEM (unsupported format)`
+            );
+          }
+        } catch (error) {
+          errors.push(
+            `${layer.name}: Error exporting DEM - ${
+              error instanceof Error ? error.message : "Unknown error"
+            }`
+          );
+        }
+      } else if (layer.type === "connections") {
+        errors.push(
+          `${layer.name}: Connection layers export not yet implemented`
+        );
+      } else {
+        errors.push(
+          `${layer.name}: Layer type "${layer.type}" not supported for export`
+        );
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } catch (error) {
+      console.error(`Error exporting layer ${layer.name}:`, error);
+      errors.push(
+        `${layer.name}: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+    }
+  }
+
+  if (nodeIconMappings && Object.keys(nodeIconMappings).length > 0) {
+    const mappingsContent = JSON.stringify(nodeIconMappings, null, 2);
+    folder.file("node_icon_mappings.json", mappingsContent);
+  }
+
+  toast.update(toastId, "Creating ZIP archive...", "loading");
+  const zipBase64 = await zip.generateAsync({
+    type: "base64",
+    compression: "DEFLATE",
+    compressionOptions: { level: 3 },
+    streamFiles: true,
+  });
+
+  const storageDir = fixedDirectory || Directory.Documents;
+  const savePath = fixedPath || `HSC_Layers/${zipFileName}`;
+
+  const result = await Filesystem.writeFile({
+    path: savePath,
+    data: zipBase64,
+    directory: storageDir,
+    encoding: Encoding.UTF8,
+    recursive: true,
+  });
+
+  let message = `Successfully exported ${exportedCount} layer(s) to ZIP file. Path: ${savePath}`;
+
+  if (errors.length > 0) {
+    message += ` (${errors.length} layer(s) had errors)`;
+    toast.update(toastId, message, "error");
+  } else {
+    toast.update(toastId, message, "success");
+  }
+
+  return result.uri;
 };
 
 export default FileSection;

@@ -11,7 +11,6 @@ import {
   EyeOffIcon,
   LocateFixed,
   Settings2,
-  Trash2,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import {
@@ -144,7 +143,7 @@ const SketchLayersPanel = ({
     return (
       <div className="grid gap-3 text-xs">
         {enableSelection && sketchLayers.length > 0 && (
-          <div className="flex items-center justify-between px-3 py-2 text-[13px]">
+          <div className="flex items-center justify-between sticky px-3 py-2 w-full top-0 z-2 bg-white text-[13px]">
             <label className="flex items-center gap-2 font-medium text-foreground">
               <input
                 type="checkbox"

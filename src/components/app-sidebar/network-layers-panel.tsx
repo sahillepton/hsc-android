@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -23,23 +22,15 @@ type NetworkLayersPanelProps = {
   enableSelection?: boolean;
 };
 
-const typeAccent: Record<string, string> = {
-  "network-members": "text-violet-600",
-  targets: "text-rose-600",
-};
-
 const NetworkLayersPanel = ({
   isOpen,
   setIsOpen,
   variant = "accordion",
-  enableSelection = false,
 }: NetworkLayersPanelProps) => {
   const { networkLayersVisible, setNetworkLayersVisible } =
     useNetworkLayersVisible();
   const { udpLayers } = useUdpLayers();
   const useIgrs = useIgrsPreference();
-
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   // Get UDP layer data
   const networkMembersLayer = udpLayers.find(
@@ -68,21 +59,6 @@ const NetworkLayersPanel = ({
       data: targetsData,
     },
   ].filter((item) => item.count > 0);
-
-  const layerIds = udpLayerItems.map((item) => item.id);
-  const layerIdSignature = layerIds.join("|");
-  const layerIdSet = new Set(layerIds);
-
-  useEffect(() => {
-    setSelectedIds((prev) => {
-      const next = prev.filter((id) => layerIdSet.has(id));
-      if (next.length === prev.length) {
-        return prev;
-      }
-      return next;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layerIdSignature]);
 
   // Focus on a UDP layer by calculating bounds
   const handleFocusLayer = (layerId: string) => {
@@ -152,8 +128,6 @@ const NetworkLayersPanel = ({
     return (
       <div className="grid gap-3 text-xs">
         {udpLayerItems.map((layer) => {
-          const badgeClass =
-            typeAccent[layer.type] ?? "text-slate-600 bg-slate-100";
           // Get sample items for display (max 3)
           const sampleItems = layer.data.slice(0, 3);
 
