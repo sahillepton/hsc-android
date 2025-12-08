@@ -2005,7 +2005,14 @@ const MapComponent = ({
       .filter(
         (layer) =>
           !(layer.type === "point" && layer.name?.startsWith("Polygon Point"))
-      );
+      )
+      .filter((layer) => {
+        const minZoomCheck =
+          layer.minzoom === undefined || mapZoom >= layer.minzoom;
+        const maxZoomCheck =
+          layer.maxzoom === undefined || mapZoom <= layer.maxzoom;
+        return minZoomCheck && maxZoomCheck;
+      });
     const pointLayers = visibleLayers.filter((l) => l.type === "point");
     const lineLayers = visibleLayers.filter(
       (l) => l.type === "line" && !(l.name || "").includes("Connection")
@@ -2089,6 +2096,7 @@ const MapComponent = ({
               bounds: bounds,
               pickable: true,
               visible: layer.visible !== false,
+              minZoom: layer.minzoom,
               onHover: handleLayerHover,
             })
           );
@@ -2832,6 +2840,7 @@ const MapComponent = ({
     udpLayers,
     userLocation,
     showUserLocation,
+    mapZoom,
   ]);
 
   return (

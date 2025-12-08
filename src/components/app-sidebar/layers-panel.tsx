@@ -21,6 +21,7 @@ import {
 } from "@/store/layers-store";
 import LayerPopover from "./layer-popover";
 import { isSketchLayer } from "@/lib/sketch-layers";
+import { calculateLayerZoomRange } from "@/lib/layers";
 
 type LayersPanelProps = {
   isOpen: boolean;
@@ -275,6 +276,40 @@ const LayersPanel = ({
                         Uploaded: {uploadedDate}
                       </div>
                     )}
+                    {(() => {
+                      // Calculate zoom range if not set (for display only, not saved until user saves)
+                      const displayZoomRange =
+                        layer.minzoom !== undefined ||
+                        layer.maxzoom !== undefined
+                          ? {
+                              minZoom: layer.minzoom,
+                              maxZoom: layer.maxzoom,
+                            }
+                          : layer.type !== "point"
+                          ? calculateLayerZoomRange(layer)
+                          : undefined;
+
+                      if (displayZoomRange) {
+                        const minZoom =
+                          displayZoomRange.minZoom ?? layer.minzoom;
+                        const maxZoom =
+                          displayZoomRange.maxZoom ?? layer.maxzoom;
+                        return (
+                          <div className="text-[10px] text-muted-foreground mt-1">
+                            Zoom:{" "}
+                            {minZoom !== undefined ? minZoom.toFixed(0) : "?"} -{" "}
+                            {maxZoom !== undefined ? maxZoom.toFixed(0) : "?"}
+                            {(layer.minzoom === undefined ||
+                              layer.maxzoom === undefined) && (
+                              <span className="text-[9px] text-muted-foreground/70 ml-1">
+                                (auto)
+                              </span>
+                            )}
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
                 </div>
               );

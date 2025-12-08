@@ -3,7 +3,7 @@ import { Input } from "../ui/input";
 import { Slider } from "../ui/slider";
 import { Separator } from "../ui/separator";
 import { rgbToHex, hexToRgb, getDistance, getPolygonArea } from "@/lib/utils";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 
 interface LayerPopoverProps {
   layer: any;
@@ -16,6 +16,15 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
   const [radiusPreview, setRadiusPreview] = useState(
     layer.type === "point" ? layer.radius ?? 5 : layer.pointRadius ?? 5
   );
+  const [zoomPreview, setZoomPreview] = useState(layer.minzoom ?? 0);
+  const [maxZoomPreview, setMaxZoomPreview] = useState(layer.maxzoom ?? 12);
+
+  // Update preview values when layer changes
+  useEffect(() => {
+    setZoomPreview(layer.minzoom ?? 0);
+    setMaxZoomPreview(layer.maxzoom ?? 12);
+  }, [layer.minzoom, layer.maxzoom]);
+
   // Check for line geometry types
   const isLine =
     layer.type === "line" ||
@@ -171,6 +180,62 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
             </div>
           </>
         )}
+
+        {/* Min Zoom Threshold */}
+        <div className="mb-2">
+          <label className="text-xs font-medium text-muted-foreground">
+            Min Zoom
+          </label>
+          <Slider
+            min={0}
+            max={12}
+            step={1}
+            value={[zoomPreview]}
+            onValueChange={(values) => setZoomPreview(values[0])}
+            onValueCommit={(values) =>
+              updateLayer(layer.id, {
+                ...layer,
+                minzoom: values[0],
+              })
+            }
+            className="mt-2"
+          />
+          <div className="flex justify-between text-xs text-muted-foreground mt-1">
+            <span>0</span>
+            <span className="font-medium">
+              Current: {zoomPreview.toFixed(0)}
+            </span>
+            <span>12</span>
+          </div>
+        </div>
+
+        {/* Max Zoom Threshold */}
+        <div className="mb-2">
+          <label className="text-xs font-medium text-muted-foreground">
+            Max Zoom
+          </label>
+          <Slider
+            min={0}
+            max={12}
+            step={1}
+            value={[maxZoomPreview]}
+            onValueChange={(values) => setMaxZoomPreview(values[0])}
+            onValueCommit={(values) =>
+              updateLayer(layer.id, {
+                ...layer,
+                maxzoom: values[0],
+              })
+            }
+            className="mt-2"
+          />
+          <div className="flex justify-between text-xs text-muted-foreground mt-1">
+            <span>0</span>
+            <span className="font-medium">
+              Current: {maxZoomPreview.toFixed(0)}
+            </span>
+            <span>12</span>
+          </div>
+        </div>
 
         {(distance || area) && (
           <>
