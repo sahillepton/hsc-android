@@ -4,15 +4,25 @@ import MapComponent from "./components/map";
 import { SidebarProvider, SidebarTrigger } from "./components/ui/sidebar";
 import { AppSidebar } from "./components/app-sidebar";
 import { loadAutosavedLayers } from "./store/layers-store";
+import { toast } from "sonner";
 
 const App = () => {
   const [isLayersPanelVisible, setIsLayersPanelVisible] = useState(false);
 
   // Load autosaved layers on app initialization
   useEffect(() => {
-    loadAutosavedLayers().catch((error) => {
-      console.error("Failed to load autosaved layers:", error);
-    });
+    loadAutosavedLayers()
+      .then(({ layers }) => {
+        if (layers.length > 0) {
+          toast("Importing saved layers", {
+            description: `Loaded ${layers.length} layer(s) from previous session`,
+            duration: 3000,
+          });
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load autosaved layers:", error);
+      });
   }, []);
 
   return (

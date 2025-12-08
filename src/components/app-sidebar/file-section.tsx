@@ -16,9 +16,14 @@ import {
   generateDistinctColor,
 } from "@/lib/utils";
 import { Encoding, Filesystem } from "@capacitor/filesystem";
-import { deserializeLayers, serializeLayers } from "@/lib/autosave";
+import {
+  deserializeLayers,
+  serializeLayers,
+  saveUploadedLayerFile,
+} from "@/lib/autosave";
 import { FileDown, Loader2 } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 
 const FileSection = () => {
   const { layers, setLayers, addLayer } = useLayers();
@@ -58,24 +63,43 @@ const FileSection = () => {
       // Use addLayer to ensure proper state updates and prevent overwriting
       addLayer(newLayer);
 
+      // Save the uploaded file for autosave
+      saveUploadedLayerFile(newLayer.id, file.name, file).catch(console.error);
+
+      // Save DEM bitmap as PNG
+      if (dem.canvas) {
+        try {
+          const base64Data = dem.canvas.toDataURL("image/png").split(",")[1];
+          const storageDir = await getStorageDirectory();
+          await Filesystem.writeFile({
+            path: `uploaded_layers/${newLayer.id}/bitmap.png`,
+            data: base64Data,
+            directory: storageDir,
+            encoding: Encoding.UTF8,
+            recursive: true,
+          });
+        } catch (error) {
+          console.error("Error saving DEM bitmap:", error);
+        }
+      }
+
       if (!silent) {
         if (isDefaultBounds) {
-          showMessage(
+          console.log(
             `DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.`
           );
         } else {
-          showMessage(`Successfully uploaded DEM: ${file.name}`);
+          console.log(`Successfully uploaded DEM: ${file.name}`);
         }
       }
       return { success: true, name: file.name, isDefaultBounds };
     } catch (error) {
       console.error("Error uploading DEM file:", error);
       if (!silent) {
-        showMessage(
+        console.error(
           `Error uploading DEM: ${
             error instanceof Error ? error.message : "Unknown error"
-          }`,
-          true
+          }`
         );
       }
       return {
@@ -354,19 +378,18 @@ const FileSection = () => {
               setNodeIconMappings(importData.nodeIconMappings);
             }
 
-            // Show only one message after import completes
-            showMessage(
+            // Suppress alerts during import - only log to console
+            console.log(
               `Successfully imported ${importData.layers.length} layers from ${file.name}`
             );
           } catch (deserializeError) {
             console.error("Error deserializing layers:", deserializeError);
-            showMessage(
+            console.error(
               `Error importing layers: ${
                 deserializeError instanceof Error
                   ? deserializeError.message
                   : "Unknown error"
-              }`,
-              true
+              }`
             );
           }
         }, 300);
@@ -395,7 +418,7 @@ const FileSection = () => {
         }
       }
 
-      showMessage(errorMessage, true);
+      console.error(errorMessage);
       return false;
     }
   };
@@ -409,15 +432,14 @@ const FileSection = () => {
         geojson.type !== "FeatureCollection" ||
         !Array.isArray(geojson.features)
       ) {
-        showMessage(
-          "Invalid annotation file format. Could not convert to GeoJSON.",
-          true
+        console.error(
+          "Invalid annotation file format. Could not convert to GeoJSON."
         );
         return;
       }
 
       if (geojson.features.length === 0) {
-        showMessage("Annotation file contains no features.", true);
+        console.warn("Annotation file contains no features.");
         return;
       }
 
@@ -492,9 +514,8 @@ const FileSection = () => {
       });
 
       if (annotations.length === 0) {
-        showMessage(
-          "No valid annotations found. Features must have text/label/name/annotation properties.",
-          true
+        console.warn(
+          "No valid annotations found. Features must have text/label/name/annotation properties."
         );
         return;
       }
@@ -510,16 +531,19 @@ const FileSection = () => {
 
       // Use addLayer to ensure proper state updates and prevent overwriting
       addLayer(newLayer);
-      showMessage(
+
+      // Save the uploaded file for autosave
+      saveUploadedLayerFile(newLayer.id, file.name, file).catch(console.error);
+
+      console.log(
         `Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`
       );
     } catch (error) {
       console.error("Error uploading annotation file:", error);
-      showMessage(
+      console.error(
         `Error uploading annotation file: ${
           error instanceof Error ? error.message : "Unknown error"
-        }`,
-        true
+        }`
       );
     }
   };
@@ -602,9 +626,8 @@ const FileSection = () => {
 
       if (!rawGeojson) {
         if (!silent) {
-          showMessage(
-            "Invalid vector file format. Could not convert to GeoJSON.",
-            true
+          console.error(
+            "Invalid vector file format. Could not convert to GeoJSON."
           );
         }
         return {
@@ -646,11 +669,10 @@ const FileSection = () => {
 
       if (!featureCollection) {
         if (!silent) {
-          showMessage(
+          console.error(
             `Unsupported GeoJSON structure: ${
               rawGeojson.type ?? "Unknown type"
-            }`,
-            true
+            }`
           );
         }
         return {
@@ -664,10 +686,7 @@ const FileSection = () => {
 
       if (!Array.isArray(featureCollection.features)) {
         if (!silent) {
-          showMessage(
-            "Invalid GeoJSON format: features is not an array.",
-            true
-          );
+          console.error("Invalid GeoJSON format: features is not an array.");
         }
         return {
           success: false,
@@ -678,7 +697,7 @@ const FileSection = () => {
 
       if (featureCollection.features.length === 0) {
         if (!silent) {
-          showMessage("Vector file contains no features.", true);
+          console.warn("Vector file contains no features.");
         }
         return {
           success: false,
@@ -689,12 +708,9 @@ const FileSection = () => {
 
       const featureCount = featureCollection.features.length;
 
-      // Show uploading message with feature count (only if not silent)
+      // Suppress alerts during import - only log to console
       if (!silent) {
-        showMessage(
-          `Uploading ${featureCount.toLocaleString()} features...`,
-          false
-        );
+        console.log(`Uploading ${featureCount.toLocaleString()} features...`);
       }
 
       // Process features in batches to avoid blocking UI thread
@@ -720,7 +736,7 @@ const FileSection = () => {
 
       if (validFeatures.length === 0) {
         if (!silent) {
-          showMessage("Vector file contains no valid geometries.", true);
+          console.warn("Vector file contains no valid geometries.");
         }
         return {
           success: false,
@@ -763,7 +779,11 @@ const FileSection = () => {
       // Use addLayer to ensure proper state updates and prevent overwriting
       // This prevents overwriting when importing multiple files from ZIP
       addLayer(newLayer);
-      showMessage(
+
+      // Save the uploaded file for autosave
+      saveUploadedLayerFile(newLayer.id, file.name, file).catch(console.error);
+
+      console.log(
         `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`
       );
     } catch (error) {
@@ -794,7 +814,7 @@ const FileSection = () => {
         }
       }
 
-      showMessage(`Error uploading file: ${errorMessage}`, true);
+      console.error(`Error uploading file: ${errorMessage}`);
     }
   };
 
@@ -803,6 +823,11 @@ const FileSection = () => {
       if (!file) {
         return;
       }
+
+      // Show toast notification that file is being imported
+      toast("File is being imported", {
+        duration: 2000,
+      });
 
       const fileName = file.name?.toLowerCase() || "";
       let ext = "";
@@ -837,13 +862,12 @@ const FileSection = () => {
             );
           } catch (zipError) {
             console.error("Error reading ZIP file:", zipError);
-            showMessage(
+            console.error(
               `Error reading ZIP file: ${
                 zipError instanceof Error
                   ? zipError.message
                   : "Invalid ZIP format"
-              }`,
-              true
+              }`
             );
             setIsImporting(false);
             return;
@@ -1066,7 +1090,11 @@ const FileSection = () => {
               message += ` ${allErrors.length} file(s) had errors.`;
             }
 
-            showMessage(message, allErrors.length > 0);
+            // Suppress alerts during import - only log to console
+            console.log(message);
+            if (allErrors.length > 0) {
+              console.error("Import errors:", allErrors);
+            }
             setIsImporting(false);
             return;
           } else if (
@@ -1080,14 +1108,16 @@ const FileSection = () => {
                 allErrors.length > 3 ? ` and ${allErrors.length - 3} more` : ""
               }.`;
             }
-            showMessage(message, true);
+            console.error(message);
+            if (allErrors.length > 0) {
+              console.error("Import errors:", allErrors);
+            }
             setIsImporting(false);
             return;
           } else {
             // No supported files found in ZIP
-            showMessage(
-              "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files.",
-              true
+            console.warn(
+              "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files."
             );
             setIsImporting(false);
             return;
@@ -1159,7 +1189,7 @@ const FileSection = () => {
         } else if (mimeType.includes("tiff") || mimeType.includes("tif")) {
           await uploadDemFile(file);
         } else {
-          showMessage(
+          console.error(
             `Unsupported file type: .${ext} (${
               file.type || "unknown type"
             }). Supported formats:\n` +
@@ -1168,18 +1198,16 @@ const FileSection = () => {
                 .filter((e) => e !== "json")
                 .join(", ")}, JSON\n` +
               `Raster/DEM: ${rasterExtensions.join(", ")}, ZIP (with TIFF)\n` +
-              `Note: ZIP files are checked for TIFF files first, then processed as shapefiles if no TIFF found.`,
-            true
+              `Note: ZIP files are checked for TIFF files first, then processed as shapefiles if no TIFF found.`
           );
         }
       }
     } catch (error) {
       console.error("Error importing file:", error);
-      showMessage(
+      console.error(
         `Error importing file: ${
           error instanceof Error ? error.message : "Unknown error"
-        }`,
-        true
+        }`
       );
     }
   };

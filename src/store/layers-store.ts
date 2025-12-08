@@ -2,7 +2,7 @@ import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds } from "@/lib/layers";
-import { saveLayers } from "@/lib/autosave";
+import { saveLayers, handleLayerDeletion } from "@/lib/autosave";
 
 interface LayerState {
   layers: LayerProps[];
@@ -109,6 +109,9 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   },
   deleteLayer: (layerId: string) =>
     set((state) => {
+      // Find the layer being deleted
+      const layerToDelete = state.layers.find((layer) => layer.id === layerId);
+
       // Check if the deleted layer is the one being hovered
       let shouldClearHoverInfo = false;
       if (state.hoverInfo) {
@@ -137,6 +140,12 @@ const useLayerStore = create<LayerState>()((set, get) => ({
       }
 
       const newLayers = state.layers.filter((layer) => layer.id !== layerId);
+
+      // Delete layer files from autosave
+      if (layerToDelete) {
+        handleLayerDeletion(layerToDelete).catch(console.error);
+      }
+
       triggerAutosave(newLayers, state.nodeIconMappings);
       return {
         layers: newLayers,

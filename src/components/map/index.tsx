@@ -12,14 +12,13 @@ import {
 } from "@deck.gl/layers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { MapPin, MapPinOff } from "lucide-react";
-import { Button } from "../ui/button";
 import IconSelection from "./icon-selection";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
 import OfflineLocationTracker from "./offline-location-tracker";
+import LocationControls from "./location-controls";
 import { useUdpConfigStore } from "@/store/udp-config-store";
 import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
@@ -120,12 +119,8 @@ const MapComponent = ({
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const useIgrs = useIgrsPreference();
   const setUseIgrs = useSetIgrsPreference();
-  const {
-    userLocation,
-    userLocationError,
-    showUserLocation,
-    setShowUserLocation,
-  } = useUserLocation();
+  const { userLocation, userLocationError, showUserLocation } =
+    useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
 
   // Cache for DEM meshes to avoid regenerating on every render
@@ -145,11 +140,23 @@ const MapComponent = ({
   //   useProgressiveNodes(networkLayersVisible);
   const [isMapEnabled] = useState(true);
   const [pitch, setPitch] = useState(0);
+  const [viewState, setViewState] = useState<any>({
+    longitude: 81.5,
+    latitude: 20.5,
+    zoom: 6,
+    pitch: pitch,
+    bearing: 0,
+  });
 
   const [selectedNodeForIcon, setSelectedNodeForIcon] = useState<string | null>(
     null
   );
   const { mapZoom, setMapZoom } = useMapZoom();
+
+  // Update viewState pitch when pitch changes
+  useEffect(() => {
+    setViewState((prev: any) => ({ ...prev, pitch }));
+  }, [pitch]);
   const [isUdpConfigDialogOpen, setIsUdpConfigDialogOpen] = useState(false);
   const [configKey, setConfigKey] = useState(0);
   const [showConnectionError, setShowConnectionError] = useState(false);
@@ -2018,13 +2025,6 @@ const MapComponent = ({
         dragRotate={true}
         touchZoomRotate={true}
         pitchWithRotate={true}
-        initialViewState={{
-          longitude: 81.5, // Center of India (between 63.5°E and 99.5°E)
-          latitude: 20.5, // Center of India (between 2.5°N and 38.5°N)
-          zoom: 6, // Zoom level to show India's bounding box
-          pitch: pitch,
-          bearing: 0,
-        }}
         minZoom={0}
         maxZoom={20}
         maxPitch={85}
@@ -2079,15 +2079,19 @@ const MapComponent = ({
         onClick={handleMapClick}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        viewState={viewState as any}
         onMove={(e: any) => {
-          if (e && e.viewState && typeof e.viewState.zoom === "number") {
-            // Throttle zoom updates to reduce re-renders during zoom operations
-            if (zoomUpdateTimeoutRef.current) {
-              clearTimeout(zoomUpdateTimeoutRef.current);
+          if (e && e.viewState) {
+            setViewState(e.viewState);
+            if (typeof e.viewState.zoom === "number") {
+              // Throttle zoom updates to reduce re-renders during zoom operations
+              if (zoomUpdateTimeoutRef.current) {
+                clearTimeout(zoomUpdateTimeoutRef.current);
+              }
+              zoomUpdateTimeoutRef.current = setTimeout(() => {
+                setMapZoom(e.viewState.zoom);
+              }, 100); // Update zoom at most every 100ms
             }
-            zoomUpdateTimeoutRef.current = setTimeout(() => {
-              setMapZoom(e.viewState.zoom);
-            }, 100); // Update zoom at most every 100ms
           }
         }}
       >
@@ -2109,24 +2113,15 @@ const MapComponent = ({
 
       <Tooltip />
 
-      {/* Location Toggle Button - Bottom Left */}
-      <div className="absolute bottom-1 left-2 z-50 pointer-events-none">
-        <div className="pointer-events-auto">
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={() => setShowUserLocation(!showUserLocation)}
-            className="h-11 w-11 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm text-slate-600 hover:text-foreground hover:bg-white"
-            title={showUserLocation ? "Hide location" : "Show location"}
-          >
-            {showUserLocation ? (
-              <MapPin className="h-4 w-4" />
-            ) : (
-              <MapPinOff className="h-4 w-4" />
-            )}
-          </Button>
-        </div>
-      </div>
+      {/* Location Controls - Bottom Left */}
+      <LocationControls
+        onViewStateChange={(newViewState) => {
+          setViewState((prev: any) => ({
+            ...prev,
+            ...newViewState,
+          }));
+        }}
+      />
 
       <ZoomControls
         mapRef={mapRef}
