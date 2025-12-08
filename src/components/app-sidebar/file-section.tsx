@@ -6,7 +6,11 @@ import { showMessage } from "@/lib/capacitor-utils";
 import { toast } from "@/lib/toast";
 import { useLayers, useNodeIconMappings } from "@/store/layers-store";
 import { generateLayerId, calculateLayerZoomRange } from "@/lib/layers";
-import { fileToDEMRaster, fileToGeoJSON } from "@/lib/utils";
+import {
+  fileToDEMRaster,
+  fileToGeoJSON,
+  generateRandomColor,
+} from "@/lib/utils";
 import { Encoding, Filesystem, Directory } from "@capacitor/filesystem";
 import { FileDown, Loader2 } from "lucide-react";
 import { useState } from "react";
@@ -646,11 +650,7 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
           type: "FeatureCollection",
           features: validFeatures,
         },
-        color: [
-          Math.floor(Math.random() * 255),
-          Math.floor(Math.random() * 255),
-          Math.floor(Math.random() * 255),
-        ],
+        color: generateRandomColor(),
         pointRadius: extractedPointRadius ?? 5,
         lineWidth: extractedLineWidth ?? 5,
         visible: true,

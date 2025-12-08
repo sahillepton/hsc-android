@@ -53,8 +53,9 @@ import {
   formatDistance,
   fileToGeoJSON,
   fileToDEMRaster,
+  generateMeshFromElevation,
+  generateRandomColor,
 } from "@/lib/utils";
-import { generateMeshFromElevation } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
 import { Directory } from "@capacitor/filesystem";
 import { downloadAllLayers } from "@/components/app-sidebar/file-section";
@@ -508,11 +509,7 @@ const MapComponent = ({
           type: "FeatureCollection",
           features: validFeatures,
         },
-        color: [
-          Math.floor(Math.random() * 255),
-          Math.floor(Math.random() * 255),
-          Math.floor(Math.random() * 255),
-        ],
+        color: generateRandomColor(),
         pointRadius: extractedPointRadius ?? 5,
         lineWidth: extractedLineWidth ?? 5,
         visible: true,
