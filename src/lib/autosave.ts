@@ -17,6 +17,25 @@ export const serializeLayers = async (
 
   for (const layer of layers) {
     const serializedLayer: LayerProps = { ...layer };
+    // Log to verify minzoom and maxzoom are present
+    if (layer.minzoom !== undefined || layer.maxzoom !== undefined) {
+      console.log(
+        "[serializeLayers] Layer:",
+        layer.id,
+        "minzoom:",
+        layer.minzoom,
+        "maxzoom:",
+        layer.maxzoom
+      );
+      console.log(
+        "[serializeLayers] Serialized layer:",
+        serializedLayer.id,
+        "minzoom:",
+        serializedLayer.minzoom,
+        "maxzoom:",
+        serializedLayer.maxzoom
+      );
+    }
 
     // Handle DEM layers - save bitmaps as separate PNG files in ZIP
     if (layer.type === "dem") {
@@ -70,8 +89,32 @@ export const serializeLayers = async (
 // Save layers as ZIP to HSC_SESSIONS folder (file storage, no size limit)
 export const saveLayers = async (layers: LayerProps[]): Promise<void> => {
   try {
+    // Layers should already have zoom ranges calculated in the store
+    // Just log to verify
+    console.log("[saveLayers] Processing", layers.length, "layers");
+    console.log(
+      "[saveLayers] Layers zoom ranges:",
+      layers.map((l) => ({
+        id: l.id,
+        name: l.name,
+        minzoom: l.minzoom,
+        maxzoom: l.maxzoom,
+      }))
+    );
+
     // Serialize layers and get bitmaps separately
     const { serialized, bitmaps } = await serializeLayers(layers);
+
+    // Log serialized layers to verify zoom ranges are preserved
+    console.log(
+      "[saveLayers] Serialized layers:",
+      serialized.map((l) => ({
+        id: l.id,
+        name: l.name,
+        minzoom: l.minzoom,
+        maxzoom: l.maxzoom,
+      }))
+    );
 
     // Get node icon mappings
     const { loadNodeIconMappings } = await import("./autosave");
@@ -84,6 +127,17 @@ export const saveLayers = async (layers: LayerProps[]): Promise<void> => {
       layers: serialized,
       nodeIconMappings: nodeIconMappings,
     };
+
+    // Log export data to verify maxzoom is included
+    console.log(
+      "[saveLayers] Export data layers:",
+      exportData.layers.map((l) => ({
+        id: l.id,
+        name: l.name,
+        minzoom: l.minzoom,
+        maxzoom: l.maxzoom,
+      }))
+    );
 
     // Create ZIP using JSZip
     const JSZip = (await import("jszip")).default;

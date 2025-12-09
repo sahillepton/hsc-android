@@ -53,8 +53,9 @@ import {
   formatDistance,
   fileToGeoJSON,
   fileToDEMRaster,
+  generateMeshFromElevation,
+  generateRandomColor,
 } from "@/lib/utils";
-import { generateMeshFromElevation } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
 import { Directory } from "@capacitor/filesystem";
 import { downloadAllLayers } from "@/components/app-sidebar/file-section";
@@ -508,11 +509,7 @@ const MapComponent = ({
           type: "FeatureCollection",
           features: validFeatures,
         },
-        color: [
-          Math.floor(Math.random() * 255),
-          Math.floor(Math.random() * 255),
-          Math.floor(Math.random() * 255),
-        ],
+        color: generateRandomColor(),
         pointRadius: extractedPointRadius ?? 5,
         lineWidth: extractedLineWidth ?? 5,
         visible: true,
@@ -2011,7 +2008,14 @@ const MapComponent = ({
       .filter(
         (layer) =>
           !(layer.type === "point" && layer.name?.startsWith("Polygon Point"))
-      );
+      )
+      .filter((layer) => {
+        const minZoomCheck =
+          layer.minzoom === undefined || mapZoom >= layer.minzoom;
+        const maxZoomCheck =
+          layer.maxzoom === undefined || mapZoom <= layer.maxzoom;
+        return minZoomCheck && maxZoomCheck;
+      });
     const pointLayers = visibleLayers.filter((l) => l.type === "point");
     const lineLayers = visibleLayers.filter(
       (l) => l.type === "line" && !(l.name || "").includes("Connection")
@@ -2095,6 +2099,7 @@ const MapComponent = ({
               bounds: bounds,
               pickable: true,
               visible: layer.visible !== false,
+              minZoom: layer.minzoom,
               onHover: handleLayerHover,
             })
           );
@@ -2838,6 +2843,7 @@ const MapComponent = ({
     udpLayers,
     userLocation,
     showUserLocation,
+    mapZoom,
   ]);
 
   return (
@@ -3062,7 +3068,7 @@ const MapComponent = ({
           bearing: 0,
         }}
         minZoom={0}
-        maxZoom={20}
+        maxZoom={12}
         maxPitch={85}
         onLoad={async (map: any) => {
           // Fit map to India's bounding box

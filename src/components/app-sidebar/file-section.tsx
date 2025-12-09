@@ -6,7 +6,11 @@ import { showMessage } from "@/lib/capacitor-utils";
 import { toast } from "@/lib/toast";
 import { useLayers, useNodeIconMappings } from "@/store/layers-store";
 import { generateLayerId } from "@/lib/layers";
-import { fileToDEMRaster, fileToGeoJSON } from "@/lib/utils";
+import {
+  fileToDEMRaster,
+  fileToGeoJSON,
+  generateRandomColor,
+} from "@/lib/utils";
 import { Encoding, Filesystem, Directory } from "@capacitor/filesystem";
 import { FileDown, Loader2 } from "lucide-react";
 import { useState } from "react";
@@ -646,11 +650,7 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
           type: "FeatureCollection",
           features: validFeatures,
         },
-        color: [
-          Math.floor(Math.random() * 255),
-          Math.floor(Math.random() * 255),
-          Math.floor(Math.random() * 255),
-        ],
+        color: generateRandomColor(),
         pointRadius: extractedPointRadius ?? 5,
         lineWidth: extractedLineWidth ?? 5,
         visible: true,
@@ -1617,6 +1617,19 @@ export const downloadAllLayers = async (
   const zipFileName = `${folderName}.zip`;
 
   const toastId = toast.loading(`Exporting ${layers.length} layer(s)...`);
+
+  // Layers should already have zoom ranges calculated in the store
+  // Just log to verify
+  console.log("[downloadAllLayers] Processing", layers.length, "layers");
+  console.log(
+    "[downloadAllLayers] Layers zoom ranges:",
+    layers.map((l) => ({
+      id: l.id,
+      name: l.name,
+      minzoom: l.minzoom,
+      maxzoom: l.maxzoom,
+    }))
+  );
 
   // Import JSZip dynamically
   const JSZip = (await import("jszip")).default;

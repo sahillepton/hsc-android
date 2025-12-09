@@ -372,6 +372,24 @@ export function rgbToHex(
   return hex;
 }
 
+/**
+ * Generate a random RGB color from a predefined palette
+ * Colors: Red, Pink, Purple, Orange, Yellow
+ */
+export function generateRandomColor(): [number, number, number] {
+  const colors: [number, number, number][] = [
+    [255, 0, 0], // Red: #FF0000
+    [255, 192, 203], // Pink: #FFC0CB
+    [128, 0, 128], // Purple: #800080
+    [255, 165, 0], // Orange: #FFA500
+    [255, 255, 0], // Yellow: #FFFF00
+  ];
+
+  // Randomly select one of the predefined colors
+  const randomIndex = Math.floor(Math.random() * colors.length);
+  return colors[randomIndex];
+}
+
 export function hexToRgb(hex: string): [number, number, number] | null {
   hex = hex.replace(/^#/, "");
 

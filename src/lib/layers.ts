@@ -401,3 +401,157 @@ export const availableIcons = [
   "sam_site",
   "unknown_aircraft",
 ];
+
+/**
+ * Calculate the area covered by a layer's bounding box in square kilometers
+ */
+export const calculateLayerAreaSqKm = (layer: LayerProps): number | null => {
+  try {
+    let bbox: [number, number, number, number] | null = null;
+
+    if (layer.bounds) {
+      const [[minLng, minLat], [maxLng, maxLat]] = layer.bounds;
+      bbox = [minLng, minLat, maxLng, maxLat];
+    } else if (layer.type === "line" && layer.path && layer.path.length >= 2) {
+      const lngs = layer.path.map((p) => p[0]);
+      const lats = layer.path.map((p) => p[1]);
+      bbox = [
+        Math.min(...lngs),
+        Math.min(...lats),
+        Math.max(...lngs),
+        Math.max(...lats),
+      ];
+    } else if (
+      layer.type === "polygon" &&
+      layer.polygon &&
+      layer.polygon.length > 0 &&
+      layer.polygon[0]
+    ) {
+      const ring = layer.polygon[0];
+      const lngs = ring.map((p) => p[0]);
+      const lats = ring.map((p) => p[1]);
+      bbox = [
+        Math.min(...lngs),
+        Math.min(...lats),
+        Math.max(...lngs),
+        Math.max(...lats),
+      ];
+    } else if (layer.type === "geojson" && layer.geojson) {
+      bbox = turf.bbox(layer.geojson) as [number, number, number, number];
+    } else if (
+      layer.type === "azimuth" &&
+      layer.azimuthCenter &&
+      layer.azimuthTarget
+    ) {
+      const points = [layer.azimuthCenter, layer.azimuthTarget];
+      const lngs = points.map((p) => p[0]);
+      const lats = points.map((p) => p[1]);
+      bbox = [
+        Math.min(...lngs),
+        Math.min(...lats),
+        Math.max(...lngs),
+        Math.max(...lats),
+      ];
+    } else if (
+      layer.type === "nodes" &&
+      layer.nodes &&
+      layer.nodes.length > 0
+    ) {
+      const lngs = layer.nodes.map((n) => n.longitude);
+      const lats = layer.nodes.map((n) => n.latitude);
+      bbox = [
+        Math.min(...lngs),
+        Math.min(...lats),
+        Math.max(...lngs),
+        Math.max(...lats),
+      ];
+    } else if (
+      layer.type === "annotation" &&
+      layer.annotations &&
+      layer.annotations.length > 0
+    ) {
+      const lngs = layer.annotations.map((a) => a.position[0]);
+      const lats = layer.annotations.map((a) => a.position[1]);
+      bbox = [
+        Math.min(...lngs),
+        Math.min(...lats),
+        Math.max(...lngs),
+        Math.max(...lats),
+      ];
+    }
+
+    if (!bbox) return null;
+
+    // Create a polygon from bbox to calculate area
+    const bboxPolygon = turf.bboxPolygon(bbox);
+    const areaSqM = turf.area(bboxPolygon);
+    const areaSqKm = areaSqM / 1000000; // Convert from square meters to square kilometers
+
+    return areaSqKm;
+  } catch (error) {
+    console.error("Error calculating layer area:", error);
+    return null;
+  }
+};
+
+/**
+ * Compute the zoom range based on the area covered by a layer
+ * > 200 km²: minZoom = 1, maxZoom = 5 (very large area → show early)
+ * 20–200 km²: minZoom = 4, maxZoom = 9 (medium features)
+ * 1–20 km²: minZoom = 7, maxZoom = 11 (small features)
+ * < 1 km²: minZoom = 10, maxZoom = 12 (very small area → show close up)
+ */
+export const computeZoomRange = (areaSqKm: number) => {
+  console.log("[computeZoomRange] areaSqKm:", areaSqKm);
+  let result;
+  if (areaSqKm > 200) {
+    result = { minZoom: 3, maxZoom: 15 };
+  } else {
+    result = { minZoom: 9, maxZoom: 15 };
+  }
+  console.log("[computeZoomRange] result:", result);
+  return result;
+};
+
+/**
+ * Calculate and return the zoom range (minZoom and maxZoom) for a layer based on its area
+ * Returns undefined if calculation fails or for point layers
+ */
+export const calculateLayerZoomRange = (
+  layer: LayerProps
+): { minZoom: number; maxZoom: number } | undefined => {
+  console.log(
+    "[calculateLayerZoomRange] layer:",
+    layer.id,
+    layer.type,
+    layer.name
+  );
+  // Skip point layers
+  if (layer.type === "point") {
+    console.log("[calculateLayerZoomRange] Skipping point layer");
+    return undefined;
+  }
+
+  const areaSqKm = calculateLayerAreaSqKm(layer);
+  console.log("[calculateLayerZoomRange] areaSqKm:", areaSqKm);
+  if (areaSqKm === null || areaSqKm <= 0) {
+    console.log("[calculateLayerZoomRange] Invalid area, returning undefined");
+    return undefined;
+  }
+
+  const result = computeZoomRange(areaSqKm);
+  console.log("[calculateLayerZoomRange] returning:", result);
+  return result;
+};
+
+/**
+ * Calculate and return the minzoom for a layer based on its area
+ * Returns undefined if calculation fails or for point layers
+ * @deprecated Use calculateLayerZoomRange instead
+ */
+export const calculateLayerMinZoom = (
+  layer: LayerProps
+): number | undefined => {
+  const zoomRange = calculateLayerZoomRange(layer);
+  return zoomRange?.minZoom;
+};

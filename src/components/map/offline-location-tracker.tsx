@@ -5,22 +5,22 @@ import { Geolocation } from "@capacitor/geolocation";
 export default function OfflineLocationTracker() {
   const { showUserLocation, setUserLocation, setUserLocationError } =
     useUserLocation();
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const watchIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     // Only track location when user has toggled it on
     if (!showUserLocation) {
-      // Clear any existing interval if location is disabled
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
+      // Clear any existing watch if location is disabled
+      if (watchIdRef.current) {
+        Geolocation.clearWatch({ id: watchIdRef.current });
+        watchIdRef.current = null;
       }
       return;
     }
 
     let isMounted = true;
 
-    const getLocation = async () => {
+    const startWatching = async () => {
       try {
         const permission = await Geolocation.requestPermissions();
 
@@ -29,42 +29,50 @@ export default function OfflineLocationTracker() {
           return;
         }
 
-        const position = await Geolocation.getCurrentPosition({
-          enableHighAccuracy: true,
-          timeout: 30000, // 30 seconds - increased for tablets/GPS devices
-        });
-
         if (!isMounted) return;
 
-        const location = {
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-          accuracy: position.coords.accuracy || 0,
-        };
-        setUserLocation(location);
-        setUserLocationError(null);
+        const watchId = await Geolocation.watchPosition(
+          { enableHighAccuracy: true },
+          (pos, err) => {
+            if (!isMounted) return;
+
+            if (err) {
+              setUserLocationError(err.message);
+              return;
+            }
+
+            if (pos) {
+              const location = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                accuracy: pos.coords.accuracy || 0,
+              };
+              console.log("User location updated:", location);
+              setUserLocation(location);
+              setUserLocationError(null);
+            }
+          }
+        );
+
+        if (isMounted) {
+          watchIdRef.current = watchId;
+        }
       } catch (error: any) {
         if (!isMounted) return;
         console.error("Geolocation error:", error);
-        setUserLocationError(error.message || "Failed to get location");
+        setUserLocationError(
+          error.message || "Failed to start location tracking"
+        );
       }
     };
 
-    // Get location immediately when toggled on
-    getLocation();
-
-    // Then poll every 30 seconds for updates
-    intervalRef.current = setInterval(() => {
-      if (isMounted && showUserLocation) {
-        getLocation();
-      }
-    }, 30000); // 30 seconds
+    startWatching();
 
     return () => {
       isMounted = false;
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
+      if (watchIdRef.current) {
+        Geolocation.clearWatch({ id: watchIdRef.current });
+        watchIdRef.current = null;
       }
     };
   }, [showUserLocation, setUserLocation, setUserLocationError]);

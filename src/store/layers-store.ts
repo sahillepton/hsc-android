@@ -1,7 +1,7 @@
 import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
-import { computeLayerBounds } from "@/lib/layers";
+import { computeLayerBounds, calculateLayerZoomRange } from "@/lib/layers";
 import { saveLayers, saveNodeIconMappings } from "@/lib/autosave";
 
 interface LayerState {
@@ -100,7 +100,40 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   },
   addLayer: (layer) => {
     set((state) => {
-      const newLayers = [...state.layers, layer];
+      // Calculate zoom range before saving if not already set (skip point layers)
+      let layerWithZoomRange = { ...layer };
+      if (layer.type !== "point") {
+        // If minzoom is not set, calculate both minzoom and maxzoom
+        if (layer.minzoom === undefined) {
+          const zoomRange = calculateLayerZoomRange(layer);
+          if (zoomRange !== undefined) {
+            layerWithZoomRange.minzoom = zoomRange.minZoom;
+            layerWithZoomRange.maxzoom = zoomRange.maxZoom;
+            console.log(
+              "[store] addLayer: Calculated zoom range for",
+              layer.id,
+              "minzoom:",
+              zoomRange.minZoom,
+              "maxzoom:",
+              zoomRange.maxZoom
+            );
+          }
+        }
+        // If minzoom is set but maxzoom is not, calculate maxzoom
+        else if (layer.maxzoom === undefined) {
+          const zoomRange = calculateLayerZoomRange(layer);
+          if (zoomRange !== undefined) {
+            layerWithZoomRange.maxzoom = zoomRange.maxZoom;
+            console.log(
+              "[store] addLayer: Calculated maxzoom for",
+              layer.id,
+              "maxzoom:",
+              zoomRange.maxZoom
+            );
+          }
+        }
+      }
+      const newLayers = [...state.layers, layerWithZoomRange];
       triggerAutosave(newLayers, state.nodeIconMappings);
       return { layers: newLayers };
     });
@@ -149,14 +182,52 @@ const useLayerStore = create<LayerState>()((set, get) => ({
           const newColor = updatedLayer.color
             ? ([...updatedLayer.color] as typeof updatedLayer.color)
             : updatedLayer.color;
+
+          // Calculate zoom range if needed (skip point layers)
+          let finalLayer = { ...updatedLayer };
+          if (updatedLayer.type !== "point") {
+            // If minzoom is not set, calculate both minzoom and maxzoom
+            if (updatedLayer.minzoom === undefined) {
+              const zoomRange = calculateLayerZoomRange(updatedLayer);
+              if (zoomRange !== undefined) {
+                finalLayer.minzoom = zoomRange.minZoom;
+                finalLayer.maxzoom = zoomRange.maxZoom;
+                console.log(
+                  "[store] updateLayer: Calculated zoom range for",
+                  layerId,
+                  "minzoom:",
+                  zoomRange.minZoom,
+                  "maxzoom:",
+                  zoomRange.maxZoom
+                );
+              }
+            }
+            // If minzoom is set but maxzoom is not, calculate maxzoom
+            else if (updatedLayer.maxzoom === undefined) {
+              const zoomRange = calculateLayerZoomRange(updatedLayer);
+              if (zoomRange !== undefined) {
+                finalLayer.maxzoom = zoomRange.maxZoom;
+                console.log(
+                  "[store] updateLayer: Calculated maxzoom for",
+                  layerId,
+                  "maxzoom:",
+                  zoomRange.maxZoom
+                );
+              }
+            }
+          }
+
           // Create a completely new layer object to ensure React/deck.gl detects the change
           return {
-            ...updatedLayer,
+            ...finalLayer,
             color: newColor,
             // Explicitly include geometry properties to ensure they're updated
-            radius: updatedLayer.radius,
-            pointRadius: updatedLayer.pointRadius,
-            lineWidth: updatedLayer.lineWidth,
+            radius: finalLayer.radius,
+            pointRadius: finalLayer.pointRadius,
+            lineWidth: finalLayer.lineWidth,
+            // Explicitly include zoom properties
+            minzoom: finalLayer.minzoom,
+            maxzoom: finalLayer.maxzoom,
           };
         }
         return layer;
