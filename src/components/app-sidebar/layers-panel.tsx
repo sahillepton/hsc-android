@@ -1,27 +1,17 @@
 import { useEffect, useState } from "react";
-import {
-  ChevronDown,
-  ChevronRight,
-  EyeIcon,
-  EyeOffIcon,
-  LocateFixed,
-  Settings2,
-  ArrowUp,
-} from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   SidebarGroup,
   SidebarGroupLabel,
   SidebarGroupContent,
 } from "../ui/sidebar";
-import { Button } from "../ui/button";
 import {
   useLayers,
   useFocusLayerRequest,
   useHoverInfo,
 } from "@/store/layers-store";
-import LayerPopover from "./layer-popover";
 import { isSketchLayer } from "@/lib/sketch-layers";
-import { calculateLayerZoomRange } from "@/lib/layers";
+import LayersList from "./layers-list";
 
 type LayersPanelProps = {
   isOpen: boolean;
@@ -88,22 +78,6 @@ const LayersPanel = ({
     }
   };
 
-  const formatDate = (timestamp?: number) => {
-    if (!timestamp) return null;
-    try {
-      const date = new Date(timestamp);
-      return date.toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      return null;
-    }
-  };
-
   const handleToggleVisibility = (layerId: string, visible: boolean) => {
     const layer = layers.find((l) => l.id === layerId);
     if (!layer) return;
@@ -141,186 +115,21 @@ const LayersPanel = ({
     }
   };
 
-  const renderList = () => {
-    if (nonSketchLayers.length === 0) {
-      return (
-        <div className="text-center text-sm text-muted-foreground py-3">
-          No Layer Present
-        </div>
-      );
-    }
-
-    return (
-      <div className="space-y-3">
-        {enableSelection && nonSketchLayers.length > 0 && (
-          <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-[2] bg-white">
-            <label className="flex items-center gap-2 font-medium text-foreground">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded -mt-0.5 border-border"
-                checked={
-                  selectedIds.length > 0 &&
-                  selectedIds.length === nonSketchLayers.length
-                }
-                onChange={toggleSelectAll}
-              />
-              <span>Select All</span>
-            </label>
-            <Button
-              variant="destructive"
-              style={{ zoom: 0.8 }}
-              disabled={!selectedIds.length}
-              onClick={handleBulkDelete}
-              className="p-2 font-[600]"
-            >
-              Delete ({selectedIds.length || 0})
-            </Button>
-          </div>
-        )}
-        <div className="grid gap-3 text-xs">
-          {nonSketchLayers
-            .sort((a, b) => {
-              // Sort by uploadedAt/createdAt timestamp (newest first)
-              const aTime = (a as any).uploadedAt || (a as any).createdAt || 0;
-              const bTime = (b as any).uploadedAt || (b as any).createdAt || 0;
-              return bTime - aTime; // Descending order (newest first)
-            })
-            .map((layer) => {
-              const isSelected = selectedIds.includes(layer.id);
-              const uploadedDate = formatDate(
-                (layer as any).uploadedAt || (layer as any).createdAt
-              );
-
-              return (
-                <div
-                  key={layer.id}
-                  className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
-                >
-                  <div className="absolute right-3 top-3 flex items-center gap-1">
-                    {/* Don't show bring to top for raster layers (DEM) */}
-                    {layer.type !== "dem" && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title={`Bring to top: ${layer.name}`}
-                        onClick={() => bringLayerToTop(layer.id)}
-                      >
-                        <ArrowUp size={10} />
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      title={`Focus layer: ${layer.name}`}
-                      onClick={() => focusLayer(layer.id)}
-                    >
-                      <LocateFixed size={10} />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() =>
-                        handleToggleVisibility(
-                          layer.id,
-                          layer.visible === false
-                        )
-                      }
-                      title={
-                        layer.visible === false
-                          ? `Show layer: ${layer.name}`
-                          : `Hide layer: ${layer.name}`
-                      }
-                    >
-                      {layer.visible === true ? (
-                        <EyeIcon size={10} />
-                      ) : (
-                        <EyeOffIcon size={10} />
-                      )}
-                    </Button>
-                    <LayerPopover layer={layer} updateLayer={updateLayer}>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title={`Layer settings: ${layer.name}`}
-                      >
-                        <Settings2 size={10} />
-                      </Button>
-                    </LayerPopover>
-                  </div>
-
-                  <div className="min-w-0 pr-14">
-                    <div className="flex items-start gap-2">
-                      {enableSelection && (
-                        <input
-                          type="checkbox"
-                          className="mt-0.5 -ml-1 h-4 w-4 rounded border-border"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(layer.id)}
-                        />
-                      )}
-                      <div className="flex items-center gap-2">
-                        <div className="text-sm font-semibold text-foreground">
-                          {layer.name}
-                        </div>
-                        <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 bg-slate-100">
-                          {layer.type}
-                        </span>
-                      </div>
-                    </div>
-                    {uploadedDate && (
-                      <div className="text-[10px] text-muted-foreground mt-1">
-                        Uploaded: {uploadedDate}
-                      </div>
-                    )}
-                    {(() => {
-                      // Calculate zoom range if not set (for display only, not saved until user saves)
-                      const displayZoomRange =
-                        layer.minzoom !== undefined ||
-                        layer.maxzoom !== undefined
-                          ? {
-                              minZoom: layer.minzoom,
-                              maxZoom: layer.maxzoom,
-                            }
-                          : layer.type !== "point"
-                          ? calculateLayerZoomRange(layer)
-                          : undefined;
-
-                      if (displayZoomRange) {
-                        const minZoom =
-                          displayZoomRange.minZoom ?? layer.minzoom;
-                        const maxZoom =
-                          displayZoomRange.maxZoom ?? layer.maxzoom;
-                        return (
-                          <div className="text-[10px] text-muted-foreground mt-1">
-                            Zoom:{" "}
-                            {minZoom !== undefined ? minZoom.toFixed(0) : "?"} -{" "}
-                            {maxZoom !== undefined ? maxZoom.toFixed(0) : "?"}
-                            {(layer.minzoom === undefined ||
-                              layer.maxzoom === undefined) && (
-                              <span className="text-[9px] text-muted-foreground/70 ml-1">
-                                (auto)
-                              </span>
-                            )}
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </div>
-                </div>
-              );
-            })}
-        </div>
-      </div>
-    );
-  };
-
   if (variant === "plain") {
-    return <div className="space-y-3">{renderList()}</div>;
+    return (
+      <LayersList
+        layers={nonSketchLayers}
+        enableSelection={enableSelection}
+        selectedIds={selectedIds}
+        onToggleSelect={toggleSelect}
+        onToggleSelectAll={toggleSelectAll}
+        onBulkDelete={handleBulkDelete}
+        onToggleVisibility={handleToggleVisibility}
+        onFocusLayer={focusLayer}
+        onBringToTop={bringLayerToTop}
+        onUpdateLayer={updateLayer}
+      />
+    );
   }
 
   return (
@@ -344,7 +153,18 @@ const LayersPanel = ({
           isOpen ? "block" : "hidden"
         } transition-all max-h-[200px] overflow-y-auto`}
       >
-        <div className="space-y-3">{renderList()}</div>
+        <LayersList
+          layers={nonSketchLayers}
+          enableSelection={enableSelection}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
+          onBulkDelete={handleBulkDelete}
+          onToggleVisibility={handleToggleVisibility}
+          onFocusLayer={focusLayer}
+          onBringToTop={bringLayerToTop}
+          onUpdateLayer={updateLayer}
+        />
       </SidebarGroupContent>
     </SidebarGroup>
   );
