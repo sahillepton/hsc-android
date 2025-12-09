@@ -114,7 +114,7 @@ export const downloadAndSaveFile = async (url: string, fileName: string) => {
       url: url,
       directory: Directory.Documents, // Save to Documents directory
     });
-    console.log("File downloaded to:", result.path);
+
     return result.path;
   } catch (error) {
     console.error("Error downloading file:", error);
@@ -135,7 +135,7 @@ export const saveFileToFilesystem = async (
       directory: storageDir,
       encoding: Encoding.UTF8,
     });
-    console.log("File saved to:", result.uri);
+
     return result.uri;
   } catch (error) {
     console.error("Error saving file:", error);
@@ -171,7 +171,6 @@ export const deleteFileFromFilesystem = async (
       path: fileName,
       directory: storageDir,
     });
-    console.log("File deleted:", fileName);
   } catch (error) {
     console.error("Error deleting file:", error);
     throw error;
@@ -462,8 +461,6 @@ export const showMessage = (message: string, isError: boolean = false) => {
   // Log to console
   if (isError) {
     console.error(message);
-  } else {
-    console.log(message);
   }
 
   // Show alert for now (you can replace with toast library later)

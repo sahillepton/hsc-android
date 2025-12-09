@@ -138,5 +138,5 @@ for (let i = 0; i < 250; i++) {
 
 // Write to file
 fs.writeFileSync('public/data.json', JSON.stringify(allBuffers, null, 2));
-console.log(`Generated ${allBuffers.length} buffers`);
+
 

@@ -424,15 +424,9 @@ export const loadAutosavedLayers = async () => {
   // Load the data into the store
   if (layers.length > 0) {
     useLayerStore.getState().setLayers(layers);
-    console.log(`Loaded ${layers.length} layer(s) on app startup`);
   }
   if (Object.keys(nodeIconMappings).length > 0) {
     useLayerStore.getState().setNodeIconMappings(nodeIconMappings);
-    console.log(
-      `Loaded ${
-        Object.keys(nodeIconMappings).length
-      } node icon mapping(s) on app startup`
-    );
   }
 
   return { layers, nodeIconMappings };

@@ -3,7 +3,292 @@ import { twMerge } from "tailwind-merge";
 import * as turf from "@turf/turf";
 import Papa from "papaparse";
 import shp from "shpjs";
+import proj4 from "proj4";
 // geotiff is optional; we will dynamic import when needed
+
+// --- LCC projection helpers ---
+type LCCProjectionParams = {
+  standardParallel1: number;
+  standardParallel2: number;
+  centralMeridian: number;
+  latitudeOfOrigin: number;
+  falseEasting?: number;
+  falseNorthing?: number;
+  datum?: string;
+  units?: "m" | "ft" | "us-ft";
+};
+
+const detectLCCProjection = (
+  projectionString: string | undefined | null
+): LCCProjectionParams | null => {
+  if (!projectionString) return null;
+  const upper = projectionString.toUpperCase();
+  const isLcc =
+    upper.includes("LAMBERT_CONFORMAL_CONIC") ||
+    upper.includes("LAMBERT CONFORMAL CONIC") ||
+    upper.includes("LAMBERT_CONFORMAL_CONIC_2SP") ||
+    upper.includes("+PROJ=LCC") ||
+    (upper.includes("PROJCS") && upper.includes("LAMBERT"));
+  if (!isLcc) return null;
+
+  const stdPar1Match = projectionString.match(
+    /standard_parallel_1["\s]*([\d.+-]+)/i
+  );
+  const stdPar2Match = projectionString.match(
+    /standard_parallel_2["\s]*([\d.+-]+)/i
+  );
+  const centralMeridianMatch = projectionString.match(
+    /central_meridian["\s]*([\d.+-]+)/i
+  );
+  const latOriginMatch = projectionString.match(
+    /latitude_of_origin["\s]*([\d.+-]+)/i
+  );
+  const falseEastingMatch = projectionString.match(
+    /false_easting["\s]*([\d.+-]+)/i
+  );
+  const falseNorthingMatch = projectionString.match(
+    /false_northing["\s]*([\d.+-]+)/i
+  );
+
+  let datum = "WGS84";
+  const geogcsMatch = projectionString.match(
+    /GEOGCS\["[^"]*",\s*DATUM\["([^"]+)"/i
+  );
+  if (geogcsMatch) {
+    const d = geogcsMatch[1].toUpperCase();
+    if (d.includes("NAD83")) datum = "NAD83";
+  }
+
+  if (stdPar1Match && stdPar2Match && centralMeridianMatch && latOriginMatch) {
+    return {
+      standardParallel1: parseFloat(stdPar1Match[1]),
+      standardParallel2: parseFloat(stdPar2Match[1]),
+      centralMeridian: parseFloat(centralMeridianMatch[1]),
+      latitudeOfOrigin: parseFloat(latOriginMatch[1]),
+      falseEasting: falseEastingMatch ? parseFloat(falseEastingMatch[1]) : 0,
+      falseNorthing: falseNorthingMatch ? parseFloat(falseNorthingMatch[1]) : 0,
+      datum,
+    };
+  }
+
+  // Try PROJ.4 style
+  const pLat1 = projectionString.match(/\+lat_1=([\d.+-]+)/i);
+  const pLat2 = projectionString.match(/\+lat_2=([\d.+-]+)/i);
+  const pLon0 = projectionString.match(/\+lon_0=([\d.+-]+)/i);
+  const pLat0 = projectionString.match(/\+lat_0=([\d.+-]+)/i);
+  const pX0 = projectionString.match(/\+x_0=([\d.+-]+)/i);
+  const pY0 = projectionString.match(/\+y_0=([\d.+-]+)/i);
+  const pDatum = projectionString.match(/\+datum=([a-zA-Z0-9_]+)/i);
+  if (pLat1 && pLat2 && pLon0 && pLat0) {
+    return {
+      standardParallel1: parseFloat(pLat1[1]),
+      standardParallel2: parseFloat(pLat2[1]),
+      centralMeridian: parseFloat(pLon0[1]),
+      latitudeOfOrigin: parseFloat(pLat0[1]),
+      falseEasting: pX0 ? parseFloat(pX0[1]) : 0,
+      falseNorthing: pY0 ? parseFloat(pY0[1]) : 0,
+      datum: pDatum ? pDatum[1].toUpperCase() : datum,
+    };
+  }
+
+  return null;
+};
+
+// Detect LCC from GeoTIFF geoKeys (ProjCoordTransGeoKey + parameter keys)
+const detectLCCFromGeoKeys = (image: any): LCCProjectionParams | null => {
+  if (!image || typeof image.getGeoKeys !== "function") return null;
+  const geoKeys = image.getGeoKeys?.();
+  if (!geoKeys) return null;
+
+  // GeoTIFF constants: 8 = CT_LambertConfConic_2SP, 9 = CT_LambertConfConic_1SP
+  const trans = geoKeys.ProjCoordTransGeoKey;
+  const hasLambertCitation =
+    (typeof geoKeys.GTCitationGeoKey === "string" &&
+      geoKeys.GTCitationGeoKey.toLowerCase().includes("lambert")) ||
+    (typeof geoKeys.PCSCitationGeoKey === "string" &&
+      geoKeys.PCSCitationGeoKey.toLowerCase().includes("lambert"));
+
+  const stdPar1Raw =
+    geoKeys.ProjStdParallel1GeoKey ??
+    geoKeys.StdParallel1 ??
+    geoKeys.StandardParallel1 ??
+    null;
+  const stdPar2Raw =
+    geoKeys.ProjStdParallel2GeoKey ??
+    geoKeys.StdParallel2 ??
+    geoKeys.StandardParallel2 ??
+    null;
+  const lon0Raw =
+    geoKeys.ProjNatOriginLongGeoKey ??
+    geoKeys.LongitudeOfOrigin ??
+    geoKeys.ProjFalseOriginLongGeoKey ??
+    null;
+  const lat0Raw =
+    geoKeys.ProjNatOriginLatGeoKey ??
+    geoKeys.LatitudeOfOrigin ??
+    geoKeys.ProjFalseOriginLatGeoKey ??
+    null;
+
+  const isLcc =
+    trans === 8 ||
+    trans === 9 ||
+    hasLambertCitation ||
+    (stdPar1Raw !== null &&
+      stdPar2Raw !== null &&
+      lon0Raw !== null &&
+      lat0Raw !== null);
+
+  if (!isLcc) return null;
+
+  const stdPar1 = stdPar1Raw;
+  const stdPar2 = stdPar2Raw;
+  const lon0 = lon0Raw;
+  const lat0 = lat0Raw;
+  const falseEasting =
+    geoKeys.ProjFalseEastingGeoKey ??
+    geoKeys.FalseEasting ??
+    geoKeys.ProjFalseOriginEastingGeoKey ??
+    0;
+  const falseNorthing =
+    geoKeys.ProjFalseNorthingGeoKey ??
+    geoKeys.FalseNorthing ??
+    geoKeys.ProjFalseOriginNorthingGeoKey ??
+    0;
+
+  // Units: 9001=m, 9002=ft, 9003=us-ft
+  let units: "m" | "ft" | "us-ft" = "m";
+  const projLinearUnits = geoKeys.ProjLinearUnitsGeoKey;
+  if (projLinearUnits === 9002) units = "ft";
+  if (projLinearUnits === 9003) units = "us-ft";
+
+  if (stdPar1 === null || stdPar2 === null || lon0 === null || lat0 === null) {
+    return null;
+  }
+
+  return {
+    standardParallel1: Number(stdPar1),
+    standardParallel2: Number(stdPar2),
+    centralMeridian: Number(lon0),
+    latitudeOfOrigin: Number(lat0),
+    falseEasting: Number(falseEasting) || 0,
+    falseNorthing: Number(falseNorthing) || 0,
+    datum: "WGS84",
+    units,
+  };
+};
+
+const convertLCCToWGS84 = (
+  x: number,
+  y: number,
+  lcc: LCCProjectionParams
+): [number, number] => {
+  const units = lcc.units || "m";
+  const def = `+proj=lcc +lat_1=${lcc.standardParallel1} +lat_2=${
+    lcc.standardParallel2
+  } +lon_0=${lcc.centralMeridian} +lat_0=${lcc.latitudeOfOrigin} +x_0=${
+    lcc.falseEasting || 0
+  } +y_0=${lcc.falseNorthing || 0} +datum=${lcc.datum || "WGS84"} +units=${
+    units === "us-ft" ? "us-ft" : units
+  } +no_defs`;
+  proj4.defs("LCC_SRC", def);
+  const [lng, lat] = proj4("LCC_SRC", "EPSG:4326", [x, y]);
+  return [lng, lat];
+};
+
+const convertGeoJSONCoordinates = (
+  coords: any,
+  lcc: LCCProjectionParams
+): any => {
+  if (Array.isArray(coords)) {
+    if (
+      coords.length >= 2 &&
+      typeof coords[0] === "number" &&
+      typeof coords[1] === "number"
+    ) {
+      const [lng, lat] = convertLCCToWGS84(coords[0], coords[1], lcc);
+      return [lng, lat, ...coords.slice(2)];
+    }
+    return coords.map((c) => convertGeoJSONCoordinates(c, lcc));
+  }
+  return coords;
+};
+
+const convertGeoJSONFromLCC = (
+  fc: GeoJSON.FeatureCollection,
+  lcc: LCCProjectionParams
+): GeoJSON.FeatureCollection => ({
+  ...fc,
+  features: fc.features.map((f) => {
+    if (f.geometry.type === "GeometryCollection") {
+      return f; // skip GeometryCollection to avoid type issues
+    }
+    return {
+      ...f,
+      geometry: {
+        ...f.geometry,
+        coordinates: convertGeoJSONCoordinates(
+          (f.geometry as any).coordinates,
+          lcc
+        ),
+      },
+    };
+  }),
+});
+
+// Minimal WKT parser for basic geometry types
+const parseWKTGeometry = (wkt: string): GeoJSON.Geometry | null => {
+  if (!wkt) return null;
+  const trimmed = wkt.trim();
+  const point = trimmed.match(/^POINT\s*\(\s*([-\d.+]+)\s+([-\d.+]+)\s*\)/i);
+  if (point) {
+    return {
+      type: "Point",
+      coordinates: [parseFloat(point[1]), parseFloat(point[2])],
+    };
+  }
+  const linestring = trimmed.match(/^LINESTRING\s*\((.+)\)/i);
+  if (linestring) {
+    const coords = linestring[1]
+      .split(",")
+      .map((p) => p.trim().split(/\s+/).map(Number))
+      .filter((c) => c.length >= 2) as [number, number][];
+    if (coords.length >= 2)
+      return {
+        type: "LineString",
+        coordinates: coords,
+      };
+  }
+  const polygon = trimmed.match(/^POLYGON\s*\(\((.+)\)\)/i);
+  if (polygon) {
+    const ring = polygon[1]
+      .split(",")
+      .map((p) => p.trim().split(/\s+/).map(Number))
+      .filter((c) => c.length >= 2) as [number, number][];
+    if (ring.length >= 3)
+      return {
+        type: "Polygon",
+        coordinates: [ring],
+      };
+  }
+  return null;
+};
+
+const wktToGeoJSON = (text: string): GeoJSON.FeatureCollection => {
+  const geom = parseWKTGeometry(text);
+  if (!geom) {
+    throw new Error("Invalid or unsupported WKT geometry");
+  }
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: geom,
+        properties: {},
+      },
+    ],
+  };
+};
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -121,7 +406,6 @@ export function formatDistance(kilometers: number): string {
 }
 
 export function formatArea(squareMeters: number): string {
-  console.log(squareMeters);
   if (squareMeters < 10000) {
     return `${squareMeters.toFixed(1)} m²`;
   } else if (squareMeters < 1000000) {
@@ -447,12 +731,30 @@ export async function shpToGeoJSON(file: File) {
       );
     }
 
+    // If ZIP, attempt to read .prj for projection detection
+    let prjContent: string | null = null;
+    if (isZip) {
+      try {
+        const JSZip = (await import("jszip")).default;
+        const zip = await JSZip.loadAsync(arrayBuffer);
+        const prjName = Object.keys(zip.files).find((n) =>
+          n.toLowerCase().endsWith(".prj")
+        );
+        if (prjName) {
+          prjContent = await zip.files[prjName].async("string");
+        }
+      } catch {
+        // ignore prj read errors
+      }
+    }
+
     const geojson = await shp(arrayBuffer);
 
     // Ensure we return a FeatureCollection
     // shpjs can return FeatureCollection, Feature[], or Feature
+    let featureCollection: GeoJSON.FeatureCollection | null = null;
     if (Array.isArray(geojson)) {
-      return {
+      featureCollection = {
         type: "FeatureCollection",
         features: geojson.map((f: any) => ({
           type: "Feature",
@@ -465,7 +767,7 @@ export async function shpToGeoJSON(file: File) {
     if (typeof geojson === "object" && geojson !== null && "type" in geojson) {
       const typedGeojson = geojson as any;
       if (typedGeojson.type === "FeatureCollection") {
-        return {
+        featureCollection = {
           type: "FeatureCollection",
           features: (typedGeojson.features || []).map((f: any) => ({
             type: "Feature",
@@ -474,7 +776,7 @@ export async function shpToGeoJSON(file: File) {
           })),
         } as GeoJSON.FeatureCollection;
       } else if (typedGeojson.type === "Feature") {
-        return {
+        featureCollection = {
           type: "FeatureCollection",
           features: [
             {
@@ -488,10 +790,20 @@ export async function shpToGeoJSON(file: File) {
     }
 
     // Fallback: try to convert whatever we got
-    return {
-      type: "FeatureCollection",
-      features: [],
-    } as GeoJSON.FeatureCollection;
+    if (!featureCollection) {
+      featureCollection = {
+        type: "FeatureCollection",
+        features: [],
+      } as GeoJSON.FeatureCollection;
+    }
+
+    // Reproject if LCC detected from PRJ
+    const lccParams = detectLCCProjection(prjContent);
+    if (lccParams) {
+      return convertGeoJSONFromLCC(featureCollection, lccParams);
+    }
+
+    return featureCollection;
   } catch (error) {
     if (error instanceof Error) {
       // Provide more helpful error messages
@@ -784,7 +1096,18 @@ export async function fileToGeoJSON(file: File) {
 
   if (ext === "geojson" || ext === "json") {
     const text = await file.text();
-    return JSON.parse(text);
+    const geojson = JSON.parse(text);
+
+    // Detect LCC via crs/projection metadata
+    const crsString =
+      (geojson?.crs && geojson.crs.properties?.name) ||
+      geojson?.properties?.projection ||
+      geojson?.properties?.crs;
+    const lccParams = detectLCCProjection(crsString);
+    if (lccParams && geojson.type === "FeatureCollection") {
+      return convertGeoJSONFromLCC(geojson, lccParams);
+    }
+    return geojson;
   }
 
   if (ext === "gpx") {
@@ -801,8 +1124,20 @@ export async function fileToGeoJSON(file: File) {
     return await kmzToGeoJSON(file);
   }
 
+  if (ext === "wkt") {
+    const text = await file.text();
+    return wktToGeoJSON(text);
+  }
+
+  if (ext === "prj") {
+    // PRJ alone has no geometry; reject with a clear message
+    throw new Error(
+      "This file is a projection definition (.prj) without geometry. Upload it together with the geometry data (e.g., shapefile set or GeoJSON)."
+    );
+  }
+
   throw new Error(
-    `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, Shapefile, GPX, KML`
+    `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, Shapefile, GPX, KML, WKT`
   );
 }
 
@@ -928,8 +1263,6 @@ async function parseHGTFile(file: File): Promise<DemRasterResult> {
   }
   ctx.putImageData(imgData, 0, 0);
 
-  console.log(elevationData, "elevationData");
-
   // Return bounds as [minLng, minLat, maxLng, maxLat]
   return {
     canvas,
@@ -1046,82 +1379,183 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
 
   // Try to get bounding box using different methods
   let bounds: [number, number, number, number];
+  let lccParams: LCCProjectionParams | null = null;
 
-  try {
-    // Try getBoundingBox first (for properly georeferenced GeoTIFFs)
-    const bbox = image.getBoundingBox();
-    if (bbox && bbox.length === 4 && bbox.every((v) => Number.isFinite(v))) {
-      bounds = bbox as [number, number, number, number];
-    } else {
-      throw new Error("No valid bounding box");
-    }
-  } catch (error) {
-    // If getBoundingBox fails, try to extract from file directory tags
+  // 1) Prefer origin + resolution (more explicit than bbox)
+  const origin = image.getOrigin?.();
+  const resolution = image.getResolution?.();
+  const debugInfo: any = {};
+
+  if (
+    origin &&
+    resolution &&
+    origin.length >= 2 &&
+    resolution.length >= 2 &&
+    origin.every((v: any) => Number.isFinite(v)) &&
+    resolution.every((v: any) => Number.isFinite(v))
+  ) {
+    const [originX, originY] = origin;
+    const [resX, resY] = resolution;
+    const minX = originX;
+    const maxX = originX + width * resX;
+    const maxY = originY;
+    const minY = originY + height * resY;
+    bounds = [
+      Math.min(minX, maxX),
+      Math.min(minY, maxY),
+      Math.max(minX, maxX),
+      Math.max(minY, maxY),
+    ];
+    debugInfo.source = "origin+resolution";
+    debugInfo.origin = origin;
+    debugInfo.resolution = resolution;
+    debugInfo.boundsRaw = [minX, minY, maxX, maxY];
+  } else {
     try {
-      const fileDirectory = image.fileDirectory;
-      const modelPixelScaleTag = fileDirectory.ModelPixelScaleTag;
-      const modelTiepointTag = fileDirectory.ModelTiepointTag;
-      //  const geoAsciiParamsTag = fileDirectory.GeoAsciiParamsTag;
-
-      if (
-        modelTiepointTag &&
-        modelPixelScaleTag &&
-        modelTiepointTag.length >= 6
-      ) {
-        // Use ModelTiepointTag and ModelPixelScaleTag for georeferencing
-        // Format: [I, J, K, X, Y, Z] where I,J,K are pixel coordinates and X,Y,Z are world coordinates
-        const [tieI, tieJ, worldX, worldY] = modelTiepointTag;
-        const [scaleX, scaleY] = modelPixelScaleTag;
-
-        // Calculate bounds from tiepoint and pixel scale
-        // The tiepoint represents the world coordinates at pixel (I, J)
-        const pixelX = tieI;
-        const pixelY = tieJ;
-        const worldOriginX = worldX;
-        const worldOriginY = worldY;
-
-        // Calculate the world coordinates at the corners
-        const minX = worldOriginX - pixelX * scaleX;
-        const maxX = worldOriginX + (width - pixelX) * scaleX;
-        // Note: Y axis might be inverted depending on the file
-        const minY = worldOriginY - (height - pixelY) * Math.abs(scaleY);
-        const maxY = worldOriginY + pixelY * Math.abs(scaleY);
-
-        bounds = [minX, minY, maxX, maxY];
-      } else if (
-        fileDirectory.GeoTransformationMatrix &&
-        fileDirectory.GeoTransformationMatrix.length === 16
-      ) {
-        // Use GeoTransformationMatrix (4x4 matrix)
-        const matrix = fileDirectory.GeoTransformationMatrix;
-        // Extract translation and scale from matrix
-        const originX = matrix[12]; // Translation X
-        const originY = matrix[13]; // Translation Y
-        const scaleX = matrix[0]; // Scale X
-        const scaleY = matrix[5]; // Scale Y
-
-        const minX = originX;
-        const maxX = originX + width * scaleX;
-        const minY = originY;
-        const maxY = originY + height * Math.abs(scaleY);
-
-        bounds = [minX, minY, maxX, maxY];
+      // 2) Try getBoundingBox (already applies tiepoints/resolution)
+      const bbox = image.getBoundingBox();
+      if (bbox && bbox.length === 4 && bbox.every((v) => Number.isFinite(v))) {
+        bounds = bbox as [number, number, number, number];
+        debugInfo.source = "getBoundingBox";
+        debugInfo.boundsRaw = bbox;
       } else {
-        throw new Error("No georeferencing tags found");
+        throw new Error("No valid bounding box");
       }
-    } catch (error2) {
-      // If no georeferencing is found, use default bounds (India - can be adjusted by user)
-      // Default to India bounds: [minLng, minLat, maxLng, maxLat]
-      const defaultBounds: [number, number, number, number] = [
-        68.0, 6.0, 97.0, 37.0,
-      ];
-      bounds = defaultBounds;
+    } catch (error) {
+      // 3) Fallback to raw tags
+      try {
+        const fileDirectory = image.fileDirectory;
+        const modelPixelScaleTag = fileDirectory.ModelPixelScaleTag;
+        const modelTiepointTag = fileDirectory.ModelTiepointTag;
+        const geoAsciiParamsTag = fileDirectory.GeoAsciiParamsTag;
 
-      // Log a warning but don't throw - allow the DEM to be displayed
-      console.warn(
-        "GeoTIFF file does not contain georeferencing information. Using default bounds (India). The DEM will be displayed but may not be correctly positioned. Please use a properly georeferenced GeoTIFF file for accurate positioning."
-      );
+        if (
+          modelTiepointTag &&
+          modelPixelScaleTag &&
+          modelTiepointTag.length >= 6
+        ) {
+          // GeoTIFF spec: tie point gives world coords of pixel (I,J,K)
+          const [tieI, tieJ, worldX, worldY] = modelTiepointTag;
+          const [scaleX, scaleY] = modelPixelScaleTag;
+
+          // Pixel (0,0) world coords
+          const originX = worldX - tieI * scaleX;
+          const originY = worldY - tieJ * scaleY;
+
+          const minX = originX;
+          const maxX = originX + width * scaleX;
+          const minY = originY;
+          const maxY = originY + height * scaleY;
+
+          bounds = [
+            Math.min(minX, maxX),
+            Math.min(minY, maxY),
+            Math.max(minX, maxX),
+            Math.max(minY, maxY),
+          ];
+          debugInfo.source = "ModelTiepoint+PixelScale";
+          debugInfo.tie = modelTiepointTag;
+          debugInfo.scale = modelPixelScaleTag;
+          debugInfo.boundsRaw = [minX, minY, maxX, maxY];
+        } else if (
+          fileDirectory.GeoTransformationMatrix &&
+          fileDirectory.GeoTransformationMatrix.length === 16
+        ) {
+          // GeoTransform: [ a0 a1 a2 ; b0 b1 b2 ] in row-major 4x4
+          const m = fileDirectory.GeoTransformationMatrix;
+          const originX = m[12];
+          const originY = m[13];
+          const scaleX = m[0];
+          const scaleY = m[5];
+
+          const minX = originX;
+          const maxX = originX + width * scaleX;
+          const minY = originY;
+          const maxY = originY + height * scaleY;
+
+          bounds = [
+            Math.min(minX, maxX),
+            Math.min(minY, maxY),
+            Math.max(minX, maxX),
+            Math.max(minY, maxY),
+          ];
+          debugInfo.source = "GeoTransformationMatrix";
+          debugInfo.matrix = fileDirectory.GeoTransformationMatrix;
+          debugInfo.boundsRaw = [minX, minY, maxX, maxY];
+        } else {
+          throw new Error("No georeferencing tags found");
+        }
+
+        // Detect LCC from GeoAsciiParams if present
+        if (geoAsciiParamsTag && typeof geoAsciiParamsTag === "string") {
+          lccParams = detectLCCProjection(geoAsciiParamsTag);
+        }
+      } catch (error2) {
+        // If no georeferencing is found, use default bounds (India - can be adjusted by user)
+        const defaultBounds: [number, number, number, number] = [
+          68.0, 6.0, 97.0, 37.0,
+        ];
+        bounds = defaultBounds;
+
+        console.warn(
+          "GeoTIFF file does not contain georeferencing information. Using default bounds (India). The DEM will be displayed but may not be correctly positioned. Please use a properly georeferenced GeoTIFF file for accurate positioning."
+        );
+      }
     }
+  }
+
+  // If LCC is detected (either from bounding-box path or tags), convert bounds to WGS84
+  if (!lccParams) {
+    // Try GeoKeys (Proj* keys) for LCC
+    lccParams = detectLCCFromGeoKeys(image);
+  }
+
+  if (!lccParams) {
+    const fileDirectory = image.fileDirectory;
+    const geoAsciiParamsTag = fileDirectory?.GeoAsciiParamsTag;
+    if (geoAsciiParamsTag && typeof geoAsciiParamsTag === "string") {
+      lccParams = detectLCCProjection(geoAsciiParamsTag);
+    }
+  }
+
+  if (lccParams) {
+    const [minX, minY, maxX, maxY] = bounds;
+    const c1 = convertLCCToWGS84(minX, minY, lccParams);
+    const c2 = convertLCCToWGS84(maxX, minY, lccParams);
+    const c3 = convertLCCToWGS84(minX, maxY, lccParams);
+    const c4 = convertLCCToWGS84(maxX, maxY, lccParams);
+    const lngs = [c1[0], c2[0], c3[0], c4[0]];
+    const lats = [c1[1], c2[1], c3[1], c4[1]];
+    bounds = [
+      Math.min(...lngs),
+      Math.min(...lats),
+      Math.max(...lngs),
+      Math.max(...lats),
+    ];
+    debugInfo.lcc = lccParams;
+    debugInfo.boundsReprojected = bounds;
+  }
+
+  // Emit a one-time debug log per raster to help diagnose positioning
+  try {
+    // Include geoKeys when LCC not detected to help diagnose projection tags
+    const geoKeys =
+      typeof image.getGeoKeys === "function" ? image.getGeoKeys() : undefined;
+    console.log("DEM LCC debug", {
+      file: file.name,
+      source: debugInfo.source,
+      origin: debugInfo.origin,
+      resolution: debugInfo.resolution,
+      tie: debugInfo.tie,
+      scale: debugInfo.scale,
+      matrix: debugInfo.matrix,
+      boundsRaw: debugInfo.boundsRaw,
+      lcc: debugInfo.lcc,
+      boundsReprojected: debugInfo.boundsReprojected,
+      geoKeys,
+    });
+  } catch {
+    // ignore logging errors
   }
 
   // Create a color ramp (simple grayscale)
@@ -1158,6 +1592,31 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     imgData.data[i * 4 + 3] = 255;
   }
   ctx.putImageData(imgData, 0, 0);
+
+  // Convert bounds from LCC to WGS84 if detected
+  if (lccParams) {
+    try {
+      const corners: [number, number][] = [
+        [bounds[0], bounds[1]],
+        [bounds[0], bounds[3]],
+        [bounds[2], bounds[1]],
+        [bounds[2], bounds[3]],
+      ];
+      const converted = corners.map(([x, y]) =>
+        convertLCCToWGS84(x, y, lccParams!)
+      );
+      const lngs = converted.map((c) => c[0]);
+      const lats = converted.map((c) => c[1]);
+      bounds = [
+        Math.min(...lngs),
+        Math.min(...lats),
+        Math.max(...lngs),
+        Math.max(...lats),
+      ];
+    } catch (error) {
+      console.warn("Failed to convert LCC bounds, using original:", error);
+    }
+  }
 
   // Return bounds as [minLng, minLat, maxLng, maxLat]
   // Note: GeoTIFF bounds might be in different coordinate systems

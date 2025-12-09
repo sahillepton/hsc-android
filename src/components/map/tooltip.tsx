@@ -278,17 +278,6 @@ const Tooltip = () => {
 
           const elevation = data[index];
 
-          // Debug: log sampled DEM elevation information
-          console.log("DEM hover sample", {
-            layerId: layerInfo.id,
-            layerName: layerInfo.name,
-            lng,
-            lat,
-            pixel: { x, y, index },
-            elevation,
-            elevationRange: { min, max },
-            size: { width, height },
-          });
           const hasValidElevation =
             Number.isFinite(elevation) &&
             elevation !== null &&
@@ -304,20 +293,24 @@ const Tooltip = () => {
               <div className="space-y-1">
                 <div className="flex justify-between gap-2">
                   <span className="text-zinc-800 text-xs font-semibold">
-                    Latitude:
+                    {useIgrs ? "IGRS" : "Latitude:"}
                   </span>
                   <span className="text-xs text-zinc-600">
-                    {lat.toFixed(5)}°
+                    {useIgrs
+                      ? calculateIgrs(lng, lat) ?? "—"
+                      : `${lat.toFixed(5)}°`}
                   </span>
                 </div>
-                <div className="flex justify-between gap-2">
-                  <span className="text-zinc-800 text-xs font-semibold">
-                    Longitude:
-                  </span>
-                  <span className="text-xs text-zinc-600">
-                    {lng.toFixed(5)}°
-                  </span>
-                </div>
+                {!useIgrs && (
+                  <div className="flex justify-between gap-2">
+                    <span className="text-zinc-800 text-xs font-semibold">
+                      Longitude:
+                    </span>
+                    <span className="text-xs text-zinc-600">
+                      {lng.toFixed(5)}°
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between gap-2">
                   <span className="text-zinc-800 text-xs font-semibold">
                     Pixel Index:

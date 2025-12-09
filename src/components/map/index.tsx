@@ -812,7 +812,9 @@ const MapComponent = ({
           lowerName.endsWith(".csv") ||
           lowerName.endsWith(".gpx") ||
           lowerName.endsWith(".kml") ||
-          lowerName.endsWith(".kmz")
+          lowerName.endsWith(".kmz") ||
+          lowerName.endsWith(".wkt") ||
+          lowerName.endsWith(".prj")
         );
       });
 
@@ -823,11 +825,7 @@ const MapComponent = ({
       const extractedFiles: File[] = [];
       for (const fileName of vectorFiles) {
         try {
-          // Check file size before extracting (limit to 50MB per file)
           const fileEntry = zip.files[fileName];
-          if (fileEntry._data?.uncompressedSize > 50 * 1024 * 1024) {
-            continue; // Skip files larger than 50MB
-          }
 
           const fileData = await fileEntry.async("blob");
           const baseFileName = fileName.split("/").pop() || fileName;
@@ -860,9 +858,7 @@ const MapComponent = ({
   };
 
   // Extract shapefile from ZIP (with pre-loaded zip object)
-  const extractShapefileFromZipWithZip = async (
-    zip: any
-  ): Promise<File | null> => {
+  const extractShapefileFromZipWithZip = async (zip: any): Promise<File[]> => {
     try {
       const shapefileComponents = Object.keys(zip.files).filter((name) => {
         const lowerName = name.toLowerCase();
@@ -872,23 +868,27 @@ const MapComponent = ({
         return (
           lowerName.endsWith(".shp") ||
           lowerName.endsWith(".shx") ||
-          lowerName.endsWith(".dbf")
+          lowerName.endsWith(".dbf") ||
+          lowerName.endsWith(".prj")
         );
       });
 
       if (shapefileComponents.length === 0) {
-        return null;
+        return [];
       }
 
       const shapefileGroups: Record<string, string[]> = {};
       for (const fileName of shapefileComponents) {
-        const baseName = fileName.toLowerCase().replace(/\.(shp|shx|dbf)$/, "");
+        const baseName = fileName
+          .toLowerCase()
+          .replace(/\.(shp|shx|dbf|prj)$/, "");
         if (!shapefileGroups[baseName]) {
           shapefileGroups[baseName] = [];
         }
         shapefileGroups[baseName].push(fileName);
       }
 
+      const groupedZips: File[] = [];
       for (const [baseName, files] of Object.entries(shapefileGroups)) {
         const hasShp = files.some((f: string) =>
           f.toLowerCase().endsWith(".shp")
@@ -913,15 +913,17 @@ const MapComponent = ({
             compression: "DEFLATE",
           });
 
-          return new File([zipBlob], `${baseName}.zip`, {
-            type: "application/zip",
-          });
+          groupedZips.push(
+            new File([zipBlob], `${baseName}.zip`, {
+              type: "application/zip",
+            })
+          );
         }
       }
 
-      return null;
+      return groupedZips;
     } catch (error) {
-      return null;
+      return [];
     }
   };
 
@@ -1001,7 +1003,7 @@ const MapComponent = ({
         let shapefileCount = 0;
         let tiffFiles: File[] = [];
         let vectorFiles: File[] = [];
-        let shapefileZip: File | null = null;
+        let shapefileZips: File[] = [];
 
         try {
           // Process TIFF files first
@@ -1159,13 +1161,15 @@ const MapComponent = ({
           }
 
           // Check for shapefiles
-          shapefileZip = await extractShapefileFromZipWithZip(zip);
-          if (shapefileZip) {
-            try {
-              await uploadGeoJsonFile(shapefileZip, true);
-              shapefileCount++;
-            } catch (error) {
-              // Individual file errors are handled by uploadGeoJsonFile
+          shapefileZips = await extractShapefileFromZipWithZip(zip);
+          if (shapefileZips.length > 0) {
+            for (const shpZip of shapefileZips) {
+              try {
+                await uploadGeoJsonFile(shpZip, true);
+                shapefileCount++;
+              } catch (error) {
+                // Individual file errors are handled by uploadGeoJsonFile
+              }
             }
           }
 
@@ -1216,7 +1220,7 @@ const MapComponent = ({
         } else if (
           tiffFiles.length > 0 ||
           vectorFiles.length > 0 ||
-          shapefileZip
+          shapefileZips.length > 0
         ) {
           toast.update(toastId, "Some files could not be imported.", "error");
           return;
@@ -1231,6 +1235,8 @@ const MapComponent = ({
       }
 
       const vectorExtensions = [
+        "wkt",
+        "prj",
         "geojson",
         "json",
         "shp",
@@ -1295,7 +1301,7 @@ const MapComponent = ({
         } else {
           toast.update(
             toastId,
-            `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, TIFF, GPX, KML, KMZ, or shapefile.`,
+            `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, TIFF, GPX, KML, KMZ, WKT/PRJ, or shapefile (with .prj).`,
             "error"
           );
         }

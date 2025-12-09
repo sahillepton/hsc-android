@@ -153,8 +153,6 @@ export const saveLayers = async (layers: LayerProps[]): Promise<void> => {
       directory: Directory.Documents,
       encoding: Encoding.UTF8,
     });
-
-    console.log(`Autosaved ${layers.length} layer(s) to ZIP file`);
   } catch (error) {
     console.error("Error autosaving layers:", error);
     // Don't throw - autosave failures shouldn't break the app
@@ -356,9 +354,7 @@ export const loadLayers = async (): Promise<LayerProps[]> => {
 
     // Deserialize layers with bitmaps from ZIP
     const deserializedLayers = await deserializeLayers(importData.layers, zip);
-    console.log(
-      `Loaded ${deserializedLayers.length} layer(s) from autosave ZIP`
-    );
+
     return deserializedLayers;
   } catch (error) {
     console.error("Error loading autosaved layers:", error);
@@ -442,8 +438,6 @@ export const clearAutosave = async (): Promise<void> => {
     } catch (error) {
       // File might not exist, ignore
     }
-
-    console.log("Autosave data cleared");
   } catch (error) {
     console.error("Error clearing autosave:", error);
   }
@@ -470,9 +464,6 @@ export const loadLayersFromFile = async (
         try {
           const importData = JSON.parse(content);
           if (importData.version && Array.isArray(importData.layers)) {
-            console.log(
-              `Loaded ${importData.layers.length} layers from ${defaultPath}`
-            );
             return await deserializeLayers(importData.layers, undefined);
           }
         } catch (parseError) {
@@ -511,9 +502,6 @@ export const loadLayersFromFile = async (
             try {
               const importData = JSON.parse(content);
               if (importData.version && Array.isArray(importData.layers)) {
-                console.log(
-                  `Loaded ${importData.layers.length} layers from ${fullPath}`
-                );
                 return await deserializeLayers(importData.layers, undefined);
               }
             } catch (parseError) {
@@ -586,9 +574,6 @@ export const loadLayersFromFile = async (
     try {
       const importData = JSON.parse(content);
       if (importData.version && Array.isArray(importData.layers)) {
-        console.log(
-          `Loaded ${importData.layers.length} layers from ${filePath}`
-        );
         return await deserializeLayers(importData.layers, undefined);
       }
     } catch (parseError) {
@@ -625,7 +610,6 @@ export const loadNodeIconMappingsFromFile = async (
 
     try {
       const mappings = JSON.parse(content);
-      console.log(`Loaded node icon mappings from ${defaultPath}`);
       return mappings;
     } catch (parseError) {
       // Invalid JSON, return empty object

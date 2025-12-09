@@ -723,28 +723,6 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
         setIsImporting(true);
         try {
           // First, verify the ZIP can be read
-          try {
-            const JSZip = (await import("jszip")).default;
-            const testZip = await JSZip.loadAsync(file);
-            const fileNames = Object.keys(testZip.files);
-            console.log(
-              `ZIP contains ${fileNames.length} entries:`,
-              fileNames.slice(0, 10)
-            );
-          } catch (zipError) {
-            console.error("Error reading ZIP file:", zipError);
-            showMessage(
-              `Error reading ZIP file: ${
-                zipError instanceof Error
-                  ? zipError.message
-                  : "Invalid ZIP format"
-              }`,
-              true
-            );
-            setIsImporting(false);
-            return;
-          }
-
           let tiffCount = 0;
           let vectorCount = 0;
           let shapefileCount = 0;
@@ -1018,6 +996,8 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
       }
 
       const vectorExtensions = [
+        "wkt",
+        "prj",
         "geojson",
         "json",
         "shp",
