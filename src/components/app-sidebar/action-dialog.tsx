@@ -1,4 +1,4 @@
-import { MessageSquare, Phone, Upload, Video } from "lucide-react";
+import { MessageSquare, Upload, Video } from "lucide-react";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { useNodeDialog, useSelectedNode } from "@/store/layers-store";
@@ -71,10 +71,21 @@ const ActionDialog = () => {
                   handleVoiceCall(selectedNode);
                   setIsNodeDialogOpen(false);
                 }}
-                className="flex-1 bg-green-500 hover:bg-green-600 h-11"
+                className="flex-1 h-11 text-white"
+                style={{ backgroundColor: "#606246" }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#4d4f3a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#606246";
+                }}
                 size="default"
               >
-                <Phone size={18} className="mr-2" />
+                <img
+                  src="/icons/walkie-talkie.png"
+                  alt="Call"
+                  className="w-4 h-4 mr-2"
+                />
                 Voice Call
               </Button>
 
@@ -83,7 +94,14 @@ const ActionDialog = () => {
                   handleVideoCall(selectedNode);
                   setIsNodeDialogOpen(false);
                 }}
-                className="flex-1 bg-blue-500 hover:bg-blue-600 h-11"
+                className="flex-1 h-11 text-white"
+                style={{ backgroundColor: "#606246" }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#4d4f3a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#606246";
+                }}
                 size="default"
               >
                 <Video size={18} className="mr-2" />
@@ -95,7 +113,14 @@ const ActionDialog = () => {
                   handleSendMessage(selectedNode);
                   setIsNodeDialogOpen(false);
                 }}
-                className="flex-1 bg-purple-500 hover:bg-purple-600 h-11"
+                className="flex-1 h-11 text-white"
+                style={{ backgroundColor: "#606246" }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#4d4f3a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#606246";
+                }}
                 size="default"
               >
                 <MessageSquare size={18} className="mr-2" />
@@ -107,7 +132,14 @@ const ActionDialog = () => {
                   handleFtp(selectedNode);
                   setIsNodeDialogOpen(false);
                 }}
-                className="flex-1 bg-orange-500 hover:bg-orange-600 h-11"
+                className="flex-1 h-11 text-white"
+                style={{ backgroundColor: "#606246" }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#4d4f3a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#606246";
+                }}
                 size="default"
               >
                 <Upload size={18} className="mr-2" />
