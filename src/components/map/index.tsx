@@ -3062,7 +3062,7 @@ const MapComponent = ({
           bearing: 0,
         }}
         minZoom={0}
-        maxZoom={20}
+        maxZoom={12}
         maxPitch={85}
         onLoad={async (map: any) => {
           // Fit map to India's bounding box

@@ -1,7 +1,6 @@
 import type { LayerProps } from "@/lib/definitions";
 import { listFilesInDirectory } from "./capacitor-utils";
 import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
-import { calculateLayerZoomRange } from "./layers";
 
 const AUTOSAVE_SESSION_PATH = "HSC_SESSIONS/autosave_session.zip";
 

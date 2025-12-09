@@ -5,14 +5,10 @@ import {
   LocateFixed,
   Settings2,
   ArrowUp,
-  Search,
 } from "lucide-react";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
 import LayerPopover from "./layer-popover";
-import { calculateLayerZoomRange } from "@/lib/layers";
 import type { LayerProps } from "@/lib/definitions";
-import { Virtuoso } from "react-virtuoso";
 
 type LayersListProps = {
   layers: LayerProps[];
@@ -39,7 +35,7 @@ const LayersList = ({
   onBringToTop,
   onUpdateLayer,
 }: LayersListProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery] = useState("");
 
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return null;
@@ -69,19 +65,6 @@ const LayersList = ({
 
   return (
     <div className="space-y-3">
-      {/* Search Bar */}
-      <div className="px-3">
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            type="text"
-            placeholder="Search layers..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-8 h-8 text-sm"
-          />
-        </div>
-      </div>
       {enableSelection && filteredLayers.length > 0 && (
         <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-[2] bg-white">
           <label className="flex items-center gap-2 font-medium text-foreground">
@@ -108,6 +91,19 @@ const LayersList = ({
           </Button>
         </div>
       )}
+      {/* Search Bar */}
+      {/* <div className="px-3">
+        <div className="relative">
+          <Search className="transform absolute top-3.5 left-2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            type="text"
+            placeholder="Search layers..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-8 h-8 text-sm"
+          />
+        </div>
+      </div> */}
       {filteredLayers.length === 0 && searchQuery.trim() && (
         <div className="text-center text-sm text-muted-foreground py-3 px-3">
           No layers found matching "{searchQuery}"
@@ -202,12 +198,9 @@ const LayersList = ({
                         />
                       )}
                       <div className="flex items-center gap-2">
-                        <div className="text-sm font-semibold text-foreground">
+                        <div className="text-sm font-semibold text-ellipsis text-foreground">
                           {layer.name}
                         </div>
-                        <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 bg-slate-100">
-                          {layer.type}
-                        </span>
                       </div>
                     </div>
                     {uploadedDate && (
@@ -215,40 +208,6 @@ const LayersList = ({
                         Uploaded: {uploadedDate}
                       </div>
                     )}
-                    {(() => {
-                      // Calculate zoom range if not set (for display only, not saved until user saves)
-                      const displayZoomRange =
-                        layer.minzoom !== undefined ||
-                        layer.maxzoom !== undefined
-                          ? {
-                              minZoom: layer.minzoom,
-                              maxZoom: layer.maxzoom,
-                            }
-                          : layer.type !== "point"
-                          ? calculateLayerZoomRange(layer)
-                          : undefined;
-
-                      if (displayZoomRange) {
-                        const minZoom =
-                          displayZoomRange.minZoom ?? layer.minzoom;
-                        const maxZoom =
-                          displayZoomRange.maxZoom ?? layer.maxzoom;
-                        return (
-                          <div className="text-[10px] text-muted-foreground mt-1">
-                            Zoom:{" "}
-                            {minZoom !== undefined ? minZoom.toFixed(0) : "?"} -{" "}
-                            {maxZoom !== undefined ? maxZoom.toFixed(0) : "?"}
-                            {(layer.minzoom === undefined ||
-                              layer.maxzoom === undefined) && (
-                              <span className="text-[9px] text-muted-foreground/70 ml-1">
-                                (auto)
-                              </span>
-                            )}
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
                   </div>
                 </div>
               );

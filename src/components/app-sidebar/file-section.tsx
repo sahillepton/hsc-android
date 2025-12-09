@@ -5,7 +5,7 @@ import { SidebarGroup, SidebarGroupContent } from "../ui/sidebar";
 import { showMessage } from "@/lib/capacitor-utils";
 import { toast } from "@/lib/toast";
 import { useLayers, useNodeIconMappings } from "@/store/layers-store";
-import { generateLayerId, calculateLayerZoomRange } from "@/lib/layers";
+import { generateLayerId } from "@/lib/layers";
 import {
   fileToDEMRaster,
   fileToGeoJSON,

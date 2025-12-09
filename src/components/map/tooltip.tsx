@@ -17,7 +17,7 @@ import {
   useIgrsPreference,
 } from "@/store/layers-store";
 import { useEffect, useState } from "react";
-import { Video, Upload, MessageSquare } from "lucide-react";
+import { Video, Upload, MessageSquare, PhoneCall } from "lucide-react";
 
 const Tooltip = () => {
   const { hoverInfo } = useHoverInfo();
@@ -500,32 +500,10 @@ const Tooltip = () => {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  alert("Phone call initiated");
-                }}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
-                style={{ backgroundColor: "#606246" }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = "#4d4f3a";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "#606246";
-                }}
-                title="Voice Call"
-              >
-                <img
-                  src="/icons/walkie-talkie.png"
-                  alt="Call"
-                  className="w-3 h-3"
-                />
-                <span>Call</span>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
                   alert("Video call initiated");
                 }}
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
-                style={{ backgroundColor: "#606246" }}
+                style={{ backgroundColor: "#7F1D1D" }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.backgroundColor = "#4d4f3a";
                 }}
@@ -543,7 +521,7 @@ const Tooltip = () => {
                   alert("FTP connection initiated");
                 }}
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
-                style={{ backgroundColor: "#606246" }}
+                style={{ backgroundColor: "#3F6212" }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.backgroundColor = "#4d4f3a";
                 }}
@@ -558,10 +536,28 @@ const Tooltip = () => {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  alert("Phone call initiated");
+                }}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
+                style={{ backgroundColor: "#1E3A8A" }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#4d4f3a";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "#606246";
+                }}
+                title="Voice Call"
+              >
+                <PhoneCall className="size-3" />
+                <span>Call</span>
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
                   alert("Message sent");
                 }}
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
-                style={{ backgroundColor: "#606246" }}
+                style={{ backgroundColor: "#A16207" }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.backgroundColor = "#4d4f3a";
                 }}
