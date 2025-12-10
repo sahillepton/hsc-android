@@ -4,6 +4,22 @@ import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
 
 const AUTOSAVE_SESSION_PATH = "HSC_SESSIONS/autosave_session.zip";
 
+const ensureDirectory = async (
+  dirPath: string,
+  directory = Directory.Documents
+) => {
+  if (!dirPath) return;
+  try {
+    await Filesystem.mkdir({
+      path: dirPath,
+      directory,
+      recursive: true,
+    });
+  } catch {
+    // Directory might already exist; ignore
+  }
+};
+
 // Serialize layers, converting non-serializable data to serializable formats
 // Returns serialized layers and bitmaps map (layerId -> blob) for separate storage
 export const serializeLayers = async (
@@ -87,7 +103,11 @@ export const serializeLayers = async (
 };
 
 // Save layers as ZIP to HSC_SESSIONS folder (file storage, no size limit)
-export const saveLayers = async (layers: LayerProps[]): Promise<void> => {
+export const saveLayers = async (
+  layers: LayerProps[],
+  targetPath: string = AUTOSAVE_SESSION_PATH,
+  targetDirectory: Directory = Directory.Documents
+): Promise<void> => {
   try {
     // Layers should already have zoom ranges calculated in the store
     // Just log to verify
@@ -189,22 +209,18 @@ export const saveLayers = async (layers: LayerProps[]): Promise<void> => {
       reader.readAsDataURL(zipBlob);
     });
 
-    // Ensure HSC_SESSIONS directory exists
-    try {
-      await Filesystem.mkdir({
-        path: "HSC_SESSIONS",
-        directory: Directory.Documents,
-        recursive: true,
-      });
-    } catch (error) {
-      // Directory might already exist, ignore
-    }
+    // Ensure target directory exists (e.g., HSC_SESSIONS or custom)
+    const targetDirPath =
+      targetPath.lastIndexOf("/") > -1
+        ? targetPath.slice(0, targetPath.lastIndexOf("/"))
+        : "";
+    await ensureDirectory(targetDirPath, targetDirectory);
 
     // Save ZIP to Filesystem (no size limit)
     await Filesystem.writeFile({
-      path: AUTOSAVE_SESSION_PATH,
+      path: targetPath,
       data: base64,
-      directory: Directory.Documents,
+      directory: targetDirectory,
       encoding: Encoding.UTF8,
     });
   } catch (error) {

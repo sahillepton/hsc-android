@@ -58,7 +58,6 @@ import {
 } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
 import { Directory } from "@capacitor/filesystem";
-import { downloadAllLayers } from "@/components/app-sidebar/file-section";
 import { toast } from "@/lib/toast";
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
@@ -221,12 +220,13 @@ const MapComponent = ({
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const zipFileName = `layers_export_${timestamp}.zip`;
-      await downloadAllLayers(
+      const { saveLayers } = await import("@/lib/autosave");
+      await saveLayers(
         layers,
-        nodeIconMappings,
-        Directory.Documents,
-        `HSC_Layers/${zipFileName}`
+        `HSC_LAYERS/${zipFileName}`,
+        Directory.Documents
       );
+      toast.success(`Saved to Documents/HSC_LAYERS/${zipFileName}`);
     } catch (error) {
       toast.error(
         `Failed to export layers: ${

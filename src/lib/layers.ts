@@ -34,6 +34,12 @@ export const computeLayerBounds = (layer: LayerProps) => {
     });
   }
 
+  if (layer.type === "azimuth") {
+    if (layer.azimuthCenter) points.push(layer.azimuthCenter);
+    if (layer.azimuthTarget) points.push(layer.azimuthTarget);
+    if (layer.azimuthNorth) points.push(layer.azimuthNorth);
+  }
+
   if (layer.type === "nodes" && layer.nodes) {
     layer.nodes.forEach((node) => {
       points.push([node.longitude, node.latitude]);

@@ -53,6 +53,7 @@ const SketchLayersPanel = ({
   const layerIdSet = new Set(layerIds);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedIds((prev) => {
@@ -64,6 +65,12 @@ const SketchLayersPanel = ({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layerIdSignature]);
+
+  useEffect(() => {
+    if (focusedLayerId && !layerIds.includes(focusedLayerId)) {
+      setFocusedLayerId(null);
+    }
+  }, [focusedLayerId, layerIdSignature, layerIds]);
 
   const toggleSelect = (layerId: string) => {
     setSelectedIds((prev) =>
@@ -161,7 +168,7 @@ const SketchLayersPanel = ({
               style={{ zoom: 0.8 }}
               disabled={!selectedIds.length}
               onClick={handleBulkDelete}
-              className="p-2 font-[600]"
+              className="p-2 font-semibold"
             >
               Delete ({selectedIds.length || 0})
             </Button>
@@ -173,10 +180,13 @@ const SketchLayersPanel = ({
           const badgeClass =
             typeAccent[layer.type] ?? "text-slate-600 bg-slate-100";
           const isSelected = selectedIds.includes(layer.id);
+          const isFocused = focusedLayerId === layer.id;
           return (
             <div
               key={layer.id}
-              className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
+              className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
+                isFocused ? "border-l-4 border-l-sky-300" : ""
+              }`}
             >
               <div className="absolute right-3 top-3 flex items-center gap-1">
                 <Button
@@ -184,7 +194,10 @@ const SketchLayersPanel = ({
                   size="icon"
                   className="h-7 w-7"
                   title={`Focus layer: ${layer.name}`}
-                  onClick={() => focusLayer(layer.id)}
+                  onClick={() => {
+                    setFocusedLayerId(layer.id);
+                    focusLayer(layer.id);
+                  }}
                 >
                   <LocateFixed size={10} />
                 </Button>
