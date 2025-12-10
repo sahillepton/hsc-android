@@ -137,7 +137,7 @@ const NetworkLayersPanel = ({
       <Virtuoso
         className="grid gap-3 text-xs"
         style={{
-          height: Math.min(260, udpLayerItems.length * 140 + 24),
+          height: Math.min(500, udpLayerItems.length * 140 + 24),
         }}
         data={udpLayerItems}
         increaseViewportBy={280}

@@ -110,7 +110,7 @@ const LayersList = ({
           className="grid gap-3 text-xs"
           style={{
             height: Math.min(
-              200,
+              400,
               sortedLayers.length * 96 + (enableSelection ? 64 : 24)
             ),
           }}

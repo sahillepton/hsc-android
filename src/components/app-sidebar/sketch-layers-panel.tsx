@@ -156,10 +156,10 @@ const SketchLayersPanel = ({
 
     return (
       <Virtuoso
-        className="grid gap-3 text-xs"
+        className="text-xs"
         style={{
           height: Math.min(
-            260,
+            500,
             sketchLayers.length * 140 + (enableSelection ? 64 : 24)
           ),
         }}
@@ -169,7 +169,7 @@ const SketchLayersPanel = ({
           enableSelection && sketchLayers.length > 0
             ? {
                 Header: () => (
-                  <div className="flex items-center justify-between sticky px-3 py-2 w-full top-0 z-2 bg-white text-[13px]">
+                  <div className="flex items-center justify-between px-3 py-2 w-full bg-white text-[13px] mb-3">
                     <label className="flex items-center gap-2 font-medium text-foreground">
                       <input
                         type="checkbox"
@@ -203,102 +203,104 @@ const SketchLayersPanel = ({
           const isSelected = selectedIds.includes(layer.id);
           const isFocused = focusedLayerId === layer.id;
           return (
-            <div
-              key={layer.id}
-              className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
-                isFocused ? "border-l-4 border-l-sky-300" : ""
-              }`}
-            >
-              <div className="absolute right-3 top-3 flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  title={`Focus layer: ${layer.name}`}
-                  onClick={() => {
-                    setFocusedLayerId(layer.id);
-                    focusLayer(layer.id);
-                  }}
-                >
-                  <LocateFixed size={10} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() =>
-                    handleToggleVisibility(layer.id, layer.visible === false)
-                  }
-                  title={
-                    layer.visible === false
-                      ? `Show layer: ${layer.name}`
-                      : `Hide layer: ${layer.name}`
-                  }
-                >
-                  {layer.visible === true ? (
-                    <EyeIcon size={10} />
-                  ) : (
-                    <EyeOffIcon size={10} />
-                  )}
-                </Button>
-                <LayerPopover layer={layer} updateLayer={updateLayer}>
+            <div className="mb-3">
+              <div
+                key={layer.id}
+                className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
+                  isFocused ? "border-l-4 border-l-sky-300" : ""
+                }`}
+              >
+                <div className="absolute right-3 top-3 flex items-center gap-1">
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7"
-                    title={`Layer settings: ${layer.name}`}
+                    title={`Focus layer: ${layer.name}`}
+                    onClick={() => {
+                      setFocusedLayerId(layer.id);
+                      focusLayer(layer.id);
+                    }}
                   >
-                    <Settings2 size={10} />
+                    <LocateFixed size={10} />
                   </Button>
-                </LayerPopover>
-              </div>
-
-              <div className="min-w-0 pr-14">
-                <div className="flex items-start gap-2">
-                  {enableSelection && (
-                    <input
-                      type="checkbox"
-                      className="mt-1 -ml-1 h-4 w-4 rounded border-border"
-                      checked={isSelected}
-                      onChange={() => toggleSelect(layer.id)}
-                    />
-                  )}
-                  <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground mb-2">
-                    <span className="truncate text-[16px]">
-                      {layer.name}
-                      <span
-                        className={`text-[10px] ml-2 font-semibold uppercase tracking-wide ${badgeClass}`}
-                      >
-                        {layer.type}
-                      </span>
-                    </span>
-                    <span
-                      className={`rounded-full text-[10px] font-semibold uppercase tracking-wide ${badgeClass}`}
-                    ></span>
-                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() =>
+                      handleToggleVisibility(layer.id, layer.visible === false)
+                    }
+                    title={
+                      layer.visible === false
+                        ? `Show layer: ${layer.name}`
+                        : `Hide layer: ${layer.name}`
+                    }
+                  >
+                    {layer.visible === true ? (
+                      <EyeIcon size={10} />
+                    ) : (
+                      <EyeOffIcon size={10} />
+                    )}
+                  </Button>
+                  <LayerPopover layer={layer} updateLayer={updateLayer}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      title={`Layer settings: ${layer.name}`}
+                    >
+                      <Settings2 size={10} />
+                    </Button>
+                  </LayerPopover>
                 </div>
 
-                <dl className="mt-3 grid w-full grid-cols-2 gap-x-4 gap-y-2">
-                  {measurements.length === 0 ? (
-                    <span className="col-span-2 text-muted-foreground text-xs">
-                      No measurements
-                    </span>
-                  ) : (
-                    measurements.map((measurement, index) => (
-                      <div
-                        key={`${layer.id}-${measurement.label}-${index}`}
-                        className="flex flex-col"
-                      >
-                        <dt className="text-[13px] font-semibold tracking-wide text-foreground mb-2">
-                          {measurement.label}
-                        </dt>
-                        <dd className="font-mono text-[12px] text-zinc-600">
-                          {measurement.value}
-                        </dd>
-                      </div>
-                    ))
-                  )}
-                </dl>
+                <div className="min-w-0 pr-14">
+                  <div className="flex items-start gap-2">
+                    {enableSelection && (
+                      <input
+                        type="checkbox"
+                        className="mt-1 -ml-1 h-4 w-4 rounded border-border"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(layer.id)}
+                      />
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground mb-2">
+                      <span className="truncate text-[16px]">
+                        {layer.name}
+                        <span
+                          className={`text-[10px] ml-2 font-semibold uppercase tracking-wide ${badgeClass}`}
+                        >
+                          {layer.type}
+                        </span>
+                      </span>
+                      <span
+                        className={`rounded-full text-[10px] font-semibold uppercase tracking-wide ${badgeClass}`}
+                      ></span>
+                    </div>
+                  </div>
+
+                  <dl className="mt-3 grid w-full grid-cols-2 gap-x-4 gap-y-2">
+                    {measurements.length === 0 ? (
+                      <span className="col-span-2 text-muted-foreground text-xs">
+                        No measurements
+                      </span>
+                    ) : (
+                      measurements.map((measurement, index) => (
+                        <div
+                          key={`${layer.id}-${measurement.label}-${index}`}
+                          className="flex flex-col"
+                        >
+                          <dt className="text-[13px] font-semibold tracking-wide text-foreground mb-2">
+                            {measurement.label}
+                          </dt>
+                          <dd className="font-mono text-[12px] text-zinc-600">
+                            {measurement.value}
+                          </dd>
+                        </div>
+                      ))
+                    )}
+                  </dl>
+                </div>
               </div>
             </div>
           );
@@ -327,8 +329,12 @@ const SketchLayersPanel = ({
 
       <SidebarGroupContent
         className={`${isOpen ? "block" : "hidden"} transition-all`}
+        style={{
+          maxHeight: "500px",
+          overflow: "hidden",
+        }}
       >
-        <div className="space-y-3">{renderList()}</div>
+        {renderList()}
       </SidebarGroupContent>
     </SidebarGroup>
   );
