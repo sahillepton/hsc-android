@@ -1400,8 +1400,10 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
   let lccParams: LCCProjectionParams | null = null;
 
   // 1) Prefer origin + resolution (more explicit than bbox)
-  const origin = image.getOrigin?.();
-  const resolution = image.getResolution?.();
+  const origin =
+    typeof image.getOrigin === "function" ? image.getOrigin() : null;
+  const resolution =
+    typeof image.getResolution === "function" ? image.getResolution() : null;
   const debugInfo: any = {};
 
   if (

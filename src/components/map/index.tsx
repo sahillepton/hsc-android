@@ -374,6 +374,73 @@ const MapComponent = ({
 
       let dem;
       try {
+        // Prefer worker: offload DEM parsing; fallback to main thread if worker fails/times out
+        const runWorker = async () => {
+          const worker = new Worker(
+            new URL("../../workers/dem-worker.ts", import.meta.url),
+            { type: "module" }
+          );
+          const ab = await file.arrayBuffer();
+          const result = await new Promise<any>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              worker.terminate();
+              reject(new Error("Worker timeout"));
+            }, 300000);
+            worker.onmessage = (e: MessageEvent<any>) => {
+              clearTimeout(timer);
+              worker.terminate();
+              resolve(e.data);
+            };
+            worker.onerror = (err) => {
+              clearTimeout(timer);
+              worker.terminate();
+              reject(err);
+            };
+            worker.postMessage(
+              { type: "parse-dem", name: file.name, buffer: ab },
+              [ab]
+            );
+          });
+          if (result?.error) throw new Error(result.error);
+
+          // Rebuild canvas from grayscale on main thread
+          const elevation = new Float32Array(result.elevationBuffer);
+          const grayscale = new Uint8ClampedArray(result.grayscaleBuffer);
+          const canvas = document.createElement("canvas");
+          canvas.width = result.width;
+          canvas.height = result.height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            throw new Error("Failed to create canvas for DEM");
+          }
+          const cloned = new Uint8ClampedArray(grayscale.length);
+          cloned.set(grayscale);
+          const img = new ImageData(cloned, result.width, result.height);
+          ctx.putImageData(img, 0, 0);
+
+          return {
+            bounds: result.bounds,
+            width: result.width,
+            height: result.height,
+            data: elevation,
+            min: result.min,
+            max: result.max,
+            canvas,
+          };
+        };
+
+        dem = await Promise.race([
+          runWorker(),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Processing timeout after 5 minutes")),
+              300000
+            )
+          ),
+        ]);
+        clearTimeout(processingTimeout);
+      } catch (workerErr) {
+        // Worker failed; fallback to main-thread parsing
         dem = await Promise.race([
           fileToDEMRaster(file),
           new Promise<never>((_, reject) =>
@@ -384,9 +451,6 @@ const MapComponent = ({
           ),
         ]);
         clearTimeout(processingTimeout);
-      } catch (processingError) {
-        clearTimeout(processingTimeout);
-        throw processingError;
       }
 
       const isDefaultBounds =
@@ -451,6 +515,34 @@ const MapComponent = ({
   };
 
   // Upload GeoJSON/Vector file
+  const parseVectorInWorker = async (file: File) => {
+    const worker = new Worker(
+      new URL("../../workers/vector-worker.ts", import.meta.url),
+      { type: "module" }
+    );
+    const ab = await file.arrayBuffer();
+    return await new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        worker.terminate();
+        reject(new Error("Vector worker timeout"));
+      }, 180000); // 3 minutes
+      worker.onmessage = (e: MessageEvent<any>) => {
+        clearTimeout(timer);
+        worker.terminate();
+        resolve(e.data);
+      };
+      worker.onerror = (err) => {
+        clearTimeout(timer);
+        worker.terminate();
+        reject(err);
+      };
+      worker.postMessage(
+        { type: "parse-vector", name: file.name, mime: file.type, buffer: ab },
+        [ab]
+      );
+    });
+  };
+
   const uploadGeoJsonFile = async (
     file: File,
     suppressToast: boolean = false
@@ -459,7 +551,46 @@ const MapComponent = ({
       ? null
       : toast.loading(`Uploading ${file.name}...`);
     try {
-      const rawGeojson = await fileToGeoJSON(file);
+      const lowerName = file.name.toLowerCase();
+      let ext = "";
+      if (lowerName.endsWith(".geojson")) {
+        ext = "geojson";
+      } else if (lowerName.endsWith(".tiff")) {
+        ext = "tiff";
+      } else {
+        const parts = lowerName.split(".");
+        ext = parts.length > 1 ? parts[parts.length - 1] : "";
+      }
+
+      const shouldOffloadVector = [
+        "csv",
+        "gpx",
+        "kml",
+        "kmz",
+        "wkt",
+        "prj",
+      ].includes(ext);
+
+      let rawGeojson: any = null;
+
+      if (shouldOffloadVector) {
+        try {
+          const workerResult = await parseVectorInWorker(file);
+          if (workerResult?.geojson) {
+            rawGeojson = workerResult.geojson;
+          } else if (workerResult?.unsupported) {
+            // Fall back to main thread below
+          } else if (workerResult?.error) {
+            // Fall back to main thread parsing
+          }
+        } catch {
+          // Fall back to main thread parsing
+        }
+      }
+
+      if (!rawGeojson) {
+        rawGeojson = await fileToGeoJSON(file);
+      }
 
       // Convert to FeatureCollection format
       let features: GeoJSON.Feature[] = [];
@@ -762,10 +893,9 @@ const MapComponent = ({
       const extractedFiles: File[] = [];
       for (const fileName of tiffFiles) {
         try {
-          // Check file size before extracting (limit to 50MB per file)
           const fileEntry = zip.files[fileName];
           if (fileEntry._data?.uncompressedSize > 50 * 1024 * 1024) {
-            continue; // Skip files larger than 50MB
+            continue;
           }
 
           const fileData = await fileEntry.async("blob");
@@ -964,7 +1094,6 @@ const MapComponent = ({
           toast.update(toastId, "Reading ZIP file...", "loading");
           zip = await JSZip.loadAsync(file);
 
-          // Check file size - warn if too large
           const totalSize = Object.values(zip.files).reduce(
             (sum: number, file: any) => {
               return sum + (file._data?.uncompressedSize || 0);
@@ -973,7 +1102,6 @@ const MapComponent = ({
           );
 
           if (totalSize > 100 * 1024 * 1024) {
-            // 100MB
             toast.update(
               toastId,
               "ZIP file is large, processing may take a while...",
@@ -1018,7 +1146,6 @@ const MapComponent = ({
               try {
                 await uploadDemFile(tiffFiles[i]);
                 tiffCount++;
-                // Yield to UI thread every few files
                 if (i % 3 === 0) {
                   await new Promise((resolve) => setTimeout(resolve, 10));
                 }
@@ -1037,119 +1164,7 @@ const MapComponent = ({
               "loading"
             );
 
-            const geojsonFiles = vectorFiles.filter((f) =>
-              f.name.toLowerCase().endsWith(".geojson")
-            );
-            const otherVectorFiles = vectorFiles.filter(
-              (f) => !f.name.toLowerCase().endsWith(".geojson")
-            );
-
-            // Group split GeoJSON files
-            const fileGroups: Record<string, File[]> = {};
-            const partFileBaseNames = new Set<string>();
-
-            for (const geojsonFile of geojsonFiles) {
-              const fileName = geojsonFile.name.toLowerCase();
-              const partMatch = fileName.match(/^(.+?)_part(\d+)\.geojson$/);
-
-              if (partMatch) {
-                const baseName = partMatch[1];
-                partFileBaseNames.add(baseName);
-                if (!fileGroups[baseName]) {
-                  fileGroups[baseName] = [];
-                }
-                fileGroups[baseName].push(geojsonFile);
-              }
-            }
-
-            const standaloneGeoJsonFiles: File[] = [];
-
-            for (const geojsonFile of geojsonFiles) {
-              const fileName = geojsonFile.name.toLowerCase();
-              const partMatch = fileName.match(/^(.+?)_part(\d+)\.geojson$/);
-
-              if (!partMatch) {
-                const baseName = fileName.replace(/\.geojson$/, "");
-                if (partFileBaseNames.has(baseName)) {
-                  if (fileGroups[baseName]) {
-                    fileGroups[baseName].unshift(geojsonFile);
-                  }
-                } else {
-                  standaloneGeoJsonFiles.push(geojsonFile);
-                }
-              }
-            }
-
-            // Sort file groups by part number
-            for (const [_, groupedFiles] of Object.entries(fileGroups)) {
-              groupedFiles.sort((a: File, b: File) => {
-                const aMatch = a.name.match(/_part(\d+)/);
-                const bMatch = b.name.match(/_part(\d+)/);
-                if (!aMatch) return -1;
-                if (!bMatch) return 1;
-                return parseInt(aMatch[1]) - parseInt(bMatch[1]);
-              });
-            }
-
-            // Process standalone GeoJSON files
-            for (const geojsonFile of standaloneGeoJsonFiles) {
-              try {
-                await uploadGeoJsonFile(geojsonFile, true);
-                vectorCount++;
-                await new Promise((resolve) => setTimeout(resolve, 0));
-              } catch (error) {
-                // Individual file errors are handled by uploadGeoJsonFile
-              }
-            }
-
-            // Process grouped GeoJSON files (combine split files)
-            for (const [baseName, groupedFiles] of Object.entries(fileGroups)) {
-              try {
-                const allFeatures: GeoJSON.Feature[] = [];
-                let firstFileData: any = null;
-
-                for (let i = 0; i < groupedFiles.length; i++) {
-                  const file = groupedFiles[i];
-                  const text = await file.text();
-                  const geojson = JSON.parse(text) as GeoJSON.FeatureCollection;
-
-                  if (i === 0) {
-                    firstFileData = geojson as any;
-                  }
-
-                  if (geojson.features) {
-                    allFeatures.push(...geojson.features);
-                  }
-                  await new Promise((resolve) => setTimeout(resolve, 0));
-                }
-
-                if (allFeatures.length > 0) {
-                  const layerName = firstFileData?.__layerName || baseName;
-                  const combinedFeatureCollection: GeoJSON.FeatureCollection = {
-                    type: "FeatureCollection",
-                    features: allFeatures,
-                  };
-
-                  const combinedBlob = new Blob(
-                    [JSON.stringify(combinedFeatureCollection)],
-                    { type: "application/json" }
-                  );
-                  const combinedFile = new File(
-                    [combinedBlob],
-                    `${layerName}.geojson`,
-                    { type: "application/json" }
-                  );
-
-                  await uploadGeoJsonFile(combinedFile, true);
-                  vectorCount++;
-                }
-              } catch (error) {
-                // Individual file errors are handled by uploadGeoJsonFile
-              }
-            }
-
-            // Process other vector files
-            for (const vectorFile of otherVectorFiles) {
+            for (const vectorFile of vectorFiles) {
               try {
                 await uploadGeoJsonFile(vectorFile, true);
                 vectorCount++;
@@ -1185,7 +1200,7 @@ const MapComponent = ({
               const mappings = JSON.parse(fileData);
               setNodeIconMappings(mappings);
             }
-          } catch (error) {
+          } catch {
             // Silently fail for node icon mappings
           }
         } catch (zipProcessError) {
@@ -1201,7 +1216,6 @@ const MapComponent = ({
           return;
         }
 
-        // Show final success message
         const totalImported = tiffCount + vectorCount + shapefileCount;
         if (totalImported > 0) {
           const parts: string[] = [];
