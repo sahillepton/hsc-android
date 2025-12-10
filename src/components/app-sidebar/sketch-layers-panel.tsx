@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -12,6 +12,7 @@ import {
   LocateFixed,
   Settings2,
 } from "lucide-react";
+import { Virtuoso } from "react-virtuoso";
 import { Button } from "../ui/button";
 import {
   useFocusLayerRequest,
@@ -47,10 +48,16 @@ const SketchLayersPanel = ({
   const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
 
-  const sketchLayers = layers.filter(isSketchLayer).slice().reverse();
-  const layerIds = sketchLayers.map((layer) => layer.id);
-  const layerIdSignature = layerIds.join("|");
-  const layerIdSet = new Set(layerIds);
+  const sketchLayers = useMemo(
+    () => layers.filter(isSketchLayer).slice().reverse(),
+    [layers]
+  );
+  const layerIds = useMemo(
+    () => sketchLayers.map((layer) => layer.id),
+    [sketchLayers]
+  );
+  const layerIdSignature = useMemo(() => layerIds.join("|"), [layerIds]);
+  const layerIdSet = useMemo(() => new Set(layerIds), [layerIds]);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
@@ -148,34 +155,48 @@ const SketchLayersPanel = ({
     }
 
     return (
-      <div className="grid gap-3 text-xs">
-        {enableSelection && sketchLayers.length > 0 && (
-          <div className="flex items-center justify-between sticky px-3 py-2 w-full top-0 z-2 bg-white text-[13px]">
-            <label className="flex items-center gap-2 font-medium text-foreground">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-border"
-                checked={
-                  selectedIds.length > 0 &&
-                  selectedIds.length === sketchLayers.length
-                }
-                onChange={toggleSelectAll}
-              />
-              <span>Select All</span>
-            </label>
-            <Button
-              variant="destructive"
-              style={{ zoom: 0.8 }}
-              disabled={!selectedIds.length}
-              onClick={handleBulkDelete}
-              className="p-2 font-semibold"
-            >
-              Delete ({selectedIds.length || 0})
-            </Button>
-          </div>
-        )}
-
-        {sketchLayers.map((layer) => {
+      <Virtuoso
+        className="grid gap-3 text-xs"
+        style={{
+          height: Math.min(
+            260,
+            sketchLayers.length * 140 + (enableSelection ? 64 : 24)
+          ),
+        }}
+        data={sketchLayers}
+        increaseViewportBy={280}
+        components={
+          enableSelection && sketchLayers.length > 0
+            ? {
+                Header: () => (
+                  <div className="flex items-center justify-between sticky px-3 py-2 w-full top-0 z-2 bg-white text-[13px]">
+                    <label className="flex items-center gap-2 font-medium text-foreground">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-border"
+                        checked={
+                          selectedIds.length > 0 &&
+                          selectedIds.length === sketchLayers.length
+                        }
+                        onChange={toggleSelectAll}
+                      />
+                      <span>Select All</span>
+                    </label>
+                    <Button
+                      variant="destructive"
+                      style={{ zoom: 0.8 }}
+                      disabled={!selectedIds.length}
+                      onClick={handleBulkDelete}
+                      className="p-2 font-semibold"
+                    >
+                      Delete ({selectedIds.length || 0})
+                    </Button>
+                  </div>
+                ),
+              }
+            : undefined
+        }
+        itemContent={(_, layer) => {
           const measurements = formatLayerMeasurements(layer, { useIgrs });
           const badgeClass =
             typeAccent[layer.type] ?? "text-slate-600 bg-slate-100";
@@ -281,8 +302,8 @@ const SketchLayersPanel = ({
               </div>
             </div>
           );
-        })}
-      </div>
+        }}
+      />
     );
   };
 
@@ -305,9 +326,7 @@ const SketchLayersPanel = ({
       </SidebarGroupLabel>
 
       <SidebarGroupContent
-        className={`${
-          isOpen ? "block" : "hidden"
-        } transition-all max-h-[260px] overflow-y-auto`}
+        className={`${isOpen ? "block" : "hidden"} transition-all`}
       >
         <div className="space-y-3">{renderList()}</div>
       </SidebarGroupContent>

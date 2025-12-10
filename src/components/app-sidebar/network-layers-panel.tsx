@@ -1,9 +1,11 @@
+import { useMemo, useState } from "react";
 import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
 } from "../ui/sidebar";
 import { ChevronDown, ChevronRight, LocateFixed } from "lucide-react";
+import { Virtuoso } from "react-virtuoso";
 import { Button } from "../ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "../ui/label";
@@ -31,6 +33,7 @@ const NetworkLayersPanel = ({
     useNetworkLayersVisible();
   const { udpLayers } = useUdpLayers();
   const useIgrs = useIgrsPreference();
+  const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
 
   // Get UDP layer data
   const networkMembersLayer = udpLayers.find(
@@ -43,25 +46,30 @@ const NetworkLayersPanel = ({
   const networkMembersData = networkMembersLayer?.props?.data || [];
   const targetsData = targetsLayer?.props?.data || [];
 
-  const udpLayerItems = [
-    {
-      id: "udp-network-members-layer",
-      name: "Network Members",
-      type: "network-members",
-      count: networkMembersData.length,
-      data: networkMembersData,
-    },
-    {
-      id: "udp-targets-layer",
-      name: "Targets",
-      type: "targets",
-      count: targetsData.length,
-      data: targetsData,
-    },
-  ].filter((item) => item.count > 0);
+  const udpLayerItems = useMemo(
+    () =>
+      [
+        {
+          id: "udp-network-members-layer",
+          name: "Network Members",
+          type: "network-members",
+          count: networkMembersData.length,
+          data: networkMembersData,
+        },
+        {
+          id: "udp-targets-layer",
+          name: "Targets",
+          type: "targets",
+          count: targetsData.length,
+          data: targetsData,
+        },
+      ].filter((item) => item.count > 0),
+    [networkMembersData, targetsData]
+  );
 
   // Focus on a UDP layer by calculating bounds
   const handleFocusLayer = (layerId: string) => {
+    setFocusedLayerId(layerId);
     const layer = udpLayers.find((l: any) => l?.id === layerId);
     if (!layer || !layer.props?.data || layer.props.data.length === 0) {
       return;
@@ -126,15 +134,24 @@ const NetworkLayersPanel = ({
     }
 
     return (
-      <div className="grid gap-3 text-xs">
-        {udpLayerItems.map((layer) => {
+      <Virtuoso
+        className="grid gap-3 text-xs"
+        style={{
+          height: Math.min(260, udpLayerItems.length * 140 + 24),
+        }}
+        data={udpLayerItems}
+        increaseViewportBy={280}
+        itemContent={(_, layer) => {
           // Get sample items for display (max 3)
           const sampleItems = layer.data.slice(0, 3);
+          const isFocused = focusedLayerId === layer.id;
 
           return (
             <div
               key={layer.id}
-              className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
+              className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
+                isFocused ? "border-l-4 border-l-sky-300" : ""
+              }`}
             >
               <div className="absolute right-3 top-3 flex items-center gap-1">
                 <Button
@@ -185,8 +202,8 @@ const NetworkLayersPanel = ({
               </div>
             </div>
           );
-        })}
-      </div>
+        }}
+      />
     );
   };
 
@@ -225,9 +242,7 @@ const NetworkLayersPanel = ({
       </SidebarGroupLabel>
 
       <SidebarGroupContent
-        className={`${
-          isOpen ? "block" : "hidden"
-        } transition-all max-h-[260px] overflow-y-auto`}
+        className={`${isOpen ? "block" : "hidden"} transition-all`}
       >
         <div className="space-y-3">{renderList()}</div>
       </SidebarGroupContent>
