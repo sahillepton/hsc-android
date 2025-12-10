@@ -53,7 +53,6 @@ import {
   formatDistance,
   fileToGeoJSON,
   fileToDEMRaster,
-  generateMeshFromElevation,
   generateRandomColor,
 } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
@@ -186,9 +185,6 @@ const MapComponent = ({
     useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
 
-  // Cache for DEM meshes to avoid regenerating on every render
-  const demMeshCache = useRef<{ [key: string]: any }>({});
-
   // const { nodeCoordinatesData, setNodeCoordinatesData } =
   //   useProgressiveNodes(networkLayersVisible);
   const [isMapEnabled] = useState(true);
@@ -217,6 +213,7 @@ const MapComponent = ({
       toast.error("No layers to export.");
       return;
     }
+    const toastId = toast.loading("Exporting layers...");
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const zipFileName = `layers_export_${timestamp}.zip`;
@@ -226,12 +223,18 @@ const MapComponent = ({
         `HSC_LAYERS/${zipFileName}`,
         Directory.Documents
       );
-      toast.success(`Saved to Documents/HSC_LAYERS/${zipFileName}`);
+      toast.update(
+        toastId,
+        `Saved to Documents/HSC_LAYERS/${zipFileName}`,
+        "success"
+      );
     } catch (error) {
-      toast.error(
+      toast.update(
+        toastId,
         `Failed to export layers: ${
           error instanceof Error ? error.message : "Unknown error"
-        }`
+        }`,
+        "error"
       );
     }
   };
@@ -1834,6 +1837,22 @@ const MapComponent = ({
     setDragStart(null);
   };
 
+  // Ensure we always hand BitmapLayer a canvas (avoid createImageBitmap on blob)
+  const ensureCanvasImage = (img: any): HTMLCanvasElement | null => {
+    if (img instanceof HTMLCanvasElement) return img;
+    if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+        return canvas;
+      }
+    }
+    return null;
+  };
+
   const handleLayerHover = useCallback(
     (info: PickingInfo<unknown>) => {
       // Prevent tooltip from showing immediately after layer creation (especially on tablets)
@@ -2061,52 +2080,37 @@ const MapComponent = ({
 
     // Add raster layers FIRST so they render at the bottom (behind other layers)
     demLayers.forEach((layer) => {
-      if (!layer.bounds || !layer.elevationData) {
+      if (!layer.bounds) return;
+      const [minLng, minLat] = layer.bounds[0];
+      const [maxLng, maxLat] = layer.bounds[1];
+
+      // Ensure we hand BitmapLayer a canvas (avoid createImageBitmap on blobs)
+      const image =
+        ensureCanvasImage(layer.bitmap) ||
+        ensureCanvasImage(layer.texture) ||
+        null;
+
+      if (!image) {
+        console.warn("DEM layer missing usable image source:", {
+          id: layer.id,
+          name: layer.name,
+          hasBitmap: !!layer.bitmap,
+          hasTexture: !!layer.texture,
+        });
         return;
       }
 
-      try {
-        // Check if mesh is already cached to avoid regenerating on every render
-        const cacheKey = `${layer.id}-${layer.elevationData.width}-${layer.elevationData.height}`;
-        let mesh = demMeshCache.current[cacheKey];
-
-        if (!mesh) {
-          // Generate mesh from elevation data
-          // Use a smaller elevation scale for better visibility (100 meters instead of 1000)
-          mesh = generateMeshFromElevation(
-            layer.elevationData,
-            layer.bounds,
-            100 // elevation scale in meters (reduced for better visibility)
-          );
-
-          // Cache the mesh to avoid regenerating on every render
-          demMeshCache.current[cacheKey] = mesh;
-        }
-
-        // Always render as BitmapLayer (more reliable and visible than 3D mesh)
-        if (layer.bitmap) {
-          const bounds: [number, number, number, number] = [
-            layer.bounds[0][0], // minLng
-            layer.bounds[0][1], // minLat
-            layer.bounds[1][0], // maxLng
-            layer.bounds[1][1], // maxLat
-          ];
-
-          deckLayers.push(
-            new BitmapLayer({
-              id: `${layer.id}-bitmap`,
-              image: layer.bitmap,
-              bounds: bounds,
-              pickable: true,
-              visible: layer.visible !== false,
-              minZoom: layer.minzoom,
-              onHover: handleLayerHover,
-            })
-          );
-        }
-      } catch (error) {
-        // Silently handle errors
-      }
+      deckLayers.push(
+        new BitmapLayer({
+          id: `${layer.id}-bitmap`,
+          image,
+          bounds: [minLng, minLat, maxLng, maxLat],
+          pickable: true,
+          visible: layer.visible !== false,
+          minZoom: layer.minzoom,
+          onHover: handleLayerHover,
+        })
+      );
     });
 
     if (pointLayers.length) {
