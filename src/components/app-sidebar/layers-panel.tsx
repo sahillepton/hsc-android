@@ -151,7 +151,7 @@ const LayersPanel = ({
       <SidebarGroupContent
         className={`${
           isOpen ? "block" : "hidden"
-        } transition-all max-h-[200px] overflow-y-auto`}
+        } transition-all`}
       >
         <LayersList
           layers={nonSketchLayers}

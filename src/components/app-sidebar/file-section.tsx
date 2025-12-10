@@ -1478,13 +1478,43 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
 
       // Generate ZIP file with compression level optimization
       showMessage("Creating ZIP archive...", false);
-      // Use lower compression for faster processing and less memory
-      // Generate as base64 for Capacitor Filesystem compatibility
-      const zipBase64 = await zip.generateAsync({
-        type: "base64",
+
+      // Generate ZIP as blob first (more reliable than direct base64)
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
         compression: "DEFLATE",
         compressionOptions: { level: 3 }, // Lower compression = less memory
         streamFiles: true, // Stream files for better memory management
+      });
+
+      // Convert blob to base64 for Filesystem API (proper binary handling)
+      const zipBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        const timeout = setTimeout(() => {
+          reader.abort();
+          reject(new Error("Base64 conversion timeout"));
+        }, 120000); // 2 minute timeout for large exports
+
+        reader.onload = () => {
+          clearTimeout(timeout);
+          try {
+            const result = reader.result as string;
+            // Extract base64 data (remove data:application/zip;base64, prefix)
+            const base64Data = result.split(",")[1];
+            if (!base64Data) {
+              reject(new Error("Failed to extract base64 data"));
+              return;
+            }
+            resolve(base64Data);
+          } catch (error) {
+            reject(error);
+          }
+        };
+        reader.onerror = () => {
+          clearTimeout(timeout);
+          reject(new Error("Failed to read ZIP blob"));
+        };
+        reader.readAsDataURL(zipBlob);
       });
 
       // Save ZIP to device
@@ -1965,11 +1995,43 @@ export const downloadAllLayers = async (
   }
 
   toast.update(toastId, "Creating ZIP archive...", "loading");
-  const zipBase64 = await zip.generateAsync({
-    type: "base64",
+
+  // Generate ZIP as blob first (more reliable than direct base64)
+  const zipBlob = await zip.generateAsync({
+    type: "blob",
     compression: "DEFLATE",
     compressionOptions: { level: 3 },
     streamFiles: true,
+  });
+
+  // Convert blob to base64 for Filesystem API (proper binary handling)
+  const zipBase64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    const timeout = setTimeout(() => {
+      reader.abort();
+      reject(new Error("Base64 conversion timeout"));
+    }, 120000); // 2 minute timeout for large exports
+
+    reader.onload = () => {
+      clearTimeout(timeout);
+      try {
+        const result = reader.result as string;
+        // Extract base64 data (remove data:application/zip;base64, prefix)
+        const base64Data = result.split(",")[1];
+        if (!base64Data) {
+          reject(new Error("Failed to extract base64 data"));
+          return;
+        }
+        resolve(base64Data);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error("Failed to read ZIP blob"));
+    };
+    reader.readAsDataURL(zipBlob);
   });
 
   const storageDir = fixedDirectory || Directory.Documents;
