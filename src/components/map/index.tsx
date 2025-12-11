@@ -1521,7 +1521,7 @@ const MapComponent = ({
       }`,
       path,
       color: [68, 68, 68],
-      lineWidth: 4,
+      lineWidth: 6,
       visible: false, // Hidden by default - user can toggle visibility in layers panel
       segmentDistancesKm,
       totalDistanceKm,
@@ -1604,6 +1604,7 @@ const MapComponent = ({
       azimuthNorth: northPoint,
       azimuthAngleDeg: azimuthAngle,
       distanceMeters,
+      lineWidth: 6,
     };
 
     addLayer(newLayer);
@@ -2455,7 +2456,7 @@ const MapComponent = ({
             sourcePosition: center,
             targetPosition: layer.azimuthTarget,
             color: baseColor,
-            width: 3,
+            width: layer.lineWidth ?? 6,
             layerId: layer.id,
             segmentType: "target",
           });
@@ -2782,7 +2783,7 @@ const MapComponent = ({
           sourcePosition: center,
           targetPosition: mousePosition,
           color: [59, 130, 246],
-          width: 3,
+          width: 6,
         },
       ];
       previewLayers.push(
