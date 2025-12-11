@@ -3086,7 +3086,7 @@ const MapComponent = ({
           bearing: 0,
         }}
         minZoom={0}
-        maxZoom={12}
+        maxZoom={15}
         maxPitch={85}
         onLoad={async (map: any) => {
           // Fit map to India's bounding box
@@ -3106,7 +3106,7 @@ const MapComponent = ({
             mapInstance.addSource("offline-tiles", {
               type: "raster",
               tiles: ["/tiles-map/{z}/{x}/{y}.png"],
-
+              tileSize: 512,
               minzoom: 0,
               maxzoom: 20,
             });

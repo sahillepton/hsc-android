@@ -169,7 +169,7 @@ const SketchLayersPanel = ({
           enableSelection && sketchLayers.length > 0
             ? {
                 Header: () => (
-                  <div className="flex items-center justify-between px-3 py-2 w-full bg-white text-[13px] mb-3">
+                  <div className="flex items-center justify-between px-3 py-2 w-full bg-white sticky text-[13px] mb-3">
                     <label className="flex items-center gap-2 font-medium text-foreground">
                       <input
                         type="checkbox"
