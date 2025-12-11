@@ -17,12 +17,12 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
     layer.type === "point" ? layer.radius ?? 5 : layer.pointRadius ?? 5
   );
   const [zoomPreview, setZoomPreview] = useState(layer.minzoom ?? 0);
-  const [maxZoomPreview, setMaxZoomPreview] = useState(layer.maxzoom ?? 12);
+  const [maxZoomPreview, setMaxZoomPreview] = useState(layer.maxzoom ?? 20);
 
   // Update preview values when layer changes
   useEffect(() => {
     setZoomPreview(layer.minzoom ?? 0);
-    setMaxZoomPreview(layer.maxzoom ?? 12);
+    setMaxZoomPreview(layer.maxzoom ?? 20);
   }, [layer.minzoom, layer.maxzoom]);
 
   // Check for line geometry types
@@ -188,7 +188,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
           </label>
           <Slider
             min={0}
-            max={12}
+            max={20}
             step={1}
             value={[zoomPreview]}
             onValueChange={(values) => setZoomPreview(values[0])}
@@ -205,7 +205,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
             <span className="font-medium">
               Current: {zoomPreview.toFixed(0)}
             </span>
-            <span>12</span>
+            <span>20</span>
           </div>
         </div>
 
@@ -216,7 +216,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
           </label>
           <Slider
             min={0}
-            max={12}
+            max={20}
             step={1}
             value={[maxZoomPreview]}
             onValueChange={(values) => setMaxZoomPreview(values[0])}
@@ -233,7 +233,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
             <span className="font-medium">
               Current: {maxZoomPreview.toFixed(0)}
             </span>
-            <span>12</span>
+            <span>20</span>
           </div>
         </div>
 

@@ -511,9 +511,9 @@ export const computeZoomRange = (areaSqKm: number) => {
   console.log("[computeZoomRange] areaSqKm:", areaSqKm);
   let result;
   if (areaSqKm > 200) {
-    result = { minZoom: 3, maxZoom: 15 };
+    result = { minZoom: 3, maxZoom: 20 };
   } else {
-    result = { minZoom: 9, maxZoom: 15 };
+    result = { minZoom: 9, maxZoom: 20 };
   }
   console.log("[computeZoomRange] result:", result);
   return result;

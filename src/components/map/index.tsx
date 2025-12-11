@@ -2046,8 +2046,7 @@ const MapComponent = ({
       .filter((layer) => {
         const minZoomCheck =
           layer.minzoom === undefined || mapZoom >= layer.minzoom;
-        const maxZoomCheck =
-          layer.maxzoom === undefined || mapZoom <= layer.maxzoom;
+        const maxZoomCheck = mapZoom <= (layer.maxzoom ?? 20);
         return minZoomCheck && maxZoomCheck;
       });
     const pointLayers = visibleLayers.filter((l) => l.type === "point");
