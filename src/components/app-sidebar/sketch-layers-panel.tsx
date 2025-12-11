@@ -20,7 +20,11 @@ import {
   useIgrsPreference,
 } from "@/store/layers-store";
 import LayerPopover from "./layer-popover";
-import { formatLayerMeasurements } from "@/lib/layers";
+import {
+  calculateBearingDegrees,
+  formatLayerMeasurements,
+  normalizeAngleSigned,
+} from "@/lib/layers";
 import { isSketchLayer } from "@/lib/sketch-layers";
 
 type SketchLayersPanelProps = {
@@ -167,7 +171,24 @@ const SketchLayersPanel = ({
     return (
       <div className="grid gap-3 text-xs">
         {sketchLayers.map((layer) => {
-          const measurements = formatLayerMeasurements(layer, { useIgrs });
+          const azimuthAngle =
+            layer.type === "azimuth" &&
+            layer.azimuthCenter &&
+            layer.azimuthTarget
+              ? normalizeAngleSigned(
+                  calculateBearingDegrees(
+                    layer.azimuthCenter,
+                    layer.azimuthTarget
+                  )
+                )
+              : normalizeAngleSigned(layer.azimuthAngleDeg ?? 0);
+
+          const measurements = formatLayerMeasurements(
+            layer.type === "azimuth"
+              ? { ...layer, azimuthAngleDeg: azimuthAngle }
+              : layer,
+            { useIgrs }
+          );
           const badgeClass =
             typeAccent[layer.type] ?? "text-slate-600 bg-slate-100";
           const isSelected = selectedIds.includes(layer.id);
