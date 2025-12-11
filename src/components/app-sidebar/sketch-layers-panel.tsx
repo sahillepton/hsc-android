@@ -149,32 +149,6 @@ const SketchLayersPanel = ({
 
     return (
       <div className="grid gap-3 text-xs">
-        {enableSelection && sketchLayers.length > 0 && (
-          <div className="flex items-center justify-between sticky px-3 py-2 w-full top-0 z-2 bg-white text-[13px]">
-            <label className="flex items-center gap-2 font-medium text-foreground">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-border"
-                checked={
-                  selectedIds.length > 0 &&
-                  selectedIds.length === sketchLayers.length
-                }
-                onChange={toggleSelectAll}
-              />
-              <span>Select All</span>
-            </label>
-            <Button
-              variant="destructive"
-              style={{ zoom: 0.8 }}
-              disabled={!selectedIds.length}
-              onClick={handleBulkDelete}
-              className="p-2 font-semibold"
-            >
-              Delete ({selectedIds.length || 0})
-            </Button>
-          </div>
-        )}
-
         {sketchLayers.map((layer) => {
           const measurements = formatLayerMeasurements(layer, { useIgrs });
           const badgeClass =
@@ -287,7 +261,36 @@ const SketchLayersPanel = ({
   };
 
   if (variant === "plain") {
-    return <div className="space-y-3">{renderList()}</div>;
+    return (
+      <div className="space-y-3">
+        {enableSelection && sketchLayers.length > 0 && (
+          <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-10 bg-background backdrop-blur-sm shadow-sm border-b border-border/40 rounded-lg mb-3">
+            <label className="flex items-center gap-2 font-medium text-foreground">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-border"
+                checked={
+                  selectedIds.length > 0 &&
+                  selectedIds.length === sketchLayers.length
+                }
+                onChange={toggleSelectAll}
+              />
+              <span>Select All</span>
+            </label>
+            <Button
+              variant="destructive"
+              style={{ zoom: 0.8 }}
+              disabled={!selectedIds.length}
+              onClick={handleBulkDelete}
+              className="p-2 font-semibold"
+            >
+              Delete ({selectedIds.length || 0})
+            </Button>
+          </div>
+        )}
+        {renderList()}
+      </div>
+    );
   }
 
   return (
@@ -304,12 +307,43 @@ const SketchLayersPanel = ({
         )}
       </SidebarGroupLabel>
 
+      {/* Sticky header outside scrollable container */}
+      {enableSelection && sketchLayers.length > 0 && isOpen && (
+        <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-10 bg-background backdrop-blur-sm shadow-sm border-b border-border/40 rounded-lg mb-3">
+          <label className="flex items-center gap-2 font-medium text-foreground">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-border"
+              checked={
+                selectedIds.length > 0 &&
+                selectedIds.length === sketchLayers.length
+              }
+              onChange={toggleSelectAll}
+            />
+            <span>Select All</span>
+          </label>
+          <Button
+            variant="destructive"
+            style={{ zoom: 0.8 }}
+            disabled={!selectedIds.length}
+            onClick={handleBulkDelete}
+            className="p-2 font-semibold"
+          >
+            Delete ({selectedIds.length || 0})
+          </Button>
+        </div>
+      )}
+
       <SidebarGroupContent
         className={`${
           isOpen ? "block" : "hidden"
-        } transition-all max-h-[260px] overflow-y-auto`}
+        } transition-all max-h-[260px] overflow-y-auto relative`}
       >
+        {/* Top fade gradient */}
+        <div className="sticky top-0 h-6 bg-gradient-to-b from-background to-transparent pointer-events-none z-20 -mt-1" />
         <div className="space-y-3">{renderList()}</div>
+        {/* Bottom fade gradient */}
+        <div className="sticky bottom-0 h-6 bg-gradient-to-t from-background to-transparent pointer-events-none z-20 -mb-1" />
       </SidebarGroupContent>
     </SidebarGroup>
   );

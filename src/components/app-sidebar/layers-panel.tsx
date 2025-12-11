@@ -151,8 +151,10 @@ const LayersPanel = ({
       <SidebarGroupContent
         className={`${
           isOpen ? "block" : "hidden"
-        } transition-all max-h-[200px] overflow-y-auto`}
+        } transition-all max-h-[200px] overflow-y-auto relative`}
       >
+        {/* Top fade gradient */}
+        <div className="sticky top-0 h-6 bg-gradient-to-b from-background to-transparent pointer-events-none z-20 -mt-1" />
         <LayersList
           layers={nonSketchLayers}
           enableSelection={enableSelection}
@@ -165,6 +167,8 @@ const LayersPanel = ({
           onBringToTop={bringLayerToTop}
           onUpdateLayer={updateLayer}
         />
+        {/* Bottom fade gradient */}
+        <div className="sticky bottom-0 h-6 bg-gradient-to-t from-background to-transparent pointer-events-none z-20 -mb-1" />
       </SidebarGroupContent>
     </SidebarGroup>
   );

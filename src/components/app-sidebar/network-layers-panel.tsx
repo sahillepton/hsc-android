@@ -227,9 +227,13 @@ const NetworkLayersPanel = ({
       <SidebarGroupContent
         className={`${
           isOpen ? "block" : "hidden"
-        } transition-all max-h-[260px] overflow-y-auto`}
+        } transition-all max-h-[260px] overflow-y-auto relative`}
       >
+        {/* Top fade gradient */}
+        <div className="sticky top-0 h-6 bg-gradient-to-b from-background to-transparent pointer-events-none z-20 -mt-1" />
         <div className="space-y-3">{renderList()}</div>
+        {/* Bottom fade gradient */}
+        <div className="sticky bottom-0 h-6 bg-gradient-to-t from-background to-transparent pointer-events-none z-20 -mb-1" />
       </SidebarGroupContent>
     </SidebarGroup>
   );
