@@ -1749,17 +1749,68 @@ const MapComponent = ({
     }
 
     const map = mapRef.current.getMap();
-    const [minLng, minLat, maxLng, maxLat] = focusLayerRequest.bounds;
+    let [minLng, minLat, maxLng, maxLat] = focusLayerRequest.bounds;
     const { center, isSinglePoint } = focusLayerRequest;
+
+    // Validate and clamp bounds to valid ranges
+    const clampLng = (lng: number) => {
+      if (!Number.isFinite(lng)) return 0;
+      // Normalize longitude to [-180, 180]
+      while (lng > 180) lng -= 360;
+      while (lng < -180) lng += 360;
+      return lng;
+    };
+
+    const clampLat = (lat: number) => {
+      if (!Number.isFinite(lat)) return 0;
+      // Clamp latitude to [-90, 90]
+      return Math.max(-90, Math.min(90, lat));
+    };
+
+    minLng = clampLng(minLng);
+    maxLng = clampLng(maxLng);
+    minLat = clampLat(minLat);
+    maxLat = clampLat(maxLat);
+
+    // Ensure bounds are valid (min < max)
+    if (minLng > maxLng) {
+      // Handle case where bounds cross the antimeridian
+      // For large areas, we'll use a safe fallback
+      const lngSpan = maxLng + 360 - minLng;
+      if (lngSpan > 180) {
+        // Bounds are too large, use center with appropriate zoom
+        const centerLng = clampLng((minLng + maxLng) / 2);
+        const centerLat = (minLat + maxLat) / 2;
+        const currentZoom = map.getZoom();
+        map.easeTo({
+          center: [centerLng, centerLat],
+          zoom: Math.min(currentZoom, 3), // Zoom out for very large areas
+          duration: 800,
+        });
+        setFocusLayerRequest(null);
+        return;
+      }
+    }
+
+    // Ensure minimum span to avoid division by zero in fitBounds
+    const lngSpan = maxLng - minLng;
+    const latSpan = maxLat - minLat;
+    if (lngSpan < 0.0001) maxLng = minLng + 0.0001;
+    if (latSpan < 0.0001) maxLat = minLat + 0.0001;
 
     try {
       if (isSinglePoint) {
+        const currentZoom = map.getZoom();
+        // Zoom to at least 12 (but not more than map's maxZoom of 12)
+        const targetZoom = Math.max(currentZoom, 12);
         map.easeTo({
-          center,
-          zoom: Math.max(map.getZoom(), 14),
+          center: [clampLng(center[0]), clampLat(center[1])],
+          zoom: Math.min(targetZoom, 12), // Respect map's maxZoom
           duration: 800,
         });
       } else {
+        // Use map's actual maxZoom instead of 20
+        const mapMaxZoom = 12; // Match the map's maxZoom prop
         map.fitBounds(
           [
             [minLng, minLat],
@@ -1768,12 +1819,23 @@ const MapComponent = ({
           {
             padding: { top: 120, bottom: 120, left: 160, right: 160 },
             duration: 800,
-            maxZoom: 20,
+            maxZoom: mapMaxZoom, // Use actual map maxZoom
           }
         );
       }
     } catch (error) {
       console.error("Failed to focus layer:", error);
+      // Fallback: just center on the layer without zooming
+      try {
+        const centerLng = clampLng(center[0]);
+        const centerLat = clampLat(center[1]);
+        map.easeTo({
+          center: [centerLng, centerLat],
+          duration: 800,
+        });
+      } catch (fallbackError) {
+        console.error("Fallback focus also failed:", fallbackError);
+      }
     } finally {
       setFocusLayerRequest(null);
     }

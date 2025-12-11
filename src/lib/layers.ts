@@ -65,13 +65,27 @@ export const computeLayerBounds = (layer: LayerProps) => {
     return null;
   }
 
-  const longitudes = validPoints.map((point) => point[0]);
-  const latitudes = validPoints.map((point) => point[1]);
+  // Calculate min/max using loops instead of spread operator to avoid stack overflow
+  // when dealing with layers that have many coordinates (e.g., large polygons)
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
 
-  const minLng = Math.min(...longitudes);
-  const maxLng = Math.max(...longitudes);
-  const minLat = Math.min(...latitudes);
-  const maxLat = Math.max(...latitudes);
+  for (const point of validPoints) {
+    const lng = point[0];
+    const lat = point[1];
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+
+  // If all values are still Infinity, return null (no valid points)
+  if (!Number.isFinite(minLng) || !Number.isFinite(maxLng) || 
+      !Number.isFinite(minLat) || !Number.isFinite(maxLat)) {
+    return null;
+  }
 
   const isSinglePoint =
     Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6;
