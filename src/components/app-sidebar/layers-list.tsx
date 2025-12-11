@@ -63,6 +63,23 @@ const LayersList = ({
     );
   });
 
+  const handleBulkToggleVisibility = () => {
+    if (!selectedIds.length) return;
+
+    // Get selected layers
+    const selectedLayers = layers.filter((layer) =>
+      selectedIds.includes(layer.id)
+    );
+
+    // Toggle each layer individually based on its current state
+    selectedLayers.forEach((layer) => {
+      // If layer is hidden (visible === false), make it visible (true)
+      // If layer is visible (visible !== false), make it hidden (false)
+      const newVisibility = layer.visible === false ? true : false;
+      onToggleVisibility(layer.id, newVisibility);
+    });
+  };
+
   return (
     <>
       {/* Sticky header outside scrollable container */}
@@ -81,15 +98,25 @@ const LayersList = ({
             />
             <span>Select All</span>
           </label>
-          <Button
-            variant="destructive"
-            style={{ zoom: 0.8 }}
-            disabled={!selectedIds.length}
-            onClick={onBulkDelete}
-            className="p-2 font-[600]"
-          >
-            Delete ({selectedIds.length || 0})
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              style={{ zoom: 0.8, backgroundColor: "#3b82f6" }}
+              disabled={!selectedIds.length}
+              onClick={handleBulkToggleVisibility}
+              className="p-2 font-[600] text-white hover:bg-blue-600"
+            >
+              Toggle visibility
+            </Button>
+            <Button
+              variant="destructive"
+              style={{ zoom: 0.8 }}
+              disabled={!selectedIds.length}
+              onClick={onBulkDelete}
+              className="p-2 font-[600]"
+            >
+              Delete ({selectedIds.length || 0})
+            </Button>
+          </div>
         </div>
       )}
 
