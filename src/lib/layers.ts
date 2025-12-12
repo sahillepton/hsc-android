@@ -82,8 +82,12 @@ export const computeLayerBounds = (layer: LayerProps) => {
   }
 
   // If all values are still Infinity, return null (no valid points)
-  if (!Number.isFinite(minLng) || !Number.isFinite(maxLng) || 
-      !Number.isFinite(minLat) || !Number.isFinite(maxLat)) {
+  if (
+    !Number.isFinite(minLng) ||
+    !Number.isFinite(maxLng) ||
+    !Number.isFinite(minLat) ||
+    !Number.isFinite(maxLat)
+  ) {
     return null;
   }
 
@@ -525,7 +529,7 @@ export const computeZoomRange = (areaSqKm: number) => {
   console.log("[computeZoomRange] areaSqKm:", areaSqKm);
   let result;
   if (areaSqKm > 200) {
-    result = { minZoom: 3, maxZoom: 20 };
+    result = { minZoom: 1, maxZoom: 20 };
   } else {
     result = { minZoom: 9, maxZoom: 20 };
   }
