@@ -184,8 +184,14 @@ const SketchLayersPanel = ({
       );
     }
 
+    // Calculate height based on number of layers, capped at 90% of screen height
+    const estimatedItemHeight = 200; // Estimated height per item in pixels
+    const calculatedHeight = sketchLayers.length * estimatedItemHeight + 24; // 24px for padding
+    const maxHeight = windowHeight * 0.9;
+    const dynamicHeight = Math.min(calculatedHeight, maxHeight);
+
     return (
-      <div className="h-[calc(100vh-160px)] overflow-y-auto">
+      <div className="overflow-y-auto" style={{ height: `${dynamicHeight}px` }}>
         <Virtuoso
           style={{ height: "100%" }}
           data={sketchLayers}
