@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   EyeIcon,
   EyeOffIcon,
@@ -6,6 +6,7 @@ import {
   Settings2,
   ArrowUp,
 } from "lucide-react";
+import { Virtuoso } from "react-virtuoso";
 import { Button } from "../ui/button";
 import LayerPopover from "./layer-popover";
 import type { LayerProps } from "@/lib/definitions";
@@ -36,6 +37,7 @@ const LayersList = ({
   onUpdateLayer,
 }: LayersListProps) => {
   const [searchQuery] = useState("");
+  const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
 
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return null;
