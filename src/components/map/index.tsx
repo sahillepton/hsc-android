@@ -323,13 +323,27 @@ const MapComponent = ({
 
     // Process each selected file
     const toastId = toast.loading("Uploading files...");
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      await processUploadedFile(file);
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        await processUploadedFile(file);
+      }
+      toast.update(
+        toastId,
+        `Successfully uploaded ${files.length} file${
+          files.length > 1 ? "s" : ""
+        }`,
+        "success"
+      );
+    } catch (error) {
+      toast.update(
+        toastId,
+        `Error uploading files: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+        "error"
+      );
     }
-
-    toast.update(toastId, "Files uploaded successfully", "success");
-    toast.dismiss(toastId);
     // Reset the input so the same file can be selected again
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
