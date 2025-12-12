@@ -161,109 +161,114 @@ const LayersList = ({
           </div>
         )}
         {filteredLayers.length > 0 && (
-          <Virtuoso
-            style={{
-              maxHeight: containerHeight,
-            }}
-            data={filteredLayers.sort((a, b) => {
-              // Sort by uploadedAt/createdAt timestamp (newest first)
-              const aTime = (a as any).uploadedAt || (a as any).createdAt || 0;
-              const bTime = (b as any).uploadedAt || (b as any).createdAt || 0;
-              return bTime - aTime; // Descending order (newest first)
-            })}
-            increaseViewportBy={280}
-            itemContent={(_, layer) => {
-              const isSelected = selectedIds.includes(layer.id);
-              const uploadedDate = formatDate(
-                (layer as any).uploadedAt || (layer as any).createdAt
-              );
+          <div className="h-[calc(100vh-160px)] overflow-y-auto">
+            <Virtuoso
+              style={{ height: "100%" }}
+              data={filteredLayers.sort((a, b) => {
+                // Sort by uploadedAt/createdAt timestamp (newest first)
+                const aTime =
+                  (a as any).uploadedAt || (a as any).createdAt || 0;
+                const bTime =
+                  (b as any).uploadedAt || (b as any).createdAt || 0;
+                return bTime - aTime; // Descending order (newest first)
+              })}
+              increaseViewportBy={280}
+              itemContent={(_, layer) => {
+                const isSelected = selectedIds.includes(layer.id);
+                const uploadedDate = formatDate(
+                  (layer as any).uploadedAt || (layer as any).createdAt
+                );
 
-              return (
-                <div className="mb-3">
-                  <div
-                    key={layer.id}
-                    className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
-                  >
-                    <div className="absolute right-3 top-3 flex items-center gap-1">
-                      {/* Don't show bring to top for raster layers (DEM) */}
-                      {layer.type !== "dem" && (
+                return (
+                  <div className="mb-3">
+                    <div
+                      key={layer.id}
+                      className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
+                    >
+                      <div className="absolute right-3 top-3 flex items-center gap-1">
+                        {/* Don't show bring to top for raster layers (DEM) */}
+                        {layer.type !== "dem" && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            title={`Bring to top: ${layer.name}`}
+                            onClick={() => onBringToTop(layer.id)}
+                          >
+                            <ArrowUp size={10} />
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7"
-                          title={`Bring to top: ${layer.name}`}
-                          onClick={() => onBringToTop(layer.id)}
+                          title={`Focus layer: ${layer.name}`}
+                          onClick={() => onFocusLayer(layer.id)}
                         >
-                          <ArrowUp size={10} />
+                          <LocateFixed size={10} />
                         </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title={`Focus layer: ${layer.name}`}
-                        onClick={() => onFocusLayer(layer.id)}
-                      >
-                        <LocateFixed size={10} />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={() =>
-                          onToggleVisibility(layer.id, layer.visible === false)
-                        }
-                        title={
-                          layer.visible === false
-                            ? `Show layer: ${layer.name}`
-                            : `Hide layer: ${layer.name}`
-                        }
-                      >
-                        {layer.visible === true ? (
-                          <EyeIcon size={10} />
-                        ) : (
-                          <EyeOffIcon size={10} />
-                        )}
-                      </Button>
-                      <LayerPopover layer={layer} updateLayer={onUpdateLayer}>
                         <Button
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7"
-                          title={`Layer settings: ${layer.name}`}
+                          onClick={() =>
+                            onToggleVisibility(
+                              layer.id,
+                              layer.visible === false
+                            )
+                          }
+                          title={
+                            layer.visible === false
+                              ? `Show layer: ${layer.name}`
+                              : `Hide layer: ${layer.name}`
+                          }
                         >
-                          <Settings2 size={10} />
+                          {layer.visible === true ? (
+                            <EyeIcon size={10} />
+                          ) : (
+                            <EyeOffIcon size={10} />
+                          )}
                         </Button>
-                      </LayerPopover>
-                    </div>
+                        <LayerPopover layer={layer} updateLayer={onUpdateLayer}>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            title={`Layer settings: ${layer.name}`}
+                          >
+                            <Settings2 size={10} />
+                          </Button>
+                        </LayerPopover>
+                      </div>
 
-                    <div className="min-w-0 pr-14">
-                      <div className="flex items-start gap-2">
-                        {enableSelection && (
-                          <input
-                            type="checkbox"
-                            className="mt-0.5 -ml-1 h-4 w-4 rounded border-border"
-                            checked={isSelected}
-                            onChange={() => onToggleSelect(layer.id)}
-                          />
-                        )}
-                        <div className="flex items-center gap-2">
-                          <div className="text-sm font-semibold text-ellipsis text-foreground">
-                            {layer.name}
+                      <div className="min-w-0 pr-14">
+                        <div className="flex items-start gap-2">
+                          {enableSelection && (
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 -ml-1 h-4 w-4 rounded border-border"
+                              checked={isSelected}
+                              onChange={() => onToggleSelect(layer.id)}
+                            />
+                          )}
+                          <div className="flex items-center gap-2">
+                            <div className="text-sm font-semibold text-ellipsis text-foreground">
+                              {layer.name}
+                            </div>
                           </div>
                         </div>
+                        {uploadedDate && (
+                          <div className="text-[10px] text-muted-foreground mt-1">
+                            Uploaded: {uploadedDate}
+                          </div>
+                        )}
                       </div>
-                      {uploadedDate && (
-                        <div className="text-[10px] text-muted-foreground mt-1">
-                          Uploaded: {uploadedDate}
-                        </div>
-                      )}
                     </div>
                   </div>
-                </div>
-              );
-            }}
-          />
+                );
+              }}
+            />
+          </div>
         )}
       </div>
     </>
