@@ -136,7 +136,8 @@ const LayersPanel = ({
     <SidebarGroup>
       {/* Collapsible Header */}
       <SidebarGroupLabel
-        className="flex items-center justify-between cursor-pointer select-none font-semibold px-2 py-2.5 rounded-lg hover:bg-accent transition-colors"
+        className="flex items-center justify-between cursor-pointer select-none font-semibold py-2.5 rounded-lg hover:bg-accent transition-colors"
+        style={{ paddingLeft: "2%", paddingRight: "2%" }}
         onClick={() => setIsOpen(!isOpen)}
       >
         <span className="text-sm">Layers Panel</span>
@@ -151,7 +152,7 @@ const LayersPanel = ({
       <SidebarGroupContent
         className={`${
           isOpen ? "block" : "hidden"
-        } transition-all max-h-[200px] overflow-y-auto relative`}
+        } transition-all overflow-hidden relative`}
       >
         {/* Top fade gradient */}
         <div className="sticky top-0 h-6 bg-gradient-to-b from-background to-transparent pointer-events-none z-20 -mt-1" />

@@ -65,6 +65,15 @@ const SketchLayersPanel = ({
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
+  const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowHeight(window.innerHeight);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   useEffect(() => {
     setSelectedIds((prev) => {
@@ -177,7 +186,7 @@ const SketchLayersPanel = ({
 
     return (
       <Virtuoso
-        style={{ height: Math.min(300, sketchLayers.length * 200 + 24) }}
+        style={{ height: windowHeight * 0.8 }}
         data={sketchLayers}
         increaseViewportBy={280}
         itemContent={(_, layer) => {
@@ -312,10 +321,10 @@ const SketchLayersPanel = ({
 
   if (variant === "plain") {
     return (
-      <div className="space-y-3">
+      <div className="space-y-3 overflow-hidden">
         {enableSelection && sketchLayers.length > 0 && (
           <div className="flex items-center justify-between px-0 py-2 text-[13px] sticky top-0 z-10 bg-background mb-4">
-            <label className="flex items-center gap-2 font-medium text-foreground">
+            <label className="flex items-center gap-2 font-medium text-foreground pl-[2%] pr-[2%]">
               <input
                 type="checkbox"
                 className="h-4 w-4 rounded border-border"
@@ -370,7 +379,7 @@ const SketchLayersPanel = ({
       {/* Sticky header outside scrollable container */}
       {enableSelection && sketchLayers.length > 0 && isOpen && (
         <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-10 bg-background mb-4">
-          <label className="flex items-center gap-2 font-medium text-foreground">
+          <label className="flex items-center gap-2 font-medium text-foreground pl-[2%] pr-[2%]">
             <input
               type="checkbox"
               className="h-4 w-4 rounded border-border"

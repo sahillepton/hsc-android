@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -34,6 +34,15 @@ const NetworkLayersPanel = ({
   const { udpLayers } = useUdpLayers();
   const useIgrs = useIgrsPreference();
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
+  const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowHeight(window.innerHeight);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // Get UDP layer data
   const networkMembersLayer = udpLayers.find(
@@ -136,7 +145,7 @@ const NetworkLayersPanel = ({
     return (
       <Virtuoso
         style={{
-          height: Math.min(260, udpLayerItems.length * 200 + 24),
+          height: windowHeight * 0.8,
         }}
         data={udpLayerItems}
         increaseViewportBy={280}

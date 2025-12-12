@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   EyeIcon,
   EyeOffIcon,
@@ -37,6 +37,18 @@ const LayersList = ({
   onUpdateLayer,
 }: LayersListProps) => {
   const [searchQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerHeight, setContainerHeight] = useState(
+    () => window.innerHeight * 0.8
+  );
+
+  useEffect(() => {
+    const handleResize = () => {
+      setContainerHeight(window.innerHeight * 0.8);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return null;
@@ -121,7 +133,10 @@ const LayersList = ({
         </div>
       )}
 
-      <div className="space-y-3">
+      <div
+        ref={containerRef}
+        className="space-y-3 flex-1 flex flex-col min-h-0"
+      >
         {/* Search Bar */}
         {/* <div className="px-3">
         <div className="relative">
@@ -148,7 +163,7 @@ const LayersList = ({
         {filteredLayers.length > 0 && (
           <Virtuoso
             style={{
-              height: Math.min(500, filteredLayers.length * 120 + 24),
+              height: containerHeight,
             }}
             data={filteredLayers.sort((a, b) => {
               // Sort by uploadedAt/createdAt timestamp (newest first)

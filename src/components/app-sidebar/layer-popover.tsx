@@ -17,13 +17,11 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
     layer.type === "point" ? layer.radius ?? 5 : layer.pointRadius ?? 5
   );
   const [zoomPreview, setZoomPreview] = useState(layer.minzoom ?? 0);
-  const [maxZoomPreview, setMaxZoomPreview] = useState(layer.maxzoom ?? 20);
 
   // Update preview values when layer changes
   useEffect(() => {
     setZoomPreview(layer.minzoom ?? 0);
-    setMaxZoomPreview(layer.maxzoom ?? 20);
-  }, [layer.minzoom, layer.maxzoom]);
+  }, [layer.minzoom]);
 
   // Check for line geometry types
   const isLine =
@@ -204,34 +202,6 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
             <span>0</span>
             <span className="font-medium">
               Current: {zoomPreview.toFixed(0)}
-            </span>
-            <span>20</span>
-          </div>
-        </div>
-
-        {/* Max Zoom Threshold */}
-        <div className="mb-2">
-          <label className="text-xs font-medium text-muted-foreground">
-            Max Zoom
-          </label>
-          <Slider
-            min={0}
-            max={20}
-            step={1}
-            value={[maxZoomPreview]}
-            onValueChange={(values) => setMaxZoomPreview(values[0])}
-            onValueCommit={(values) =>
-              updateLayer(layer.id, {
-                ...layer,
-                maxzoom: values[0],
-              })
-            }
-            className="mt-2"
-          />
-          <div className="flex justify-between text-xs text-muted-foreground mt-1">
-            <span>0</span>
-            <span className="font-medium">
-              Current: {maxZoomPreview.toFixed(0)}
             </span>
             <span>20</span>
           </div>
