@@ -1561,19 +1561,6 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     // Include geoKeys when LCC not detected to help diagnose projection tags
     const geoKeys =
       typeof image.getGeoKeys === "function" ? image.getGeoKeys() : undefined;
-    console.log("DEM LCC debug", {
-      file: file.name,
-      source: debugInfo.source,
-      origin: debugInfo.origin,
-      resolution: debugInfo.resolution,
-      tie: debugInfo.tie,
-      scale: debugInfo.scale,
-      matrix: debugInfo.matrix,
-      boundsRaw: debugInfo.boundsRaw,
-      lcc: debugInfo.lcc,
-      boundsReprojected: debugInfo.boundsReprojected,
-      geoKeys,
-    });
   } catch {
     // ignore logging errors
   }

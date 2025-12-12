@@ -203,6 +203,203 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
     }
   };
 
+  // Find all valid files in ZIP for sequential processing (handles nested ZIPs)
+  type ValidFile = {
+    file: File;
+    type: "tiff" | "vector" | "shapefile";
+    name: string;
+  };
+
+  const findAllValidFilesInZip = async (
+    zipFile: File,
+    depth: number = 0,
+    maxDepth: number = 10
+  ): Promise<ValidFile[]> => {
+    if (depth > maxDepth) {
+      console.warn("Maximum ZIP nesting depth reached, skipping nested ZIP");
+      return [];
+    }
+
+    try {
+      const JSZip = (await import("jszip")).default;
+      const zip = await JSZip.loadAsync(zipFile);
+      const validFiles: ValidFile[] = [];
+
+      // Find all nested ZIP files first (to process recursively)
+      const nestedZipFiles = Object.keys(zip.files).filter((name) => {
+        const lowerName = name.toLowerCase();
+        if (zip.files[name].dir) return false;
+        return lowerName.endsWith(".zip");
+      });
+
+      // Process nested ZIPs recursively
+      for (const nestedZipName of nestedZipFiles) {
+        try {
+          const nestedZipData = await zip.files[nestedZipName].async("blob");
+          const nestedZipFile = new File([nestedZipData], nestedZipName, {
+            type: "application/zip",
+          });
+          const nestedFiles = await findAllValidFilesInZip(
+            nestedZipFile,
+            depth + 1,
+            maxDepth
+          );
+          validFiles.push(...nestedFiles);
+        } catch (error) {
+          console.error(`Error processing nested ZIP ${nestedZipName}:`, error);
+        }
+      }
+
+      // Find all TIFF files
+      const tiffFiles = Object.keys(zip.files).filter((name) => {
+        const lowerName = name.toLowerCase();
+        if (zip.files[name].dir) return false;
+        return (
+          lowerName.endsWith(".tif") ||
+          lowerName.endsWith(".tiff") ||
+          lowerName.endsWith(".hgt") ||
+          lowerName.endsWith(".dett")
+        );
+      });
+
+      for (const fileName of tiffFiles) {
+        try {
+          const fileData = await zip.files[fileName].async("blob");
+          const baseFileName = fileName.split("/").pop() || fileName;
+          const lowerName = fileName.toLowerCase();
+          let mimeType = "image/tiff";
+          if (lowerName.endsWith(".hgt")) {
+            mimeType = "application/octet-stream";
+          }
+          const extractedFile = new File([fileData], baseFileName, {
+            type: mimeType,
+          });
+          validFiles.push({
+            file: extractedFile,
+            type: "tiff",
+            name: baseFileName,
+          });
+        } catch (error) {
+          console.error(`Error extracting ${fileName} from ZIP:`, error);
+        }
+      }
+
+      // Find all vector files
+      const vectorFiles = Object.keys(zip.files).filter((name) => {
+        const lowerName = name.toLowerCase();
+        if (zip.files[name].dir) return false;
+        // Skip ZIP files (already processed above)
+        if (lowerName.endsWith(".zip")) return false;
+        const isOldExportFormat =
+          lowerName.includes("layers_export") &&
+          lowerName.endsWith(".json") &&
+          !lowerName.includes("/");
+        return (
+          lowerName.endsWith(".geojson") ||
+          (lowerName.endsWith(".json") &&
+            !lowerName.includes("node_icon_mappings") &&
+            !isOldExportFormat) ||
+          lowerName.endsWith(".csv") ||
+          lowerName.endsWith(".gpx") ||
+          lowerName.endsWith(".kml") ||
+          lowerName.endsWith(".kmz")
+        );
+      });
+
+      for (const fileName of vectorFiles) {
+        try {
+          const fileData = await zip.files[fileName].async("blob");
+          const baseFileName = fileName.split("/").pop() || fileName;
+          const lowerName = fileName.toLowerCase();
+          let mimeType = "application/octet-stream";
+          if (lowerName.endsWith(".geojson") || lowerName.endsWith(".json")) {
+            mimeType = "application/json";
+          } else if (lowerName.endsWith(".csv")) {
+            mimeType = "text/csv";
+          } else if (lowerName.endsWith(".gpx")) {
+            mimeType = "application/gpx+xml";
+          } else if (lowerName.endsWith(".kml")) {
+            mimeType = "application/vnd.google-earth.kml+xml";
+          } else if (lowerName.endsWith(".kmz")) {
+            mimeType = "application/vnd.google-earth.kmz";
+          }
+          const extractedFile = new File([fileData], baseFileName, {
+            type: mimeType,
+          });
+          validFiles.push({
+            file: extractedFile,
+            type: "vector",
+            name: baseFileName,
+          });
+        } catch (error) {
+          console.error(`Error extracting ${fileName} from ZIP:`, error);
+        }
+      }
+
+      // Find shapefile components and group them
+      const shapefileComponents = Object.keys(zip.files).filter((name) => {
+        const lowerName = name.toLowerCase();
+        if (zip.files[name].dir) return false;
+        return (
+          lowerName.endsWith(".shp") ||
+          lowerName.endsWith(".shx") ||
+          lowerName.endsWith(".dbf")
+        );
+      });
+
+      if (shapefileComponents.length > 0) {
+        const shapefileGroups = new Map<string, string[]>();
+        for (const fileName of shapefileComponents) {
+          const baseName = fileName
+            .toLowerCase()
+            .replace(/\.(shp|shx|dbf)$/, "");
+          if (!shapefileGroups.has(baseName)) {
+            shapefileGroups.set(baseName, []);
+          }
+          shapefileGroups.get(baseName)!.push(fileName);
+        }
+
+        for (const [baseName, files] of shapefileGroups.entries()) {
+          const hasShp = files.some((f) => f.toLowerCase().endsWith(".shp"));
+          const hasShx = files.some((f) => f.toLowerCase().endsWith(".shx"));
+          const hasDbf = files.some((f) => f.toLowerCase().endsWith(".dbf"));
+
+          if (hasShp && hasShx && hasDbf) {
+            try {
+              const shapefileZip = new JSZip();
+              for (const fileName of files) {
+                const fileData = await zip.files[fileName].async("blob");
+                shapefileZip.file(fileName, fileData);
+              }
+              const zipBlob = await shapefileZip.generateAsync({
+                type: "blob",
+                compression: "DEFLATE",
+              });
+              const extractedFile = new File([zipBlob], `${baseName}.zip`, {
+                type: "application/zip",
+              });
+              validFiles.push({
+                file: extractedFile,
+                type: "shapefile",
+                name: `${baseName}.zip`,
+              });
+            } catch (error) {
+              console.error(
+                `Error creating shapefile ZIP for ${baseName}:`,
+                error
+              );
+            }
+          }
+        }
+      }
+
+      return validFiles;
+    } catch (error) {
+      console.error("Error finding valid files in ZIP:", error);
+      return [];
+    }
+  };
+
   // Extract shapefile components from ZIP
   const extractShapefileFromZip = async (file: File): Promise<File | null> => {
     try {
@@ -722,209 +919,65 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
       if (ext === "zip") {
         setIsImporting(true);
         try {
-          // First, verify the ZIP can be read
-          let tiffCount = 0;
-          let vectorCount = 0;
-          let shapefileCount = 0;
+          // Find all valid files in ZIP
+          const validFiles = await findAllValidFilesInZip(file);
 
-          // First check for TIFF files (DEM) - process all TIFF files
-          const tiffFiles = await extractTiffFromZip(file);
-          if (tiffFiles.length > 0) {
+          if (validFiles.length === 0) {
             showMessage(
-              `Found ${tiffFiles.length} TIFF file(s) in ZIP. Processing...`,
-              false
+              "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files.",
+              true
             );
-            for (const tiffFile of tiffFiles) {
-              try {
-                await uploadDemFile(tiffFile);
-                tiffCount++;
-                await new Promise((resolve) => setTimeout(resolve, 0));
-              } catch (error) {
-                console.error(
-                  `Error processing ${tiffFile.name} from ZIP:`,
-                  error
-                );
-                showMessage(
-                  `Error processing ${tiffFile.name}: ${
-                    error instanceof Error ? error.message : "Unknown error"
-                  }`,
-                  true
-                );
-              }
-            }
+            setIsImporting(false);
+            return;
           }
 
-          // Then check for vector files (GeoJSON, CSV, GPX, KML, KMZ)
-          const vectorFiles = await extractVectorFilesFromZip(file);
-          if (vectorFiles.length > 0) {
-            showMessage(
-              `Found ${vectorFiles.length} vector file(s) in ZIP. Processing...`,
-              false
-            );
+          showMessage(
+            `Found ${validFiles.length} valid file(s) in ZIP. Processing sequentially...`,
+            false
+          );
 
-            // Separate GeoJSON files (for split file handling) from other vector files
-            const geojsonFiles = vectorFiles.filter((f) =>
-              f.name.toLowerCase().endsWith(".geojson")
-            );
-            const otherVectorFiles = vectorFiles.filter(
-              (f) => !f.name.toLowerCase().endsWith(".geojson")
-            );
+          // Process files sequentially - one at a time
+          let successCount = 0;
+          let errorCount = 0;
+          const typeCounts = { tiff: 0, vector: 0, shapefile: 0 };
 
-            // Group split GeoJSON files together (files with _part pattern)
-            const fileGroups = new Map<string, File[]>();
-            const partFileBaseNames = new Set<string>();
-
-            for (const geojsonFile of geojsonFiles) {
-              const fileName = geojsonFile.name.toLowerCase();
-              const partMatch = fileName.match(/^(.+?)_part(\d+)\.geojson$/);
-
-              if (partMatch) {
-                const baseName = partMatch[1];
-                partFileBaseNames.add(baseName);
-                if (!fileGroups.has(baseName)) {
-                  fileGroups.set(baseName, []);
-                }
-                fileGroups.get(baseName)!.push(geojsonFile);
-              }
-            }
-
-            // Identify standalone GeoJSON files and main files of splits
-            const standaloneGeoJsonFiles: File[] = [];
-
-            for (const geojsonFile of geojsonFiles) {
-              const fileName = geojsonFile.name.toLowerCase();
-              const partMatch = fileName.match(/^(.+?)_part(\d+)\.geojson$/);
-
-              if (!partMatch) {
-                const baseName = fileName.replace(/\.geojson$/, "");
-                if (partFileBaseNames.has(baseName)) {
-                  if (fileGroups.has(baseName)) {
-                    fileGroups.get(baseName)!.unshift(geojsonFile);
-                  }
-                } else {
-                  standaloneGeoJsonFiles.push(geojsonFile);
-                }
-              }
-            }
-
-            // Sort file groups by part number
-            for (const [_, files] of fileGroups.entries()) {
-              files.sort((a, b) => {
-                const aMatch = a.name.match(/_part(\d+)/);
-                const bMatch = b.name.match(/_part(\d+)/);
-                if (!aMatch) return -1;
-                if (!bMatch) return 1;
-                return parseInt(aMatch[1]) - parseInt(bMatch[1]);
-              });
-            }
-
-            // Process standalone GeoJSON files - each as a separate layer
-            for (const geojsonFile of standaloneGeoJsonFiles) {
-              try {
-                await uploadGeoJsonFile(geojsonFile);
-                vectorCount++;
-                await new Promise((resolve) => setTimeout(resolve, 0));
-              } catch (error) {
-                console.error(
-                  `Error processing ${geojsonFile.name} from ZIP:`,
-                  error
-                );
-                showMessage(
-                  `Error processing ${geojsonFile.name}: ${
-                    error instanceof Error ? error.message : "Unknown error"
-                  }`,
-                  true
-                );
-              }
-            }
-
-            // Process grouped GeoJSON files (combine split files into one layer)
-            for (const [baseName, files] of fileGroups.entries()) {
-              try {
-                const allFeatures: GeoJSON.Feature[] = [];
-                let firstFileData: any = null;
-
-                for (let i = 0; i < files.length; i++) {
-                  const file = files[i];
-                  const text = await file.text();
-                  const geojson = JSON.parse(text) as GeoJSON.FeatureCollection;
-
-                  if (i === 0) {
-                    firstFileData = geojson as any;
-                  }
-
-                  if (geojson.features) {
-                    allFeatures.push(...geojson.features);
-                  }
-                  await new Promise((resolve) => setTimeout(resolve, 0));
-                }
-
-                if (allFeatures.length > 0) {
-                  const layerName = firstFileData?.__layerName || baseName;
-                  const combinedFeatureCollection: GeoJSON.FeatureCollection = {
-                    type: "FeatureCollection",
-                    features: allFeatures,
-                  };
-
-                  const combinedBlob = new Blob(
-                    [JSON.stringify(combinedFeatureCollection)],
-                    { type: "application/json" }
-                  );
-                  const combinedFile = new File(
-                    [combinedBlob],
-                    `${layerName}.geojson`,
-                    { type: "application/json" }
-                  );
-
-                  await uploadGeoJsonFile(combinedFile);
-                  vectorCount++;
-                }
-              } catch (error) {
-                console.error(
-                  `Error combining split files for ${baseName}:`,
-                  error
-                );
-                showMessage(
-                  `Error processing split files for ${baseName}: ${
-                    error instanceof Error ? error.message : "Unknown error"
-                  }`,
-                  true
-                );
-              }
-            }
-
-            // Process other vector files (CSV, GPX, KML, KMZ) - each as a separate layer
-            for (const vectorFile of otherVectorFiles) {
-              try {
-                await uploadGeoJsonFile(vectorFile);
-                vectorCount++;
-                await new Promise((resolve) => setTimeout(resolve, 0));
-              } catch (error) {
-                console.error(
-                  `Error processing ${vectorFile.name} from ZIP:`,
-                  error
-                );
-                showMessage(
-                  `Error processing ${vectorFile.name}: ${
-                    error instanceof Error ? error.message : "Unknown error"
-                  }`,
-                  true
-                );
-              }
-            }
-          }
-
-          // Check for shapefiles
-          const shapefileZip = await extractShapefileFromZip(file);
-          if (shapefileZip) {
-            showMessage("Found shapefile in ZIP. Processing...", false);
+          for (let i = 0; i < validFiles.length; i++) {
+            const validFile = validFiles[i];
             try {
-              await uploadGeoJsonFile(shapefileZip);
-              shapefileCount++;
-            } catch (error) {
-              console.error("Error processing shapefile from ZIP:", error);
               showMessage(
-                `Error processing shapefile: ${
+                `Processing ${i + 1}/${validFiles.length}: ${
+                  validFile.name
+                }...`,
+                false
+              );
+
+              if (validFile.type === "tiff") {
+                await uploadDemFile(validFile.file);
+                typeCounts.tiff++;
+                successCount++;
+              } else if (
+                validFile.type === "vector" ||
+                validFile.type === "shapefile"
+              ) {
+                await uploadGeoJsonFile(validFile.file);
+                if (validFile.type === "shapefile") {
+                  typeCounts.shapefile++;
+                } else {
+                  typeCounts.vector++;
+                }
+                successCount++;
+              }
+
+              // Wait for the layer to be added before moving to next file
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            } catch (error) {
+              console.error(
+                `Error processing ${validFile.name} from ZIP:`,
+                error
+              );
+              errorCount++;
+              showMessage(
+                `Error processing ${validFile.name}: ${
                   error instanceof Error ? error.message : "Unknown error"
                 }`,
                 true
@@ -952,47 +1005,41 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
           }
 
           // Show final success message with counts
-          const totalImported = tiffCount + vectorCount + shapefileCount;
-          if (totalImported > 0) {
+          if (successCount > 0) {
             const parts: string[] = [];
-            if (tiffCount > 0)
-              parts.push(`${tiffCount} DEM${tiffCount > 1 ? "s" : ""}`);
-            if (vectorCount > 0) parts.push(`${vectorCount} vector`);
-            if (shapefileCount > 0) parts.push(`${shapefileCount} shapefile`);
+            if (typeCounts.tiff > 0)
+              parts.push(
+                `${typeCounts.tiff} DEM${typeCounts.tiff > 1 ? "s" : ""}`
+              );
+            if (typeCounts.vector > 0)
+              parts.push(`${typeCounts.vector} vector`);
+            if (typeCounts.shapefile > 0)
+              parts.push(`${typeCounts.shapefile} shapefile`);
             showMessage(
-              `Successfully imported ${totalImported} layer(s) from ZIP (${parts.join(
+              `Successfully imported ${successCount} layer(s) from ZIP (${parts.join(
                 ", "
-              )}).`,
-              false
+              )}).${errorCount > 0 ? ` ${errorCount} file(s) failed.` : ""}`,
+              errorCount > 0
             );
-            setIsImporting(false);
-            return;
-          } else if (
-            tiffFiles.length > 0 ||
-            vectorFiles.length > 0 ||
-            shapefileZip
-          ) {
-            showMessage(
-              "Some files could not be imported. Check errors above.",
-              true
-            );
-            setIsImporting(false);
-            return;
           } else {
-            // No supported files found in ZIP
             showMessage(
-              "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files.",
+              "No files could be imported. Check errors above.",
               true
             );
-            setIsImporting(false);
-            return;
           }
-        } finally {
           setIsImporting(false);
+          return;
+        } catch (error) {
+          console.error("Error processing ZIP file:", error);
+          showMessage(
+            `Error processing ZIP file: ${
+              error instanceof Error ? error.message : "Unknown error"
+            }`,
+            true
+          );
+          setIsImporting(false);
+          return;
         }
-
-        // If no supported files found, try processing as shapefile
-        // (This will be handled by the vectorExtensions check below)
       }
 
       const vectorExtensions = [
@@ -1620,16 +1667,6 @@ export const downloadAllLayers = async (
 
   // Layers should already have zoom ranges calculated in the store
   // Just log to verify
-  console.log("[downloadAllLayers] Processing", layers.length, "layers");
-  console.log(
-    "[downloadAllLayers] Layers zoom ranges:",
-    layers.map((l) => ({
-      id: l.id,
-      name: l.name,
-      minzoom: l.minzoom,
-      maxzoom: l.maxzoom,
-    }))
-  );
 
   // Import JSZip dynamically
   const JSZip = (await import("jszip")).default;

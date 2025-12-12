@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -34,6 +34,15 @@ const NetworkLayersPanel = ({
   const { udpLayers } = useUdpLayers();
   const useIgrs = useIgrsPreference();
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
+  const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowHeight(window.innerHeight);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // Get UDP layer data
   const networkMembersLayer = udpLayers.find(
@@ -133,77 +142,86 @@ const NetworkLayersPanel = ({
       );
     }
 
+    // Calculate height based on number of layers, capped at 90% of screen height
+    const estimatedItemHeight = 200; // Estimated height per item in pixels
+    const calculatedHeight = udpLayerItems.length * estimatedItemHeight + 24; // 24px for padding
+    const maxHeight = windowHeight * 0.9;
+    const dynamicHeight = Math.min(calculatedHeight, maxHeight);
+
     return (
-      <Virtuoso
-        className="grid gap-3 text-xs"
-        style={{
-          height: Math.min(500, udpLayerItems.length * 200 + 24),
-        }}
-        data={udpLayerItems}
-        increaseViewportBy={280}
-        itemContent={(_, layer) => {
-          // Get sample items for display (max 3)
-          const sampleItems = layer.data.slice(0, 3);
-          const isFocused = focusedLayerId === layer.id;
+      <div className="overflow-y-auto" style={{ height: `${dynamicHeight}px` }}>
+        <Virtuoso
+          style={{ height: "100%" }}
+          data={udpLayerItems}
+          increaseViewportBy={280}
+          itemContent={(_, layer) => {
+            // Get sample items for display (max 3)
+            const sampleItems = layer.data.slice(0, 3);
+            const isFocused = focusedLayerId === layer.id;
 
-          return (
-            <div
-              key={layer.id}
-              className={`relative mt-3 rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
-                isFocused ? "border-l-4 border-l-sky-300" : ""
-              }`}
-            >
-              <div className="absolute right-3 top-3 flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  title={`Focus layer: ${layer.name}`}
-                  onClick={() => handleFocusLayer(layer.id)}
+            return (
+              <div className="mb-3">
+                <div
+                  key={layer.id}
+                  className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
+                    isFocused ? "border-l-4 border-l-sky-300" : ""
+                  }`}
                 >
-                  <LocateFixed size={10} />
-                </Button>
-                <UdpLayerConfigPopover
-                  layerId={layer.id}
-                  layerName={layer.name}
-                />
-              </div>
+                  <div className="absolute right-3 top-3 flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      title={`Focus layer: ${layer.name}`}
+                      onClick={() => handleFocusLayer(layer.id)}
+                    >
+                      <LocateFixed size={10} />
+                    </Button>
+                    <UdpLayerConfigPopover
+                      layerId={layer.id}
+                      layerName={layer.name}
+                    />
+                  </div>
 
-              <div className="min-w-0 pr-14">
-                <div className="flex items-start gap-2">
-                  <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
-                    <span className="truncate text-[16px]">{layer.name}</span>
+                  <div className="min-w-0 pr-14">
+                    <div className="flex items-start gap-2">
+                      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+                        <span className="truncate text-[16px]">
+                          {layer.name}
+                        </span>
+                      </div>
+                    </div>
+
+                    {sampleItems.length > 0 && (
+                      <div className="mt-3 border-t border-border/40 pt-3">
+                        <dt className="text-[14px] font-semibold tracking-wide text-foreground mb-2">
+                          Coordinates
+                        </dt>
+                        <div className="space-y-1">
+                          {sampleItems.map((item: any, idx: number) => (
+                            <dd
+                              key={idx}
+                              className="font-mono text-[12px] text-zinc-600"
+                            >
+                              {item.name || `Item ${idx + 1}`}:{" "}
+                              {formatCoordinate(item.latitude, item.longitude)}
+                            </dd>
+                          ))}
+                          {layer.count > 3 && (
+                            <dd className="text-[12px] text-zinc-600 italic">
+                              ...and {layer.count - 3} more
+                            </dd>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
-
-                {sampleItems.length > 0 && (
-                  <div className="mt-3 border-t border-border/40 pt-3">
-                    <dt className="text-[14px] font-semibold tracking-wide text-foreground mb-2">
-                      Coordinates
-                    </dt>
-                    <div className="space-y-1">
-                      {sampleItems.map((item: any, idx: number) => (
-                        <dd
-                          key={idx}
-                          className="font-mono text-[12px] text-zinc-600"
-                        >
-                          {item.name || `Item ${idx + 1}`}:{" "}
-                          {formatCoordinate(item.latitude, item.longitude)}
-                        </dd>
-                      ))}
-                      {layer.count > 3 && (
-                        <dd className="text-[12px] text-zinc-600 italic">
-                          ...and {layer.count - 3} more
-                        </dd>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
-            </div>
-          );
-        }}
-      />
+            );
+          }}
+        />
+      </div>
     );
   };
 
@@ -242,9 +260,9 @@ const NetworkLayersPanel = ({
       </SidebarGroupLabel>
 
       <SidebarGroupContent
-        className={`${isOpen ? "block" : "hidden"} transition-all`}
+        className={`${isOpen ? "block" : "hidden"} transition-all relative`}
       >
-        <div className="space-y-3">{renderList()}</div>
+        {renderList()}
       </SidebarGroupContent>
     </SidebarGroup>
   );

@@ -65,13 +65,31 @@ export const computeLayerBounds = (layer: LayerProps) => {
     return null;
   }
 
-  const longitudes = validPoints.map((point) => point[0]);
-  const latitudes = validPoints.map((point) => point[1]);
+  // Calculate min/max using loops instead of spread operator to avoid stack overflow
+  // when dealing with layers that have many coordinates (e.g., large polygons)
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
 
-  const minLng = Math.min(...longitudes);
-  const maxLng = Math.max(...longitudes);
-  const minLat = Math.min(...latitudes);
-  const maxLat = Math.max(...latitudes);
+  for (const point of validPoints) {
+    const lng = point[0];
+    const lat = point[1];
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+
+  // If all values are still Infinity, return null (no valid points)
+  if (
+    !Number.isFinite(minLng) ||
+    !Number.isFinite(maxLng) ||
+    !Number.isFinite(minLat) ||
+    !Number.isFinite(maxLat)
+  ) {
+    return null;
+  }
 
   const isSinglePoint =
     Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6;
@@ -508,14 +526,12 @@ export const calculateLayerAreaSqKm = (layer: LayerProps): number | null => {
  * < 1 km²: minZoom = 10, maxZoom = 12 (very small area → show close up)
  */
 export const computeZoomRange = (areaSqKm: number) => {
-  console.log("[computeZoomRange] areaSqKm:", areaSqKm);
   let result;
   if (areaSqKm > 200) {
-    result = { minZoom: 3, maxZoom: 15 };
+    result = { minZoom: 1, maxZoom: 20 };
   } else {
-    result = { minZoom: 9, maxZoom: 15 };
+    result = { minZoom: 9, maxZoom: 20 };
   }
-  console.log("[computeZoomRange] result:", result);
   return result;
 };
 
@@ -526,27 +542,17 @@ export const computeZoomRange = (areaSqKm: number) => {
 export const calculateLayerZoomRange = (
   layer: LayerProps
 ): { minZoom: number; maxZoom: number } | undefined => {
-  console.log(
-    "[calculateLayerZoomRange] layer:",
-    layer.id,
-    layer.type,
-    layer.name
-  );
   // Skip point layers
   if (layer.type === "point") {
-    console.log("[calculateLayerZoomRange] Skipping point layer");
     return undefined;
   }
 
   const areaSqKm = calculateLayerAreaSqKm(layer);
-  console.log("[calculateLayerZoomRange] areaSqKm:", areaSqKm);
   if (areaSqKm === null || areaSqKm <= 0) {
-    console.log("[calculateLayerZoomRange] Invalid area, returning undefined");
     return undefined;
   }
 
   const result = computeZoomRange(areaSqKm);
-  console.log("[calculateLayerZoomRange] returning:", result);
   return result;
 };
 

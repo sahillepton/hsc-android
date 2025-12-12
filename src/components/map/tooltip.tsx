@@ -27,6 +27,7 @@ const Tooltip = () => {
     x: number;
     y: number;
   } | null>(null);
+  const [mapZoom, setMapZoom] = useState<number | null>(null);
   const mapRef = (window as any).mapRef;
 
   // Update tooltip position when map moves/zooms
@@ -126,12 +127,20 @@ const Tooltip = () => {
     // Listen to map move events
     const map = mapRef.current?.getMap();
     if (map) {
+      // Get initial zoom
+      setMapZoom(map.getZoom());
+
+      const handleZoom = () => {
+        setMapZoom(map.getZoom());
+        updatePosition();
+      };
+
       map.on("move", updatePosition);
-      map.on("zoom", updatePosition);
+      map.on("zoom", handleZoom);
 
       return () => {
         map.off("move", updatePosition);
-        map.off("zoom", updatePosition);
+        map.off("zoom", handleZoom);
       };
     }
   }, [hoverInfo, mapRef]);
@@ -175,6 +184,22 @@ const Tooltip = () => {
         .replace(/-bitmap$/, "")
         .replace(/-mesh$/, "");
       layerInfo = layers.find((l) => l.id === baseId);
+    }
+  }
+
+  // If layer is found in store and is not visible, don't show tooltip
+  // Exception: user-location-layer and other special layers that aren't in the store
+  if (layerInfo && layerInfo.visible === false) {
+    return null;
+  }
+
+  // Check if layer is outside its zoom range
+  if (layerInfo && mapZoom !== null) {
+    const minZoomCheck =
+      layerInfo.minzoom === undefined || mapZoom >= layerInfo.minzoom;
+    const maxZoomCheck = mapZoom <= (layerInfo.maxzoom ?? 20);
+    if (!minZoomCheck || !maxZoomCheck) {
+      return null;
     }
   }
 

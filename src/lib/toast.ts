@@ -184,13 +184,19 @@ export const toast = {
   },
 
   update: (id: string, message: string, type?: ToastType) => {
-    if (!toastContainer) return;
-    const toastEl = toastContainer.querySelector(
+    if (!toastContainer) {
+      // If container doesn't exist, create it
+      createToastContainer();
+    }
+    const toastEl = toastContainer?.querySelector(
       `[data-toast-id="${id}"]`
     ) as HTMLElement;
     if (toastEl) {
       const styles = getToastStyles();
       Object.assign(toastEl.style, styles);
+      // Ensure toast is visible
+      toastEl.style.opacity = "1";
+      toastEl.style.transition = "opacity 0.3s";
 
       if (type === "loading") {
         toastEl.innerHTML = `
@@ -202,13 +208,34 @@ export const toast = {
           ${createIcon("success")}
           <span style="flex: 1; color: black;">${message}</span>
         `;
-        setTimeout(() => toast.dismiss(id), 3000);
-      } else {
+        // Clear any existing dismiss timeout and set a new one
+        const existingTimeout = (toastEl as any).__dismissTimeout;
+        if (existingTimeout) clearTimeout(existingTimeout);
+        (toastEl as any).__dismissTimeout = setTimeout(
+          () => toast.dismiss(id),
+          3000
+        );
+      } else if (type === "error") {
         toastEl.innerHTML = `
           ${createIcon("error")}
           <span style="flex: 1; color: black;">${message}</span>
         `;
-        setTimeout(() => toast.dismiss(id), 5000);
+        // Clear any existing dismiss timeout and set a new one
+        const existingTimeout = (toastEl as any).__dismissTimeout;
+        if (existingTimeout) clearTimeout(existingTimeout);
+        (toastEl as any).__dismissTimeout = setTimeout(
+          () => toast.dismiss(id),
+          5000
+        );
+      }
+    } else {
+      // If toast element doesn't exist, create a new one instead
+      if (type === "success") {
+        toast.success(message);
+      } else if (type === "error") {
+        toast.error(message);
+      } else {
+        toast.loading(message);
       }
     }
   },

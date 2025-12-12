@@ -109,14 +109,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
           if (zoomRange !== undefined) {
             layerWithZoomRange.minzoom = zoomRange.minZoom;
             layerWithZoomRange.maxzoom = zoomRange.maxZoom;
-            console.log(
-              "[store] addLayer: Calculated zoom range for",
-              layer.id,
-              "minzoom:",
-              zoomRange.minZoom,
-              "maxzoom:",
-              zoomRange.maxZoom
-            );
           }
         }
         // If minzoom is set but maxzoom is not, calculate maxzoom
@@ -124,12 +116,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
           const zoomRange = calculateLayerZoomRange(layer);
           if (zoomRange !== undefined) {
             layerWithZoomRange.maxzoom = zoomRange.maxZoom;
-            console.log(
-              "[store] addLayer: Calculated maxzoom for",
-              layer.id,
-              "maxzoom:",
-              zoomRange.maxZoom
-            );
           }
         }
       }
@@ -192,14 +178,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
               if (zoomRange !== undefined) {
                 finalLayer.minzoom = zoomRange.minZoom;
                 finalLayer.maxzoom = zoomRange.maxZoom;
-                console.log(
-                  "[store] updateLayer: Calculated zoom range for",
-                  layerId,
-                  "minzoom:",
-                  zoomRange.minZoom,
-                  "maxzoom:",
-                  zoomRange.maxZoom
-                );
               }
             }
             // If minzoom is set but maxzoom is not, calculate maxzoom
@@ -207,12 +185,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
               const zoomRange = calculateLayerZoomRange(updatedLayer);
               if (zoomRange !== undefined) {
                 finalLayer.maxzoom = zoomRange.maxZoom;
-                console.log(
-                  "[store] updateLayer: Calculated maxzoom for",
-                  layerId,
-                  "maxzoom:",
-                  zoomRange.maxZoom
-                );
               }
             }
           }

@@ -23,7 +23,7 @@ const MeasurementBox = ({ onClose }: { onClose: () => void }) => {
           <X className="h-4 w-4" />
         </button>
       </div>
-      <div className="p-2 pt-0 flex-1 overflow-y-auto">
+      <div className="p-2 pt-0 flex-1 overflow-hidden flex flex-col">
         <SketchLayersPanel
           isOpen={true}
           setIsOpen={() => {}}

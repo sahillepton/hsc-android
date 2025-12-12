@@ -35,22 +35,6 @@ export const serializeLayers = async (
     const serializedLayer: LayerProps = { ...layer };
     // Log to verify minzoom and maxzoom are present
     if (layer.minzoom !== undefined || layer.maxzoom !== undefined) {
-      console.log(
-        "[serializeLayers] Layer:",
-        layer.id,
-        "minzoom:",
-        layer.minzoom,
-        "maxzoom:",
-        layer.maxzoom
-      );
-      console.log(
-        "[serializeLayers] Serialized layer:",
-        serializedLayer.id,
-        "minzoom:",
-        serializedLayer.minzoom,
-        "maxzoom:",
-        serializedLayer.maxzoom
-      );
     }
 
     // Handle DEM layers - save bitmaps as separate PNG files in ZIP
@@ -111,30 +95,9 @@ export const saveLayers = async (
   try {
     // Layers should already have zoom ranges calculated in the store
     // Just log to verify
-    console.log("[saveLayers] Processing", layers.length, "layers");
-    console.log(
-      "[saveLayers] Layers zoom ranges:",
-      layers.map((l) => ({
-        id: l.id,
-        name: l.name,
-        minzoom: l.minzoom,
-        maxzoom: l.maxzoom,
-      }))
-    );
 
     // Serialize layers and get bitmaps separately
     const { serialized, bitmaps } = await serializeLayers(layers);
-
-    // Log serialized layers to verify zoom ranges are preserved
-    console.log(
-      "[saveLayers] Serialized layers:",
-      serialized.map((l) => ({
-        id: l.id,
-        name: l.name,
-        minzoom: l.minzoom,
-        maxzoom: l.maxzoom,
-      }))
-    );
 
     // Get node icon mappings
     const { loadNodeIconMappings } = await import("./autosave");
@@ -147,17 +110,6 @@ export const saveLayers = async (
       layers: serialized,
       nodeIconMappings: nodeIconMappings,
     };
-
-    // Log export data to verify maxzoom is included
-    console.log(
-      "[saveLayers] Export data layers:",
-      exportData.layers.map((l) => ({
-        id: l.id,
-        name: l.name,
-        minzoom: l.minzoom,
-        maxzoom: l.maxzoom,
-      }))
-    );
 
     // Create ZIP using JSZip
     const JSZip = (await import("jszip")).default;
@@ -581,7 +533,6 @@ export const loadLayersFromFile = async (
         }
       } catch (error) {
         // HSC_Layers folder doesn't exist or is empty
-        console.log("No export files found in HSC_Layers folder");
       }
 
       // Try to find any JSON file in the storage directory
