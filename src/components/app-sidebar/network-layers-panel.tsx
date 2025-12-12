@@ -145,7 +145,7 @@ const NetworkLayersPanel = ({
     return (
       <Virtuoso
         style={{
-          height: windowHeight * 0.8,
+          maxHeight: windowHeight * 0.8,
         }}
         data={udpLayerItems}
         increaseViewportBy={280}

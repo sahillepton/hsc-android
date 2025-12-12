@@ -186,7 +186,7 @@ const SketchLayersPanel = ({
 
     return (
       <Virtuoso
-        style={{ height: windowHeight * 0.8 }}
+        style={{ maxHeight: windowHeight * 0.8 }}
         data={sketchLayers}
         increaseViewportBy={280}
         itemContent={(_, layer) => {

@@ -163,7 +163,7 @@ const LayersList = ({
         {filteredLayers.length > 0 && (
           <Virtuoso
             style={{
-              height: containerHeight,
+              maxHeight: containerHeight,
             }}
             data={filteredLayers.sort((a, b) => {
               // Sort by uploadedAt/createdAt timestamp (newest first)
