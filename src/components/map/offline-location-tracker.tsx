@@ -47,7 +47,7 @@ export default function OfflineLocationTracker() {
                 lng: pos.coords.longitude,
                 accuracy: pos.coords.accuracy || 0,
               };
-              console.log("User location updated:", location);
+              //  console.log("User location updated:", location);
               setUserLocation(location);
               setUserLocationError(null);
             }

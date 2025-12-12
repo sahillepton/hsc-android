@@ -356,19 +356,10 @@ const MapComponent = ({
       // Check file size and warn for very large files
       const fileSizeMB = file.size / (1024 * 1024);
       if (fileSizeMB > 50) {
-        console.log(
-          `Large file detected (${fileSizeMB.toFixed(
-            1
-          )}MB). Processing may take a while...`
-        );
       }
 
       // Add timeout for large file processing (5 minutes max)
-      const processingTimeout = setTimeout(() => {
-        console.log(
-          "File processing is taking longer than expected. Please wait..."
-        );
-      }, 60000); // 1 minute warning
+      const processingTimeout = setTimeout(() => {}, 60000); // 1 minute warning
 
       let dem;
       try {
@@ -485,7 +476,6 @@ const MapComponent = ({
           "DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning."
         );
       } else {
-        console.log(`Successfully uploaded DEM: ${file.name}`);
       }
     } catch (error) {
       const errorMessage =
@@ -640,9 +630,6 @@ const MapComponent = ({
       } as LayerProps & { uploadedAt: number };
 
       addLayer(newLayer);
-      console.log(
-        `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`
-      );
     } catch (error) {
       console.error(
         `Error uploading file: ${
@@ -762,9 +749,6 @@ const MapComponent = ({
       } as LayerProps & { uploadedAt: number };
 
       addLayer(newLayer);
-      console.log(
-        `Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`
-      );
     } catch (error) {
       console.error(
         `Error uploading annotation file: ${
@@ -1163,11 +1147,6 @@ const MapComponent = ({
               parts.push(`${typeCounts.vector} vector`);
             if (typeCounts.shapefile > 0)
               parts.push(`${typeCounts.shapefile} shapefile`);
-            console.log(
-              `Successfully imported ${successCount} layer(s) from ZIP (${parts.join(
-                ", "
-              )}).${errorCount > 0 ? ` ${errorCount} file(s) failed.` : ""}`
-            );
           } else {
             console.error(
               "No files could be imported. Check console for errors."
@@ -1348,7 +1327,7 @@ const MapComponent = ({
   //           const data = await response.json();
   //           if (Array.isArray(data) && data.length > 0) {
   //             coordinates.push(data);
-  //             console.log(`Loaded node-${i}.json: ${data.length} coordinates`);
+  //
   //           }
   //         } catch (error) {
   //           console.error(`Error loading node-${i}.json:`, error);
@@ -1393,7 +1372,7 @@ const MapComponent = ({
   };
 
   const handlePolygonDrawing = (point: [number, number]) => {
-    //   console.log("handlePolygonDrawing called with:", { point, isDrawing, currentPathLength: currentPath.length });
+    //
 
     if (!isDrawing) {
       setCurrentPath([point]);

@@ -1667,16 +1667,6 @@ export const downloadAllLayers = async (
 
   // Layers should already have zoom ranges calculated in the store
   // Just log to verify
-  console.log("[downloadAllLayers] Processing", layers.length, "layers");
-  console.log(
-    "[downloadAllLayers] Layers zoom ranges:",
-    layers.map((l) => ({
-      id: l.id,
-      name: l.name,
-      minzoom: l.minzoom,
-      maxzoom: l.maxzoom,
-    }))
-  );
 
   // Import JSZip dynamically
   const JSZip = (await import("jszip")).default;

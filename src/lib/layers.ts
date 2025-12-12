@@ -526,14 +526,12 @@ export const calculateLayerAreaSqKm = (layer: LayerProps): number | null => {
  * < 1 km²: minZoom = 10, maxZoom = 12 (very small area → show close up)
  */
 export const computeZoomRange = (areaSqKm: number) => {
-  console.log("[computeZoomRange] areaSqKm:", areaSqKm);
   let result;
   if (areaSqKm > 200) {
     result = { minZoom: 1, maxZoom: 20 };
   } else {
     result = { minZoom: 9, maxZoom: 20 };
   }
-  console.log("[computeZoomRange] result:", result);
   return result;
 };
 
@@ -544,27 +542,17 @@ export const computeZoomRange = (areaSqKm: number) => {
 export const calculateLayerZoomRange = (
   layer: LayerProps
 ): { minZoom: number; maxZoom: number } | undefined => {
-  console.log(
-    "[calculateLayerZoomRange] layer:",
-    layer.id,
-    layer.type,
-    layer.name
-  );
   // Skip point layers
   if (layer.type === "point") {
-    console.log("[calculateLayerZoomRange] Skipping point layer");
     return undefined;
   }
 
   const areaSqKm = calculateLayerAreaSqKm(layer);
-  console.log("[calculateLayerZoomRange] areaSqKm:", areaSqKm);
   if (areaSqKm === null || areaSqKm <= 0) {
-    console.log("[calculateLayerZoomRange] Invalid area, returning undefined");
     return undefined;
   }
 
   const result = computeZoomRange(areaSqKm);
-  console.log("[calculateLayerZoomRange] returning:", result);
   return result;
 };
 
