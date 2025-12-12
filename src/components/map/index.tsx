@@ -3099,7 +3099,7 @@ const MapComponent = ({
             mapInstance.addSource("offline-tiles", {
               type: "raster",
               tiles: ["/tiles-map/{z}/{x}/{y}.png"],
-              tileSize: 512,
+              tileSize: 256,
               minzoom: 0,
               maxzoom: 20,
             });
