@@ -322,11 +322,14 @@ const MapComponent = ({
     if (!files || files.length === 0) return;
 
     // Process each selected file
+    const toastId = toast.loading("Uploading files...");
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       await processUploadedFile(file);
     }
 
+    toast.update(toastId, "Files uploaded successfully", "success");
+    toast.dismiss(toastId);
     // Reset the input so the same file can be selected again
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -349,26 +352,21 @@ const MapComponent = ({
 
   // Upload DEM file with error handling for large files
   const uploadDemFile = async (file: File) => {
-    const toastId = toast.loading(`Uploading ${file.name}...`);
     try {
       // Check file size and warn for very large files
       const fileSizeMB = file.size / (1024 * 1024);
       if (fileSizeMB > 50) {
-        toast.update(
-          toastId,
+        console.log(
           `Large file detected (${fileSizeMB.toFixed(
             1
-          )}MB). Processing may take a while...`,
-          "loading"
+          )}MB). Processing may take a while...`
         );
       }
 
       // Add timeout for large file processing (5 minutes max)
       const processingTimeout = setTimeout(() => {
-        toast.update(
-          toastId,
-          "File processing is taking longer than expected. Please wait...",
-          "loading"
+        console.log(
+          "File processing is taking longer than expected. Please wait..."
         );
       }, 60000); // 1 minute warning
 
@@ -483,17 +481,11 @@ const MapComponent = ({
       addLayer(newLayer);
 
       if (isDefaultBounds) {
-        toast.update(
-          toastId,
-          "DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning.",
-          "success"
+        console.warn(
+          "DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning."
         );
       } else {
-        toast.update(
-          toastId,
-          `Successfully uploaded DEM: ${file.name}`,
-          "success"
-        );
+        console.log(`Successfully uploaded DEM: ${file.name}`);
       }
     } catch (error) {
       const errorMessage =
@@ -510,7 +502,7 @@ const MapComponent = ({
         userMessage = `File too large for available memory. Try a smaller file.`;
       }
 
-      toast.update(toastId, userMessage, "error");
+      console.error(userMessage);
     }
   };
 
@@ -547,9 +539,6 @@ const MapComponent = ({
     file: File,
     suppressToast: boolean = false
   ) => {
-    const toastId = suppressToast
-      ? null
-      : toast.loading(`Uploading ${file.name}...`);
     try {
       const lowerName = file.name.toLowerCase();
       let ext = "";
@@ -651,31 +640,21 @@ const MapComponent = ({
       } as LayerProps & { uploadedAt: number };
 
       addLayer(newLayer);
-      if (toastId) {
-        toast.update(
-          toastId,
-          `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`,
-          "success"
-        );
-      }
+      console.log(
+        `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`
+      );
     } catch (error) {
-      if (toastId) {
-        toast.update(
-          toastId,
-          `Error uploading file: ${
-            error instanceof Error ? error.message : "Unknown error"
-          }`,
-          "error"
-        );
-      } else {
-        throw error;
-      }
+      console.error(
+        `Error uploading file: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+      throw error;
     }
   };
 
   // Upload annotation file
   const uploadAnnotationFile = async (file: File) => {
-    const toastId = toast.loading(`Uploading ${file.name}...`);
     try {
       const geojson = await fileToGeoJSON(file);
 
@@ -684,16 +663,14 @@ const MapComponent = ({
         geojson.type !== "FeatureCollection" ||
         !Array.isArray(geojson.features)
       ) {
-        toast.update(
-          toastId,
-          "Invalid annotation file format. Could not convert to GeoJSON.",
-          "error"
+        console.error(
+          "Invalid annotation file format. Could not convert to GeoJSON."
         );
         return;
       }
 
       if (geojson.features.length === 0) {
-        toast.update(toastId, "Annotation file contains no features.", "error");
+        console.error("Annotation file contains no features.");
         return;
       }
 
@@ -768,10 +745,8 @@ const MapComponent = ({
       });
 
       if (annotations.length === 0) {
-        toast.update(
-          toastId,
-          "No valid annotations found. Features must have text/label/name/annotation properties.",
-          "error"
+        console.error(
+          "No valid annotations found. Features must have text/label/name/annotation properties."
         );
         return;
       }
@@ -787,18 +762,14 @@ const MapComponent = ({
       } as LayerProps & { uploadedAt: number };
 
       addLayer(newLayer);
-      toast.update(
-        toastId,
-        `Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`,
-        "success"
+      console.log(
+        `Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`
       );
     } catch (error) {
-      toast.update(
-        toastId,
+      console.error(
         `Error uploading annotation file: ${
           error instanceof Error ? error.message : "Unknown error"
-        }`,
-        "error"
+        }`
       );
     }
   };
@@ -1077,10 +1048,8 @@ const MapComponent = ({
 
   // Main file import handler (matches FileSection's handleFileImport)
   const processUploadedFile = async (file: File) => {
-    const toastId = toast.loading(`Uploading ${file.name}...`);
     try {
       if (!file) {
-        toast.dismiss(toastId);
         return;
       }
 
@@ -1109,38 +1078,14 @@ const MapComponent = ({
         let zip: any = null;
         try {
           const JSZip = (await import("jszip")).default;
-          toast.update(toastId, "Reading ZIP file...", "loading");
           zip = await JSZip.loadAsync(file);
-
-          const totalSize = Object.values(zip.files).reduce(
-            (sum: number, file: any) => {
-              return sum + (file._data?.uncompressedSize || 0);
-            },
-            0
-          );
-
-          if (totalSize > 100 * 1024 * 1024) {
-            toast.update(
-              toastId,
-              "ZIP file is large, processing may take a while...",
-              "loading"
-            );
-          }
         } catch (zipError) {
-          toast.update(
-            toastId,
-            `Error reading ZIP file: ${
-              zipError instanceof Error
-                ? zipError.message
-                : "Invalid ZIP format"
-            }`,
-            "error"
-          );
+          console.error("Error reading ZIP file:", zipError);
           return;
         }
 
         if (!zip) {
-          toast.update(toastId, "Failed to load ZIP file.", "error");
+          console.error("Failed to load ZIP file.");
           return;
         }
 
@@ -1149,19 +1094,11 @@ const MapComponent = ({
           const validFiles = await findAllValidFilesInZipWithZip(zip);
 
           if (validFiles.length === 0) {
-            toast.update(
-              toastId,
-              "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files.",
-              "error"
+            console.error(
+              "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files."
             );
             return;
           }
-
-          toast.update(
-            toastId,
-            `Found ${validFiles.length} valid file(s). Processing sequentially...`,
-            "loading"
-          );
 
           // Process files sequentially - one at a time
           let successCount = 0;
@@ -1171,14 +1108,6 @@ const MapComponent = ({
           for (let i = 0; i < validFiles.length; i++) {
             const validFile = validFiles[i];
             try {
-              toast.update(
-                toastId,
-                `Processing ${i + 1}/${validFiles.length}: ${
-                  validFile.name
-                }...`,
-                "loading"
-              );
-
               if (validFile.type === "tiff") {
                 await uploadDemFile(validFile.file);
                 typeCounts.tiff++;
@@ -1223,7 +1152,7 @@ const MapComponent = ({
             // Silently fail for node icon mappings
           }
 
-          // Show final success message
+          // Log final results
           if (successCount > 0) {
             const parts: string[] = [];
             if (typeCounts.tiff > 0)
@@ -1234,29 +1163,23 @@ const MapComponent = ({
               parts.push(`${typeCounts.vector} vector`);
             if (typeCounts.shapefile > 0)
               parts.push(`${typeCounts.shapefile} shapefile`);
-            toast.update(
-              toastId,
+            console.log(
               `Successfully imported ${successCount} layer(s) from ZIP (${parts.join(
                 ", "
-              )}).${errorCount > 0 ? ` ${errorCount} file(s) failed.` : ""}`,
-              errorCount > 0 ? "error" : "success"
+              )}).${errorCount > 0 ? ` ${errorCount} file(s) failed.` : ""}`
             );
           } else {
-            toast.update(
-              toastId,
-              "No files could be imported. Check console for errors.",
-              "error"
+            console.error(
+              "No files could be imported. Check console for errors."
             );
           }
         } catch (zipProcessError) {
-          toast.update(
-            toastId,
+          console.error(
             `Error processing ZIP file: ${
               zipProcessError instanceof Error
                 ? zipProcessError.message
                 : "Unknown error"
-            }`,
-            "error"
+            }`
           );
           return;
         }
@@ -1327,20 +1250,16 @@ const MapComponent = ({
         } else if (mimeType.includes("tiff") || mimeType.includes("tif")) {
           await uploadDemFile(file);
         } else {
-          toast.update(
-            toastId,
-            `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, TIFF, GPX, KML, KMZ, WKT/PRJ, or shapefile (with .prj).`,
-            "error"
+          console.error(
+            `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, TIFF, GPX, KML, KMZ, WKT/PRJ, or shapefile (with .prj).`
           );
         }
       }
     } catch (error) {
-      toast.update(
-        toastId,
+      console.error(
         `Error importing file: ${
           error instanceof Error ? error.message : "Unknown error"
-        }`,
-        "error"
+        }`
       );
     }
   };
