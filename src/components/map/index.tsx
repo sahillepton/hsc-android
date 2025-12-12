@@ -1892,13 +1892,6 @@ const MapComponent = ({
     }
   }, [layers, hoverInfo, setHoverInfo, networkLayersVisible]);
 
-  const {
-    cityNamesLayer,
-    indiaPlacesLayer,
-    indiaDistrictsLayer,
-    stateNamesLayer,
-  } = useDefaultLayers(mapZoom);
-
   const handleMouseMove = (event: any) => {
     if (!event.lngLat) return;
 
@@ -3148,7 +3141,7 @@ const MapComponent = ({
           bearing: 0,
         }}
         minZoom={0}
-        maxZoom={12}
+        maxZoom={15}
         maxPitch={85}
         onLoad={async (map: any) => {
           // Fit map to India's bounding box
@@ -3168,7 +3161,7 @@ const MapComponent = ({
             mapInstance.addSource("offline-tiles", {
               type: "raster",
               tiles: ["/tiles-map/{z}/{x}/{y}.png"],
-
+              tileSize: 512,
               minzoom: 0,
               maxzoom: 20,
             });
@@ -3216,10 +3209,7 @@ const MapComponent = ({
         <DeckGLOverlay
           layers={[
             ...deckGlLayers,
-            stateNamesLayer,
-            cityNamesLayer,
-            indiaPlacesLayer,
-            indiaDistrictsLayer,
+
             // Add user location layers LAST so they render on top of everything
             ...(userLocation && showUserLocation
               ? [

@@ -2,7 +2,6 @@ import {
   formatArea,
   formatDistance,
   getDistance,
-  getPolygonArea,
   formatLabel,
   calculateIgrs,
 } from "@/lib/utils";
@@ -10,6 +9,7 @@ import {
   normalizeAngleSigned,
   calculateBearingDegrees,
   computePolygonPerimeterMeters,
+  computePolygonAreaMeters,
 } from "@/lib/layers";
 import {
   useHoverInfo,
@@ -847,8 +847,9 @@ const Tooltip = () => {
         object.geometry.coordinates[0]
       ) {
         // object.geometry.coordinates is already [number, number][][] (array of rings)
-        const areaKm2 = parseFloat(getPolygonArea(object.geometry.coordinates));
-        const areaMeters = areaKm2 * 1_000_000;
+        const areaMeters = computePolygonAreaMeters(
+          object.geometry.coordinates
+        );
         geometryInfo = (
           <div className="text-gray-600">Area: {formatArea(areaMeters)}</div>
         );
@@ -1186,13 +1187,12 @@ const Tooltip = () => {
 
     if (object.polygon) {
       // object.polygon from deck.gl PolygonLayer is a single ring [number, number][]
-      // getPolygonArea expects [number, number][][] (array of rings), so wrap it
+      // computePolygonAreaMeters expects [number, number][][] (array of rings), so wrap it
       const polygonRings =
         Array.isArray(object.polygon[0]) && Array.isArray(object.polygon[0][0])
           ? object.polygon // Already array of rings [[[lng, lat], ...], ...]
           : [object.polygon]; // Single ring [[lng, lat], ...], wrap it
-      const areaKm2 = parseFloat(getPolygonArea(polygonRings));
-      const areaMeters = areaKm2 * 1_000_000;
+      const areaMeters = computePolygonAreaMeters(polygonRings);
 
       // Calculate perimeter
       // computePolygonPerimeterMeters expects [number, number][][] (array of rings)

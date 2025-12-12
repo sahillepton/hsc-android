@@ -6,6 +6,7 @@ import {
   Settings2,
   ArrowUp,
 } from "lucide-react";
+import { Virtuoso } from "react-virtuoso";
 import { Button } from "../ui/button";
 import LayerPopover from "./layer-popover";
 import type { LayerProps } from "@/lib/definitions";
@@ -145,23 +146,25 @@ const LayersList = ({
           </div>
         )}
         {filteredLayers.length > 0 && (
-          <div className="grid gap-3 text-xs">
-            {filteredLayers
-              .sort((a, b) => {
-                // Sort by uploadedAt/createdAt timestamp (newest first)
-                const aTime =
-                  (a as any).uploadedAt || (a as any).createdAt || 0;
-                const bTime =
-                  (b as any).uploadedAt || (b as any).createdAt || 0;
-                return bTime - aTime; // Descending order (newest first)
-              })
-              .map((layer) => {
-                const isSelected = selectedIds.includes(layer.id);
-                const uploadedDate = formatDate(
-                  (layer as any).uploadedAt || (layer as any).createdAt
-                );
+          <Virtuoso
+            style={{
+              height: Math.min(500, filteredLayers.length * 120 + 24),
+            }}
+            data={filteredLayers.sort((a, b) => {
+              // Sort by uploadedAt/createdAt timestamp (newest first)
+              const aTime = (a as any).uploadedAt || (a as any).createdAt || 0;
+              const bTime = (b as any).uploadedAt || (b as any).createdAt || 0;
+              return bTime - aTime; // Descending order (newest first)
+            })}
+            increaseViewportBy={280}
+            itemContent={(_, layer) => {
+              const isSelected = selectedIds.includes(layer.id);
+              const uploadedDate = formatDate(
+                (layer as any).uploadedAt || (layer as any).createdAt
+              );
 
-                return (
+              return (
+                <div className="mb-3">
                   <div
                     key={layer.id}
                     className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
@@ -242,9 +245,10 @@ const LayersList = ({
                       )}
                     </div>
                   </div>
-                );
-              })}
-          </div>
+                </div>
+              );
+            }}
+          />
         )}
       </div>
     </>
