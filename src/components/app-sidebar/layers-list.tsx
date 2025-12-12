@@ -38,13 +38,11 @@ const LayersList = ({
 }: LayersListProps) => {
   const [searchQuery] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
-  const [containerHeight, setContainerHeight] = useState(
-    () => window.innerHeight * 0.8
-  );
+  const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
 
   useEffect(() => {
     const handleResize = () => {
-      setContainerHeight(window.innerHeight * 0.8);
+      setWindowHeight(window.innerHeight);
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
@@ -161,7 +159,15 @@ const LayersList = ({
           </div>
         )}
         {filteredLayers.length > 0 && (
-          <div className="h-[calc(100vh-160px)] overflow-y-auto">
+          <div
+            className="overflow-y-auto"
+            style={{
+              height: `${Math.min(
+                filteredLayers.length * 120 + 24,
+                windowHeight * 0.9
+              )}px`,
+            }}
+          >
             <Virtuoso
               style={{ height: "100%" }}
               data={filteredLayers.sort((a, b) => {
