@@ -322,12 +322,24 @@ const MapComponent = ({
     if (!files || files.length === 0) return;
 
     // Process each selected file
-    const toastId = toast.loading("Uploading files...");
+    const toastId = toast.loading(
+      `Uploading ${files.length} file${files.length > 1 ? "s" : ""}...`
+    );
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         await processUploadedFile(file);
+        // Update progress for multiple files
+        if (files.length > 1) {
+          toast.update(
+            toastId,
+            `Uploading ${i + 1}/${files.length} files...`,
+            "loading"
+          );
+        }
       }
+      // Ensure toast is visible by adding a small delay
+      await new Promise((resolve) => setTimeout(resolve, 100));
       toast.update(
         toastId,
         `Successfully uploaded ${files.length} file${
