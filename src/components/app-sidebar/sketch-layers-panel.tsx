@@ -302,7 +302,7 @@ const SketchLayersPanel = ({
     return (
       <div className="space-y-3">
         {enableSelection && sketchLayers.length > 0 && (
-          <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-10 bg-background backdrop-blur-sm shadow-sm border-b border-border/40 rounded-lg mb-3">
+          <div className="flex items-center justify-between px-0 py-2 text-[13px] sticky top-0 z-10 bg-background mb-4">
             <label className="flex items-center gap-2 font-medium text-foreground">
               <input
                 type="checkbox"
@@ -357,7 +357,7 @@ const SketchLayersPanel = ({
 
       {/* Sticky header outside scrollable container */}
       {enableSelection && sketchLayers.length > 0 && isOpen && (
-        <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-10 bg-background backdrop-blur-sm shadow-sm border-b border-border/40 rounded-lg mb-3">
+        <div className="flex items-center justify-between px-3 py-2 text-[13px] sticky top-0 z-10 bg-background mb-4">
           <label className="flex items-center gap-2 font-medium text-foreground">
             <input
               type="checkbox"
