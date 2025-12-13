@@ -1556,14 +1556,14 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     debugInfo.boundsReprojected = bounds;
   }
 
-  // Emit a one-time debug log per raster to help diagnose positioning
-  try {
-    // Include geoKeys when LCC not detected to help diagnose projection tags
-    const geoKeys =
-      typeof image.getGeoKeys === "function" ? image.getGeoKeys() : undefined;
-  } catch {
-    // ignore logging errors
-  }
+  // // Emit a one-time debug log per raster to help diagnose positioning
+  // try {
+  //   // Include geoKeys when LCC not detected to help diagnose projection tags
+  //   const geoKeys =
+  //     typeof image.getGeoKeys === "function" ? image.getGeoKeys() : undefined;
+  // } catch {
+  //   // ignore logging errors
+  // }
 
   // Create a color ramp (simple grayscale)
   let minVal = Infinity;

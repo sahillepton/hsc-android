@@ -464,7 +464,6 @@ export const clearAutosave = async (): Promise<void> => {
     console.error("Error clearing autosave:", error);
   }
 };
-
 // Load layers from a file on app startup
 export const loadLayersFromFile = async (
   filePath?: string

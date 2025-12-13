@@ -21,7 +21,7 @@ import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
 import OfflineLocationTracker from "./offline-location-tracker";
 import { useUdpConfigStore } from "@/store/udp-config-store";
-import { useDefaultLayers } from "@/hooks/use-default-layers";
+// import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
   useCurrentPath,
   useDragStart,
@@ -51,13 +51,29 @@ import {
 import {
   formatArea,
   formatDistance,
-  fileToGeoJSON,
-  fileToDEMRaster,
-  generateRandomColor,
+  // fileToGeoJSON,
+  // fileToDEMRaster,
+  // generateRandomColor,
 } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
 import { Directory } from "@capacitor/filesystem";
 import { toast } from "@/lib/toast";
+import { NativeUploader } from "@/plugins/native-uploader";
+import { stagedPathToFile } from "@/utils/stagedPathToFile";
+import { MAX_UPLOAD_FILES } from "@/sessions/constants";
+import {
+  upsertManifestEntry,
+  finalizeSaveManifest,
+  type ManifestEntry,
+} from "@/sessions/manifestStore";
+import {
+  parseDemFile,
+  createDemLayer,
+  parseVectorFile,
+  createVectorLayer,
+  findAllValidFilesInZip,
+} from "@/utils/parser";
+import { generateRandomColor } from "@/lib/utils";
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
@@ -170,8 +186,8 @@ const MapComponent = ({
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { dragStart, setDragStart } = useDragStart();
   const { mousePosition, setMousePosition } = useMousePosition();
-  const { layers, addLayer, setLayers } = useLayers();
-  const { setNodeIconMappings } = useNodeIconMappings();
+  const { layers, addLayer } = useLayers();
+  // const { setNodeIconMappings } = useNodeIconMappings();
   const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
   const { drawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
@@ -201,10 +217,504 @@ const MapComponent = ({
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
   const [isNetworkBoxOpen, setIsNetworkBoxOpen] = useState(false);
   const lastLayerCreationTimeRef = useRef<number>(0);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
+  // const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleUpload = () => {
-    fileInputRef.current?.click();
+  const handleUpload = async () => {
+    console.log("[FileUpload] Upload button clicked");
+    const toastId = toast.loading("Opening file picker...");
+    let progressListener: { remove: () => void } | null = null;
+
+    try {
+      // Set up progress listener for upload
+      let currentUploadProgress = 0;
+      console.log("[FileUpload] Setting up progress listener...");
+      try {
+        progressListener = await NativeUploader.addListener(
+          "uploadProgress",
+          (event) => {
+            if (event.totalBytes > 0) {
+              currentUploadProgress = Math.round(
+                (event.bytesWritten / event.totalBytes) * 100
+              );
+              console.log(
+                `[FileUpload] Upload progress: ${currentUploadProgress}% (${event.bytesWritten}/${event.totalBytes} bytes)`
+              );
+              toast.update(
+                toastId,
+                `Uploading File: ${currentUploadProgress}/100 %`,
+                "loading"
+              );
+            }
+          }
+        );
+        console.log("[FileUpload] Progress listener added successfully");
+      } catch (listenerError) {
+        console.warn(
+          "[FileUpload] Failed to add progress listener:",
+          listenerError
+        );
+        // Continue without progress listener
+      }
+
+      // Pick and stage files (max 2) - plugin saves them
+      console.log(
+        `[FileUpload] Calling pickAndStageMany with maxFiles: ${MAX_UPLOAD_FILES}`
+      );
+      const result = await NativeUploader.pickAndStageMany({
+        maxFiles: MAX_UPLOAD_FILES,
+      });
+      console.log(
+        `[FileUpload] pickAndStageMany result: ${result.files.length} file(s)`
+      );
+
+      if (progressListener) {
+        await progressListener.remove();
+        console.log("[FileUpload] Progress listener removed");
+      }
+
+      if (!result.files || result.files.length === 0) {
+        toast.update(toastId, "No files selected", "error");
+        return;
+      }
+
+      // Process files sequentially
+      for (let i = 0; i < result.files.length; i++) {
+        const stagedFile = result.files[i];
+        const fileNum = i + 1;
+        console.log(
+          `[FileUpload] Processing file ${fileNum}/${result.files.length}: ${stagedFile.originalName}`
+        );
+
+        try {
+          // Step 1: Wait a bit for file to be fully written to disk
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          // Step 2: Use plugin's logicalPath (it already saved the file with timestamp)
+          const logicalPath = stagedFile.logicalPath;
+          console.log(`[FileUpload] File logical path: ${logicalPath}`);
+
+          // Step 3: Add to manifest first (before parsing to avoid losing track if parsing fails)
+          const layerId = generateLayerId();
+          const layerName = stagedFile.originalName.split(".")[0];
+          const manifestEntry: ManifestEntry = {
+            layerId,
+            layerName,
+            path: logicalPath,
+            absolutePath: stagedFile.absolutePath,
+            originalName: stagedFile.originalName,
+            mimeType: stagedFile.mimeType,
+            size: stagedFile.size,
+            status: "staged",
+            createdAt: Date.now(),
+          };
+
+          console.log(`[FileUpload] Adding to manifest: ${layerId}`);
+          console.log(
+            `[FileUpload] Manifest entry:`,
+            JSON.stringify(manifestEntry, null, 2)
+          );
+          console.log(`[FileUpload] About to call upsertManifestEntry...`);
+          try {
+            const result = await upsertManifestEntry(manifestEntry);
+            console.log(`[FileUpload] upsertManifestEntry returned:`, result);
+            console.log(`[FileUpload] Successfully added to manifest`);
+          } catch (manifestError) {
+            console.error(
+              `[FileUpload] Error adding to manifest:`,
+              manifestError
+            );
+            console.error(
+              `[FileUpload] Manifest error details:`,
+              manifestError instanceof Error
+                ? {
+                    message: manifestError.message,
+                    stack: manifestError.stack,
+                  }
+                : manifestError
+            );
+            toast.update(
+              toastId,
+              `Error adding file to manifest: ${
+                manifestError instanceof Error
+                  ? manifestError.message
+                  : "Unknown error"
+              }`,
+              "error"
+            );
+            // Don't continue - still try to render the file even if manifest fails
+            // The file is already saved, we just can't track it in manifest
+          }
+
+          // Step 4: Check file size before reading (prevent memory issues)
+          const fileSizeMB = stagedFile.size / (1024 * 1024);
+          console.log(`[FileUpload] File size: ${fileSizeMB.toFixed(2)} MB`);
+          if (fileSizeMB > 500) {
+            toast.update(
+              toastId,
+              `File ${
+                stagedFile.originalName
+              } is too large (${fileSizeMB.toFixed(
+                2
+              )} MB). Maximum size is 500 MB.`,
+              "error"
+            );
+            continue; // Skip this file
+          }
+
+          // Step 5: Convert staged file to File object (with error handling and timeout)
+          console.log(`[FileUpload] Converting staged path to File object...`);
+          let file: File;
+          try {
+            file = await Promise.race([
+              stagedPathToFile({
+                absolutePath: stagedFile.absolutePath,
+                originalName: stagedFile.originalName,
+                mimeType: stagedFile.mimeType,
+              }),
+              new Promise<never>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error("File read timeout (30 seconds)")),
+                  30000
+                )
+              ),
+            ]);
+            console.log(`[FileUpload] File object created successfully`);
+          } catch (fileError) {
+            console.error("[FileUpload] Error reading file:", fileError);
+            const errorMsg =
+              fileError instanceof Error ? fileError.message : "Unknown error";
+            toast.update(
+              toastId,
+              `Error reading file ${stagedFile.originalName}: ${errorMsg}`,
+              "error"
+            );
+            continue; // Skip this file and move to next
+          }
+
+          // Step 6: Check if file is ZIP and handle accordingly
+          const fileNameLower = stagedFile.originalName.toLowerCase();
+          const isZip = fileNameLower.endsWith(".zip");
+
+          if (isZip) {
+            // Handle ZIP file: extract and process each file inside
+            console.log(
+              `[FileUpload] ZIP file detected, extracting contents...`
+            );
+            const extractToastId = toast.loading(
+              `Extracting ZIP: ${stagedFile.originalName}...`
+            );
+
+            try {
+              const validFiles = await findAllValidFilesInZip(file);
+              console.log(
+                `[FileUpload] Found ${validFiles.length} valid file(s) in ZIP`
+              );
+
+              if (validFiles.length === 0) {
+                toast.update(
+                  extractToastId,
+                  "No supported files found in ZIP",
+                  "error"
+                );
+                continue;
+              }
+
+              toast.dismiss(extractToastId);
+
+              // Process each extracted file
+              for (
+                let zipFileIdx = 0;
+                zipFileIdx < validFiles.length;
+                zipFileIdx++
+              ) {
+                const validFile = validFiles[zipFileIdx];
+                const zipFileNum = zipFileIdx + 1;
+                console.log(
+                  `[FileUpload] Processing ZIP content ${zipFileNum}/${validFiles.length}: ${validFile.name} (${validFile.type})`
+                );
+
+                // Create manifest entry for each extracted file
+                const extractedLayerId = generateLayerId();
+                const extractedLayerName = validFile.name.split(".")[0];
+                const extractedManifestEntry: ManifestEntry = {
+                  layerId: extractedLayerId,
+                  layerName: extractedLayerName,
+                  path: logicalPath, // Use parent ZIP's path
+                  absolutePath: stagedFile.absolutePath, // Use parent ZIP's path
+                  originalName: validFile.name,
+                  mimeType: validFile.file.type,
+                  size: validFile.file.size,
+                  status: "staged",
+                  createdAt: Date.now(),
+                };
+
+                try {
+                  await upsertManifestEntry(extractedManifestEntry);
+                  console.log(
+                    `[FileUpload] Added extracted file to manifest: ${extractedLayerId}`
+                  );
+                } catch (manifestError) {
+                  console.error(
+                    `[FileUpload] Error adding extracted file to manifest:`,
+                    manifestError
+                  );
+                  continue; // Skip this extracted file
+                }
+
+                const renderToastId = toast.loading(
+                  `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): 0/100 %`
+                );
+
+                try {
+                  if (validFile.type === "tiff") {
+                    // Process as DEM/raster
+                    console.log(
+                      `[FileUpload] Processing extracted TIFF as DEM: ${validFile.name}`
+                    );
+                    const demResult = await parseDemFile(validFile.file, {
+                      layerId: extractedLayerId,
+                      layerName: extractedLayerName,
+                      onProgress: (percent) => {
+                        toast.update(
+                          renderToastId,
+                          `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): ${percent}/100 %`,
+                          "loading"
+                        );
+                      },
+                    });
+                    const newLayer = createDemLayer(demResult, {
+                      layerId: extractedLayerId,
+                      layerName: extractedLayerName,
+                    });
+                    addLayer(newLayer);
+                    console.log(
+                      `[FileUpload] DEM layer created from ZIP: ${extractedLayerId}`
+                    );
+                  } else if (
+                    validFile.type === "vector" ||
+                    validFile.type === "shapefile"
+                  ) {
+                    // Process as vector
+                    console.log(
+                      `[FileUpload] Processing extracted vector: ${validFile.name}`
+                    );
+                    const featureCollection = await parseVectorFile(
+                      validFile.file,
+                      {
+                        layerId: extractedLayerId,
+                        layerName: extractedLayerName,
+                        generateRandomColor,
+                        onProgress: (percent) => {
+                          toast.update(
+                            renderToastId,
+                            `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): ${percent}/100 %`,
+                            "loading"
+                          );
+                        },
+                      }
+                    );
+                    const newLayer = createVectorLayer(featureCollection, {
+                      layerId: extractedLayerId,
+                      layerName: extractedLayerName,
+                      generateRandomColor,
+                    });
+                    addLayer(newLayer);
+                    console.log(
+                      `[FileUpload] Vector layer created from ZIP: ${extractedLayerId}`
+                    );
+                  }
+
+                  toast.update(
+                    renderToastId,
+                    "File Rendered Successfully",
+                    "success"
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                  toast.dismiss(renderToastId);
+                } catch (renderError) {
+                  console.error(
+                    `[FileUpload] Error rendering extracted file ${validFile.name}:`,
+                    renderError
+                  );
+                  toast.update(
+                    renderToastId,
+                    `Error rendering ${validFile.name}: ${
+                      renderError instanceof Error
+                        ? renderError.message
+                        : "Unknown error"
+                    }`,
+                    "error"
+                  );
+                }
+              }
+            } catch (zipError) {
+              console.error(
+                `[FileUpload] Error processing ZIP file:`,
+                zipError
+              );
+              toast.update(
+                extractToastId,
+                `Error processing ZIP: ${
+                  zipError instanceof Error ? zipError.message : "Unknown error"
+                }`,
+                "error"
+              );
+            }
+          } else {
+            // Handle regular (non-ZIP) file
+            const vectorExtensions = [
+              "geojson",
+              "json",
+              "csv",
+              "gpx",
+              "kml",
+              "kmz",
+              "wkt",
+              "shp",
+            ];
+            const rasterExtensions = ["tif", "tiff", "hgt", "dett"];
+
+            let ext = "";
+            if (fileNameLower.endsWith(".geojson")) {
+              ext = "geojson";
+            } else if (
+              fileNameLower.endsWith(".tiff") ||
+              fileNameLower.endsWith(".tif")
+            ) {
+              ext = fileNameLower.endsWith(".tiff") ? "tiff" : "tif";
+            } else {
+              const parts = fileNameLower.split(".");
+              ext = parts.length > 1 ? parts[parts.length - 1] : "";
+            }
+
+            console.log(
+              `[FileUpload] Detected file extension: ${ext} for ${stagedFile.originalName}`
+            );
+            const isRaster = rasterExtensions.includes(ext);
+            const isVector = vectorExtensions.includes(ext);
+
+            if (!isRaster && !isVector) {
+              console.error(`[FileUpload] Unsupported file type: ${ext}`);
+              toast.update(toastId, `Unsupported file type: ${ext}`, "error");
+              continue;
+            }
+
+            const renderToastId = toast.loading(
+              `Rendering File ${fileNum} (${stagedFile.originalName}): 0/100 %`
+            );
+
+            try {
+              console.log(
+                `[FileUpload] Starting ${
+                  isRaster ? "DEM" : "Vector"
+                } parsing...`
+              );
+              if (isRaster) {
+                const demResult = await parseDemFile(file, {
+                  layerId,
+                  layerName,
+                  onProgress: (percent) => {
+                    toast.update(
+                      renderToastId,
+                      `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
+                      "loading"
+                    );
+                  },
+                });
+                const newLayer = createDemLayer(demResult, {
+                  layerId,
+                  layerName,
+                });
+                addLayer(newLayer);
+                console.log(`[FileUpload] DEM layer created: ${layerId}`);
+              } else {
+                const featureCollection = await parseVectorFile(file, {
+                  layerId,
+                  layerName,
+                  generateRandomColor,
+                  onProgress: (percent) => {
+                    toast.update(
+                      renderToastId,
+                      `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
+                      "loading"
+                    );
+                  },
+                });
+                const newLayer = createVectorLayer(featureCollection, {
+                  layerId,
+                  layerName,
+                  generateRandomColor,
+                });
+                addLayer(newLayer);
+                console.log(`[FileUpload] Vector layer created: ${layerId}`);
+              }
+
+              toast.update(
+                renderToastId,
+                "File Rendered Successfully",
+                "success"
+              );
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+              toast.dismiss(renderToastId);
+            } catch (renderError) {
+              console.error("[FileUpload] Error rendering file:", renderError);
+              toast.update(
+                renderToastId,
+                `Error rendering: ${
+                  renderError instanceof Error
+                    ? renderError.message
+                    : "Unknown error"
+                }`,
+                "error"
+              );
+              // Don't throw - continue with next file
+            }
+          }
+        } catch (fileError) {
+          console.error(
+            `[FileUpload] Error processing file ${fileNum}:`,
+            fileError
+          );
+          toast.update(
+            toastId,
+            `Error processing file ${fileNum}: ${
+              fileError instanceof Error ? fileError.message : "Unknown error"
+            }`,
+            "error"
+          );
+          // Continue with next file
+        }
+      }
+
+      toast.update(
+        toastId,
+        `Successfully uploaded and rendered ${result.files.length} file(s)`,
+        "success"
+      );
+    } catch (error) {
+      console.error("[FileUpload] Error:", error);
+      toast.update(
+        toastId,
+        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "error"
+      );
+    } finally {
+      // Always try to remove progress listener if it exists
+      if (progressListener) {
+        try {
+          progressListener.remove();
+          console.log(
+            "[FileUpload] Progress listener removed in finally block"
+          );
+        } catch (removeError) {
+          console.warn(
+            "[FileUpload] Error removing progress listener in finally:",
+            removeError
+          );
+        }
+      }
+    }
   };
 
   // Export layers using FileSection's downloadAllLayers with fixed Documents directory
@@ -243,10 +753,47 @@ const MapComponent = ({
   const handleSaveSession = async () => {
     const toastId = toast.loading("Saving session...");
     try {
-      const { saveLayers } = await import("@/lib/autosave");
-      await saveLayers(layers);
-      toast.update(toastId, "Session saved successfully", "success");
+      console.log("[SessionSave] Starting session save...");
+
+      // First, check if manifest exists and what it contains
+      const { loadManifest } = await import("@/sessions/manifestStore");
+      const beforeManifest = await loadManifest();
+      console.log(
+        `[SessionSave] Manifest before save: ${beforeManifest.length} entries`
+      );
+      if (beforeManifest.length > 0) {
+        console.log(
+          `[SessionSave] Manifest entries:`,
+          JSON.stringify(beforeManifest, null, 2)
+        );
+      }
+
+      // Step 7 & 8: Finalize manifest according to system design:
+      // - Sort all layers in manifest by size (increasing order)
+      // - Upgrade "staged" files to "saved" status
+      // - Delete "staged_delete" files from files folder
+      // - Remove "staged_delete" entries from manifest
+      const finalizedEntries = await finalizeSaveManifest();
+      console.log(
+        `[SessionSave] Manifest finalized: ${finalizedEntries.length} file(s) saved`
+      );
+      console.log(
+        `[SessionSave] Files sorted by size and staged files upgraded to saved`
+      );
+
+      if (finalizedEntries.length === 0) {
+        console.warn(
+          "[SessionSave] No files in manifest! Did you upload any files?"
+        );
+      }
+
+      toast.update(
+        toastId,
+        `Session saved successfully (${finalizedEntries.length} file(s))`,
+        "success"
+      );
     } catch (error) {
+      console.error("[SessionSave] Error:", error);
       toast.update(
         toastId,
         `Failed to save session: ${
@@ -258,22 +805,148 @@ const MapComponent = ({
   };
 
   // Restore session manually (only when button is pressed)
+  // Step 9: When user restores the session:
+  // - Check manifest file
+  // - Delete all files with status other than "saved" from files folder
+  // - Remove all entries with status other than "saved" from manifest
+  // - Only restore "saved" files
   const handleRestoreSession = async () => {
     const toastId = toast.loading("Restoring session...");
     try {
-      const { loadLayers } = await import("@/lib/autosave");
-      const restoredLayers = await loadLayers();
-      if (restoredLayers.length > 0) {
-        setLayers(restoredLayers);
-        toast.update(
-          toastId,
-          `Restored ${restoredLayers.length} layer(s) from session`,
-          "success"
-        );
-      } else {
-        toast.update(toastId, "No session data found", "error");
+      console.log("[SessionRestore] Starting session restore...");
+      // Restore: Merge temp manifest with stored manifest
+      const { restoreManifest } = await import("@/sessions/manifestStore");
+      const mergedEntries = await restoreManifest();
+
+      // Filter to only "saved" entries for rendering
+      const savedEntries = mergedEntries.filter((x) => x.status === "saved");
+      console.log(
+        `[SessionRestore] Cleanup complete. Saved entries: ${savedEntries.length}`
+      );
+
+      if (savedEntries.length === 0) {
+        toast.update(toastId, "No saved session data found", "error");
+        return;
       }
+
+      // Restore layers from saved files
+      for (let i = 0; i < savedEntries.length; i++) {
+        const entry = savedEntries[i];
+        const progressToastId = toast.loading(
+          `Restoring File ${i + 1}/${savedEntries.length}: ${
+            entry.originalName
+          }`
+        );
+
+        try {
+          console.log(
+            `[SessionRestore] Restoring file ${i + 1}/${savedEntries.length}: ${
+              entry.originalName
+            }`
+          );
+          // Convert absolute path to File object
+          const file = await stagedPathToFile({
+            absolutePath: entry.absolutePath,
+            originalName: entry.originalName,
+            mimeType: entry.mimeType || "application/octet-stream",
+          });
+
+          // Determine file type
+          const fileNameLower = entry.originalName.toLowerCase();
+          const vectorExtensions = [
+            "geojson",
+            "json",
+            "csv",
+            "gpx",
+            "kml",
+            "kmz",
+            "wkt",
+            "shp",
+            "zip",
+          ];
+          const rasterExtensions = ["tif", "tiff", "hgt", "dett"];
+
+          let ext = "";
+          if (fileNameLower.endsWith(".geojson")) {
+            ext = "geojson";
+          } else if (
+            fileNameLower.endsWith(".tiff") ||
+            fileNameLower.endsWith(".tif")
+          ) {
+            ext = fileNameLower.endsWith(".tiff") ? "tiff" : "tif";
+          } else {
+            const parts = fileNameLower.split(".");
+            ext = parts.length > 1 ? parts[parts.length - 1] : "";
+          }
+
+          const isRaster = rasterExtensions.includes(ext);
+          const isVector = vectorExtensions.includes(ext);
+
+          if (isRaster) {
+            const demResult = await parseDemFile(file, {
+              layerId: entry.layerId,
+              layerName: entry.layerName,
+              onProgress: (percent) => {
+                toast.update(
+                  progressToastId,
+                  `Restoring File ${i + 1}/${
+                    savedEntries.length
+                  }: ${percent}/100 %`,
+                  "loading"
+                );
+              },
+            });
+            const newLayer = createDemLayer(demResult, {
+              layerId: entry.layerId,
+              layerName: entry.layerName,
+            });
+            addLayer(newLayer);
+          } else if (isVector) {
+            const featureCollection = await parseVectorFile(file, {
+              layerId: entry.layerId,
+              layerName: entry.layerName,
+              generateRandomColor,
+              onProgress: (percent) => {
+                toast.update(
+                  progressToastId,
+                  `Restoring File ${i + 1}/${
+                    savedEntries.length
+                  }: ${percent}/100 %`,
+                  "loading"
+                );
+              },
+            });
+            const newLayer = createVectorLayer(featureCollection, {
+              layerId: entry.layerId,
+              layerName: entry.layerName,
+              generateRandomColor,
+            });
+            addLayer(newLayer);
+          }
+          toast.dismiss(progressToastId);
+        } catch (error) {
+          console.error(
+            `[SessionRestore] Error restoring file ${entry.originalName}:`,
+            error
+          );
+          toast.update(
+            progressToastId,
+            `Error restoring ${entry.originalName}`,
+            "error"
+          );
+        }
+      }
+
+      // Step 9: Only restore from manifest (saved files only)
+      // All non-saved files have been cleaned up by cleanupNonSavedManifest
+
+      toast.update(
+        toastId,
+        `Restored ${savedEntries.length} file(s) from session`,
+        "success"
+      );
     } catch (error) {
+      console.error("[SessionRestore] Error:", error);
       toast.update(
         toastId,
         `Failed to restore session: ${
@@ -312,960 +985,6 @@ const MapComponent = ({
         zoom: Math.max(map.getZoom(), 14), // Zoom to at least level 14, or keep current if higher
         duration: 1000,
       });
-    }
-  };
-
-  const handleFileChange = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) return;
-
-    // Process each selected file
-    const toastId = toast.loading(
-      `Uploading ${files.length} file${files.length > 1 ? "s" : ""}...`
-    );
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        await processUploadedFile(file);
-        // Update progress for multiple files
-        if (files.length > 1) {
-          toast.update(
-            toastId,
-            `Uploading ${i + 1}/${files.length} files...`,
-            "loading"
-          );
-        }
-      }
-      // Ensure toast is visible by adding a small delay
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      toast.update(
-        toastId,
-        `Successfully uploaded ${files.length} file${
-          files.length > 1 ? "s" : ""
-        }`,
-        "success"
-      );
-    } catch (error) {
-      toast.update(
-        toastId,
-        `Error uploading files: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`,
-        "error"
-      );
-    }
-    // Reset the input so the same file can be selected again
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  };
-
-  // Helper function to extract size from properties (for CSV)
-  const extractSizeFromProperties = (
-    properties: any,
-    sizeType: "point" | "line"
-  ): number | null => {
-    if (!properties) return null;
-    const key =
-      sizeType === "point"
-        ? properties.radius || properties.pointRadius || properties.size
-        : properties.width || properties.lineWidth || properties.strokeWidth;
-    if (typeof key === "number" && key > 0) return key;
-    return null;
-  };
-
-  // Upload DEM file with error handling for large files
-  const uploadDemFile = async (file: File) => {
-    try {
-      // Check file size and warn for very large files
-      const fileSizeMB = file.size / (1024 * 1024);
-      if (fileSizeMB > 50) {
-      }
-
-      // Add timeout for large file processing (5 minutes max)
-      const processingTimeout = setTimeout(() => {}, 60000); // 1 minute warning
-
-      let dem;
-      try {
-        // Prefer worker: offload DEM parsing; fallback to main thread if worker fails/times out
-        const runWorker = async () => {
-          const worker = new Worker(
-            new URL("../../workers/dem-worker.ts", import.meta.url),
-            { type: "module" }
-          );
-          const ab = await file.arrayBuffer();
-          const result = await new Promise<any>((resolve, reject) => {
-            const timer = setTimeout(() => {
-              worker.terminate();
-              reject(new Error("Worker timeout"));
-            }, 300000);
-            worker.onmessage = (e: MessageEvent<any>) => {
-              clearTimeout(timer);
-              worker.terminate();
-              resolve(e.data);
-            };
-            worker.onerror = (err) => {
-              clearTimeout(timer);
-              worker.terminate();
-              reject(err);
-            };
-            worker.postMessage(
-              { type: "parse-dem", name: file.name, buffer: ab },
-              [ab]
-            );
-          });
-          if (result?.error) throw new Error(result.error);
-
-          // Rebuild canvas from grayscale on main thread
-          const elevation = new Float32Array(result.elevationBuffer);
-          const grayscale = new Uint8ClampedArray(result.grayscaleBuffer);
-          const canvas = document.createElement("canvas");
-          canvas.width = result.width;
-          canvas.height = result.height;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            throw new Error("Failed to create canvas for DEM");
-          }
-          const cloned = new Uint8ClampedArray(grayscale.length);
-          cloned.set(grayscale);
-          const img = new ImageData(cloned, result.width, result.height);
-          ctx.putImageData(img, 0, 0);
-
-          return {
-            bounds: result.bounds,
-            width: result.width,
-            height: result.height,
-            data: elevation,
-            min: result.min,
-            max: result.max,
-            canvas,
-          };
-        };
-
-        dem = await Promise.race([
-          runWorker(),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error("Processing timeout after 5 minutes")),
-              300000
-            )
-          ),
-        ]);
-        clearTimeout(processingTimeout);
-      } catch (workerErr) {
-        // Worker failed; fallback to main-thread parsing
-        dem = await Promise.race([
-          fileToDEMRaster(file),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error("Processing timeout after 5 minutes")),
-              300000
-            )
-          ),
-        ]);
-        clearTimeout(processingTimeout);
-      }
-
-      const isDefaultBounds =
-        dem.bounds[0] === 68.0 &&
-        dem.bounds[1] === 6.0 &&
-        dem.bounds[2] === 97.0 &&
-        dem.bounds[3] === 37.0;
-
-      const newLayer: LayerProps = {
-        type: "dem",
-        id: generateLayerId(),
-        name: file.name.split(".")[0],
-        color: [255, 255, 255],
-        visible: true,
-        bounds: [
-          [dem.bounds[0], dem.bounds[1]],
-          [dem.bounds[2], dem.bounds[3]],
-        ],
-        bitmap: dem.canvas,
-        texture: dem.canvas,
-        elevationData: {
-          data: dem.data,
-          width: dem.width,
-          height: dem.height,
-          min: dem.min,
-          max: dem.max,
-        },
-        uploadedAt: Date.now(),
-      } as LayerProps & { uploadedAt: number };
-      addLayer(newLayer);
-
-      if (isDefaultBounds) {
-        console.warn(
-          "DEM uploaded with default bounds (may not be correctly positioned). Use a georeferenced GeoTIFF for accurate positioning."
-        );
-      } else {
-      }
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
-
-      // Provide helpful error messages for common issues
-      let userMessage = `Error uploading DEM: ${errorMessage}`;
-      if (errorMessage.includes("timeout") || errorMessage.includes("time")) {
-        userMessage = `File too large or processing timeout. Try a smaller file or wait longer.`;
-      } else if (
-        errorMessage.includes("memory") ||
-        errorMessage.includes("Memory")
-      ) {
-        userMessage = `File too large for available memory. Try a smaller file.`;
-      }
-
-      console.error(userMessage);
-    }
-  };
-
-  // Upload GeoJSON/Vector file
-  const parseVectorInWorker = async (file: File) => {
-    const worker = new Worker(
-      new URL("../../workers/vector-worker.ts", import.meta.url),
-      { type: "module" }
-    );
-    const ab = await file.arrayBuffer();
-    return await new Promise<any>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        worker.terminate();
-        reject(new Error("Vector worker timeout"));
-      }, 180000); // 3 minutes
-      worker.onmessage = (e: MessageEvent<any>) => {
-        clearTimeout(timer);
-        worker.terminate();
-        resolve(e.data);
-      };
-      worker.onerror = (err) => {
-        clearTimeout(timer);
-        worker.terminate();
-        reject(err);
-      };
-      worker.postMessage(
-        { type: "parse-vector", name: file.name, mime: file.type, buffer: ab },
-        [ab]
-      );
-    });
-  };
-
-  const uploadGeoJsonFile = async (
-    file: File,
-    suppressToast: boolean = false
-  ) => {
-    try {
-      const lowerName = file.name.toLowerCase();
-      let ext = "";
-      if (lowerName.endsWith(".geojson")) {
-        ext = "geojson";
-      } else if (lowerName.endsWith(".tiff")) {
-        ext = "tiff";
-      } else {
-        const parts = lowerName.split(".");
-        ext = parts.length > 1 ? parts[parts.length - 1] : "";
-      }
-
-      const shouldOffloadVector = [
-        "csv",
-        "gpx",
-        "kml",
-        "kmz",
-        "wkt",
-        "prj",
-      ].includes(ext);
-
-      let rawGeojson: any = null;
-
-      if (shouldOffloadVector) {
-        try {
-          const workerResult = await parseVectorInWorker(file);
-          if (workerResult?.geojson) {
-            rawGeojson = workerResult.geojson;
-          } else if (workerResult?.unsupported) {
-            // Fall back to main thread below
-          } else if (workerResult?.error) {
-            // Fall back to main thread parsing
-          }
-        } catch {
-          // Fall back to main thread parsing
-        }
-      }
-
-      if (!rawGeojson) {
-        rawGeojson = await fileToGeoJSON(file);
-      }
-
-      // Convert to FeatureCollection format
-      let features: GeoJSON.Feature[] = [];
-
-      if (rawGeojson.type === "FeatureCollection") {
-        features = (rawGeojson as GeoJSON.FeatureCollection).features || [];
-      } else if (rawGeojson.type === "Feature") {
-        features = [rawGeojson as GeoJSON.Feature];
-      } else if (
-        (rawGeojson as any).features &&
-        Array.isArray((rawGeojson as any).features)
-      ) {
-        features = (rawGeojson as any).features;
-      } else if ((rawGeojson as any).geometry) {
-        features = [
-          {
-            type: "Feature",
-            geometry: (rawGeojson as any).geometry,
-            properties: (rawGeojson as any).properties ?? {},
-          },
-        ];
-      }
-
-      // Filter out invalid features
-      const validFeatures = features.filter((f) => f && f.geometry);
-
-      // Extract size values from properties if available
-      const firstFeature = validFeatures[0];
-      const hasPoints = validFeatures.some(
-        (f) => f.geometry?.type === "Point" || f.geometry?.type === "MultiPoint"
-      );
-      const hasLines = validFeatures.some(
-        (f) =>
-          f.geometry?.type === "LineString" ||
-          f.geometry?.type === "MultiLineString"
-      );
-
-      const extractedPointRadius = hasPoints
-        ? extractSizeFromProperties(firstFeature?.properties, "point")
-        : null;
-      const extractedLineWidth = hasLines
-        ? extractSizeFromProperties(firstFeature?.properties, "line")
-        : null;
-
-      const newLayer: LayerProps = {
-        type: "geojson",
-        id: generateLayerId(),
-        name: file.name.split(".")[0],
-        geojson: {
-          type: "FeatureCollection",
-          features: validFeatures,
-        },
-        color: generateRandomColor(),
-        pointRadius: extractedPointRadius ?? 5,
-        lineWidth: extractedLineWidth ?? 5,
-        visible: true,
-        uploadedAt: Date.now(),
-      } as LayerProps & { uploadedAt: number };
-
-      addLayer(newLayer);
-    } catch (error) {
-      console.error(
-        `Error uploading file: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
-      );
-      throw error;
-    }
-  };
-
-  // Upload annotation file
-  const uploadAnnotationFile = async (file: File) => {
-    try {
-      const geojson = await fileToGeoJSON(file);
-
-      if (
-        !geojson ||
-        geojson.type !== "FeatureCollection" ||
-        !Array.isArray(geojson.features)
-      ) {
-        console.error(
-          "Invalid annotation file format. Could not convert to GeoJSON."
-        );
-        return;
-      }
-
-      if (geojson.features.length === 0) {
-        console.error("Annotation file contains no features.");
-        return;
-      }
-
-      const annotations: Array<{
-        position: [number, number];
-        text: string;
-        color?: [number, number, number];
-        fontSize?: number;
-      }> = [];
-
-      geojson.features.forEach((feature: any) => {
-        const text =
-          feature.properties?.text ||
-          feature.properties?.label ||
-          feature.properties?.name ||
-          feature.properties?.annotation ||
-          feature.properties?.title ||
-          "";
-
-        if (text && feature.geometry) {
-          let position: [number, number] | null = null;
-
-          if (
-            feature.geometry.type === "Point" &&
-            feature.geometry.coordinates
-          ) {
-            position = [
-              feature.geometry.coordinates[0],
-              feature.geometry.coordinates[1],
-            ];
-          } else if (
-            feature.geometry.type === "LineString" &&
-            feature.geometry.coordinates.length > 0
-          ) {
-            position = [
-              feature.geometry.coordinates[0][0],
-              feature.geometry.coordinates[0][1],
-            ];
-          } else if (
-            feature.geometry.type === "Polygon" &&
-            feature.geometry.coordinates.length > 0
-          ) {
-            position = [
-              feature.geometry.coordinates[0][0][0],
-              feature.geometry.coordinates[0][0][1],
-            ];
-          }
-
-          if (position) {
-            let color: [number, number, number] | undefined;
-            if (feature.properties?.color) {
-              if (Array.isArray(feature.properties.color)) {
-                color = feature.properties.color.slice(0, 3) as [
-                  number,
-                  number,
-                  number
-                ];
-              }
-            }
-
-            annotations.push({
-              position,
-              text: String(text),
-              color,
-              fontSize:
-                feature.properties?.fontSize ||
-                feature.properties?.font_size ||
-                undefined,
-            });
-          }
-        }
-      });
-
-      if (annotations.length === 0) {
-        console.error(
-          "No valid annotations found. Features must have text/label/name/annotation properties."
-        );
-        return;
-      }
-
-      const newLayer: LayerProps = {
-        type: "annotation",
-        id: generateLayerId(),
-        name: file.name.split(".")[0],
-        color: [0, 0, 0],
-        visible: true,
-        annotations: annotations,
-        uploadedAt: Date.now(),
-      } as LayerProps & { uploadedAt: number };
-
-      addLayer(newLayer);
-    } catch (error) {
-      console.error(
-        `Error uploading annotation file: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
-      );
-    }
-  };
-
-  // Import layers from JSON export
-  const importLayersFromJson = async (file: File): Promise<boolean> => {
-    const toastId = toast.loading(`Importing ${file.name}...`);
-    try {
-      const text = await file.text();
-      const importData = JSON.parse(text);
-
-      if (importData.version && Array.isArray(importData.layers)) {
-        if (!importData.layers || !Array.isArray(importData.layers)) {
-          throw new Error("Invalid layers data format");
-        }
-
-        if (importData.layers.length > 100) {
-          const proceed = window.confirm(
-            `This export contains ${importData.layers.length} layers. ` +
-              `Importing may take a moment and could affect performance. Continue?`
-          );
-          if (!proceed) {
-            toast.dismiss(toastId);
-            return true;
-          }
-        }
-
-        setTimeout(() => {
-          setLayers(importData.layers);
-
-          if (importData.nodeIconMappings) {
-            setNodeIconMappings(importData.nodeIconMappings);
-          }
-
-          setTimeout(() => {
-            toast.update(
-              toastId,
-              `Successfully imported ${importData.layers.length} layers from ${file.name}`,
-              "success"
-            );
-          }, 500);
-        }, 300);
-
-        return true;
-      } else {
-        toast.dismiss(toastId);
-        return false;
-      }
-    } catch (error) {
-      let errorMessage = "Failed to import layers";
-      if (error instanceof Error) {
-        const errorMsg = error.message.toLowerCase();
-        if (
-          errorMsg.includes("memory") ||
-          errorMsg.includes("heap") ||
-          errorMsg.includes("allocation")
-        ) {
-          errorMessage =
-            "File is too large for Android. Please split the export into smaller files.";
-        } else if (errorMsg.includes("parse")) {
-          errorMessage = "Invalid JSON format. Please check the file.";
-        } else {
-          errorMessage = error.message;
-        }
-      }
-
-      toast.update(toastId, errorMessage, "error");
-      return false;
-    }
-  };
-
-  // Find all valid files in ZIP for sequential processing (handles nested ZIPs)
-  type ValidFile = {
-    file: File;
-    type: "tiff" | "vector" | "shapefile";
-    name: string;
-  };
-
-  const findAllValidFilesInZipWithZip = async (
-    zip: any,
-    depth: number = 0,
-    maxDepth: number = 10
-  ): Promise<ValidFile[]> => {
-    if (depth > maxDepth) {
-      console.warn("Maximum ZIP nesting depth reached, skipping nested ZIP");
-      return [];
-    }
-
-    try {
-      const JSZip = (await import("jszip")).default;
-      const validFiles: ValidFile[] = [];
-
-      // Find all nested ZIP files first (to process recursively)
-      const nestedZipFiles = Object.keys(zip.files).filter((name) => {
-        const lowerName = name.toLowerCase();
-        if (zip.files[name].dir) return false;
-        return lowerName.endsWith(".zip");
-      });
-
-      // Process nested ZIPs recursively
-      for (const nestedZipName of nestedZipFiles) {
-        try {
-          const nestedZipData = await zip.files[nestedZipName].async("blob");
-          const nestedZip = await JSZip.loadAsync(nestedZipData);
-          const nestedFiles = await findAllValidFilesInZipWithZip(
-            nestedZip,
-            depth + 1,
-            maxDepth
-          );
-          validFiles.push(...nestedFiles);
-        } catch (error) {
-          console.error(`Error processing nested ZIP ${nestedZipName}:`, error);
-        }
-      }
-
-      // Find all TIFF files
-      const tiffFiles = Object.keys(zip.files).filter((name) => {
-        const lowerName = name.toLowerCase();
-        if (zip.files[name].dir) return false;
-        return (
-          lowerName.endsWith(".tif") ||
-          lowerName.endsWith(".tiff") ||
-          lowerName.endsWith(".hgt") ||
-          lowerName.endsWith(".dett")
-        );
-      });
-
-      for (const fileName of tiffFiles) {
-        try {
-          const fileEntry = zip.files[fileName];
-          if (fileEntry._data?.uncompressedSize > 50 * 1024 * 1024) {
-            continue; // Skip large files
-          }
-          const fileData = await fileEntry.async("blob");
-          const baseFileName = fileName.split("/").pop() || fileName;
-          const lowerName = fileName.toLowerCase();
-          let mimeType = "image/tiff";
-          if (lowerName.endsWith(".hgt")) {
-            mimeType = "application/octet-stream";
-          }
-          const extractedFile = new File([fileData], baseFileName, {
-            type: mimeType,
-          });
-          validFiles.push({
-            file: extractedFile,
-            type: "tiff",
-            name: baseFileName,
-          });
-        } catch (error) {
-          // Skip files that fail to extract
-        }
-      }
-
-      // Find all vector files
-      const vectorFiles = Object.keys(zip.files).filter((name) => {
-        const lowerName = name.toLowerCase();
-        if (zip.files[name].dir) return false;
-        // Skip ZIP files (already processed above)
-        if (lowerName.endsWith(".zip")) return false;
-        const isOldExportFormat =
-          lowerName.includes("layers_export") &&
-          lowerName.endsWith(".json") &&
-          !lowerName.includes("/");
-        return (
-          lowerName.endsWith(".geojson") ||
-          (lowerName.endsWith(".json") &&
-            !lowerName.includes("node_icon_mappings") &&
-            !isOldExportFormat) ||
-          lowerName.endsWith(".csv") ||
-          lowerName.endsWith(".gpx") ||
-          lowerName.endsWith(".kml") ||
-          lowerName.endsWith(".kmz") ||
-          lowerName.endsWith(".wkt") ||
-          lowerName.endsWith(".prj")
-        );
-      });
-
-      for (const fileName of vectorFiles) {
-        try {
-          const fileEntry = zip.files[fileName];
-          const fileData = await fileEntry.async("blob");
-          const baseFileName = fileName.split("/").pop() || fileName;
-          const lowerName = fileName.toLowerCase();
-          let mimeType = "application/octet-stream";
-          if (lowerName.endsWith(".geojson") || lowerName.endsWith(".json")) {
-            mimeType = "application/json";
-          } else if (lowerName.endsWith(".csv")) {
-            mimeType = "text/csv";
-          } else if (lowerName.endsWith(".gpx")) {
-            mimeType = "application/gpx+xml";
-          } else if (lowerName.endsWith(".kml")) {
-            mimeType = "application/vnd.google-earth.kml+xml";
-          } else if (lowerName.endsWith(".kmz")) {
-            mimeType = "application/vnd.google-earth.kmz";
-          }
-          const extractedFile = new File([fileData], baseFileName, {
-            type: mimeType,
-          });
-          validFiles.push({
-            file: extractedFile,
-            type: "vector",
-            name: baseFileName,
-          });
-        } catch (error) {
-          // Skip files that fail to extract
-        }
-      }
-
-      // Find shapefile components and group them
-      const shapefileComponents = Object.keys(zip.files).filter((name) => {
-        const lowerName = name.toLowerCase();
-        if (zip.files[name].dir) return false;
-        return (
-          lowerName.endsWith(".shp") ||
-          lowerName.endsWith(".shx") ||
-          lowerName.endsWith(".dbf") ||
-          lowerName.endsWith(".prj")
-        );
-      });
-
-      if (shapefileComponents.length > 0) {
-        const shapefileGroups: Record<string, string[]> = {};
-        for (const fileName of shapefileComponents) {
-          const baseName = fileName
-            .toLowerCase()
-            .replace(/\.(shp|shx|dbf|prj)$/, "");
-          if (!shapefileGroups[baseName]) {
-            shapefileGroups[baseName] = [];
-          }
-          shapefileGroups[baseName].push(fileName);
-        }
-
-        for (const [baseName, files] of Object.entries(shapefileGroups)) {
-          const hasShp = files.some((f: string) =>
-            f.toLowerCase().endsWith(".shp")
-          );
-          const hasShx = files.some((f: string) =>
-            f.toLowerCase().endsWith(".shx")
-          );
-          const hasDbf = files.some((f: string) =>
-            f.toLowerCase().endsWith(".dbf")
-          );
-
-          if (hasShp && hasShx && hasDbf) {
-            try {
-              const shapefileZip = new JSZip();
-              for (const fileName of files) {
-                const fileData = await zip.files[fileName].async("blob");
-                shapefileZip.file(fileName, fileData);
-              }
-              const zipBlob = await shapefileZip.generateAsync({
-                type: "blob",
-                compression: "DEFLATE",
-              });
-              const extractedFile = new File([zipBlob], `${baseName}.zip`, {
-                type: "application/zip",
-              });
-              validFiles.push({
-                file: extractedFile,
-                type: "shapefile",
-                name: `${baseName}.zip`,
-              });
-            } catch (error) {
-              // Skip shapefiles that fail to create
-            }
-          }
-        }
-      }
-
-      return validFiles;
-    } catch (error) {
-      console.error("Error finding valid files in ZIP:", error);
-      return [];
-    }
-  };
-
-  // Main file import handler (matches FileSection's handleFileImport)
-  const processUploadedFile = async (file: File) => {
-    try {
-      if (!file) {
-        return;
-      }
-
-      const fileName = file.name?.toLowerCase() || "";
-      let ext = "";
-
-      if (fileName.endsWith(".geojson")) {
-        ext = "geojson";
-      } else if (fileName.endsWith(".tiff")) {
-        ext = "tiff";
-      } else {
-        const parts = fileName.split(".");
-        ext = parts.length > 1 ? parts[parts.length - 1] : "";
-      }
-
-      // Check for layer export JSON first
-      if (ext === "json") {
-        const isLayerExport = await importLayersFromJson(file);
-        if (isLayerExport) {
-          return;
-        }
-      }
-
-      // Handle ZIP files
-      if (ext === "zip") {
-        let zip: any = null;
-        try {
-          const JSZip = (await import("jszip")).default;
-          zip = await JSZip.loadAsync(file);
-        } catch (zipError) {
-          console.error("Error reading ZIP file:", zipError);
-          return;
-        }
-
-        if (!zip) {
-          console.error("Failed to load ZIP file.");
-          return;
-        }
-
-        try {
-          // Find all valid files in ZIP
-          const validFiles = await findAllValidFilesInZipWithZip(zip);
-
-          if (validFiles.length === 0) {
-            console.error(
-              "No supported files found in ZIP. The ZIP should contain GeoJSON, TIFF, CSV, GPX, KML, KMZ, or shapefile files."
-            );
-            return;
-          }
-
-          // Process files sequentially - one at a time
-          let successCount = 0;
-          let errorCount = 0;
-          const typeCounts = { tiff: 0, vector: 0, shapefile: 0 };
-
-          for (let i = 0; i < validFiles.length; i++) {
-            const validFile = validFiles[i];
-            try {
-              if (validFile.type === "tiff") {
-                await uploadDemFile(validFile.file);
-                typeCounts.tiff++;
-                successCount++;
-              } else if (
-                validFile.type === "vector" ||
-                validFile.type === "shapefile"
-              ) {
-                await uploadGeoJsonFile(validFile.file, true);
-                if (validFile.type === "shapefile") {
-                  typeCounts.shapefile++;
-                } else {
-                  typeCounts.vector++;
-                }
-                successCount++;
-              }
-
-              // Wait for the layer to be added before moving to next file
-              await new Promise((resolve) => setTimeout(resolve, 100));
-            } catch (error) {
-              console.error(
-                `Error processing ${validFile.name} from ZIP:`,
-                error
-              );
-              errorCount++;
-            }
-          }
-
-          // Check for node_icon_mappings.json
-          try {
-            const nodeIconMappingsFile = Object.keys(zip.files).find((name) =>
-              name.toLowerCase().includes("node_icon_mappings.json")
-            );
-            if (nodeIconMappingsFile) {
-              const fileData = await zip.files[nodeIconMappingsFile].async(
-                "string"
-              );
-              const mappings = JSON.parse(fileData);
-              setNodeIconMappings(mappings);
-            }
-          } catch {
-            // Silently fail for node icon mappings
-          }
-
-          // Log final results
-          if (successCount > 0) {
-            const parts: string[] = [];
-            if (typeCounts.tiff > 0)
-              parts.push(
-                `${typeCounts.tiff} DEM${typeCounts.tiff > 1 ? "s" : ""}`
-              );
-            if (typeCounts.vector > 0)
-              parts.push(`${typeCounts.vector} vector`);
-            if (typeCounts.shapefile > 0)
-              parts.push(`${typeCounts.shapefile} shapefile`);
-          } else {
-            console.error(
-              "No files could be imported. Check console for errors."
-            );
-          }
-        } catch (zipProcessError) {
-          console.error(
-            `Error processing ZIP file: ${
-              zipProcessError instanceof Error
-                ? zipProcessError.message
-                : "Unknown error"
-            }`
-          );
-          return;
-        }
-      }
-
-      const vectorExtensions = [
-        "wkt",
-        "prj",
-        "geojson",
-        "json",
-        "shp",
-        "zip",
-        "csv",
-        "gpx",
-        "kml",
-        "kmz",
-      ];
-      const rasterExtensions = ["tif", "tiff", "hgt"];
-
-      // Check for annotation files
-      if (ext === "geojson" || ext === "json") {
-        const isAnnotationFile =
-          fileName.includes("annotation") ||
-          fileName.includes("label") ||
-          fileName.includes("text") ||
-          fileName.includes("annot");
-
-        try {
-          const text = await file.text();
-          const parsed = JSON.parse(text);
-
-          if (
-            parsed.type === "FeatureCollection" &&
-            Array.isArray(parsed.features)
-          ) {
-            const hasTextProperties = parsed.features.some(
-              (f: any) =>
-                f.properties &&
-                (f.properties.text ||
-                  f.properties.label ||
-                  f.properties.annotation ||
-                  f.properties.title)
-            );
-
-            if (hasTextProperties || isAnnotationFile) {
-              const fileBlob = new Blob([text], { type: file.type });
-              const newFile = new File([fileBlob], file.name, {
-                type: file.type,
-              });
-              await uploadAnnotationFile(newFile);
-              return;
-            }
-          }
-        } catch (error) {
-          // Continue to normal processing
-        }
-      }
-
-      // Handle vector files
-      if (vectorExtensions.includes(ext)) {
-        await uploadGeoJsonFile(file);
-      } else if (rasterExtensions.includes(ext)) {
-        await uploadDemFile(file);
-      } else {
-        const mimeType = file.type?.toLowerCase() || "";
-        if (mimeType.includes("json") || mimeType.includes("geojson")) {
-          await uploadGeoJsonFile(file);
-        } else if (mimeType.includes("tiff") || mimeType.includes("tif")) {
-          await uploadDemFile(file);
-        } else {
-          console.error(
-            `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, TIFF, GPX, KML, KMZ, WKT/PRJ, or shapefile (with .prj).`
-          );
-        }
-      }
-    } catch (error) {
-      console.error(
-        `Error importing file: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
-      );
     }
   };
 
@@ -3202,14 +2921,7 @@ const MapComponent = ({
       </Map>
 
       <Tooltip />
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="*/*"
-        multiple
-        style={{ display: "none" }}
-        onChange={handleFileChange}
-      />
+      {/* COMMENTED OUT: HTML file input - using NativeUploader directly to avoid double picker */}
       <ZoomControls
         mapRef={mapRef}
         zoom={mapZoom}

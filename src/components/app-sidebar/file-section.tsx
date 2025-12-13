@@ -77,131 +77,131 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
     }
   };
 
-  const extractTiffFromZip = async (file: File): Promise<File[]> => {
-    try {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(file);
+  // const extractTiffFromZip = async (file: File): Promise<File[]> => {
+  //   try {
+  //     const JSZip = (await import("jszip")).default;
+  //     const zip = await JSZip.loadAsync(file);
 
-      // Find all TIFF and HGT files in the ZIP (including in subfolders)
-      const tiffFiles = Object.keys(zip.files).filter((name) => {
-        const lowerName = name.toLowerCase();
-        // Skip directories
-        if (zip.files[name].dir) {
-          return false;
-        }
-        return (
-          lowerName.endsWith(".tif") ||
-          lowerName.endsWith(".tiff") ||
-          lowerName.endsWith(".hgt") ||
-          lowerName.endsWith(".dett")
-        );
-      });
+  //     // Find all TIFF and HGT files in the ZIP (including in subfolders)
+  //     const tiffFiles = Object.keys(zip.files).filter((name) => {
+  //       const lowerName = name.toLowerCase();
+  //       // Skip directories
+  //       if (zip.files[name].dir) {
+  //         return false;
+  //       }
+  //       return (
+  //         lowerName.endsWith(".tif") ||
+  //         lowerName.endsWith(".tiff") ||
+  //         lowerName.endsWith(".hgt") ||
+  //         lowerName.endsWith(".dett")
+  //       );
+  //     });
 
-      if (tiffFiles.length === 0) {
-        return [];
-      }
+  //     if (tiffFiles.length === 0) {
+  //       return [];
+  //     }
 
-      // Extract all TIFF files
-      const extractedFiles: File[] = [];
-      for (const fileName of tiffFiles) {
-        try {
-          const fileData = await zip.files[fileName].async("blob");
-          // Extract just the filename without folder path
-          const baseFileName = fileName.split("/").pop() || fileName;
-          // Determine MIME type based on extension
-          const lowerName = fileName.toLowerCase();
-          let mimeType = "image/tiff";
-          if (lowerName.endsWith(".hgt")) {
-            mimeType = "application/octet-stream";
-          }
-          const extractedFile = new File([fileData], baseFileName, {
-            type: mimeType,
-          });
-          extractedFiles.push(extractedFile);
-        } catch (error) {
-          console.error(`Error extracting ${fileName} from ZIP:`, error);
-        }
-      }
+  //     // Extract all TIFF files
+  //     const extractedFiles: File[] = [];
+  //     for (const fileName of tiffFiles) {
+  //       try {
+  //         const fileData = await zip.files[fileName].async("blob");
+  //         // Extract just the filename without folder path
+  //         const baseFileName = fileName.split("/").pop() || fileName;
+  //         // Determine MIME type based on extension
+  //         const lowerName = fileName.toLowerCase();
+  //         let mimeType = "image/tiff";
+  //         if (lowerName.endsWith(".hgt")) {
+  //           mimeType = "application/octet-stream";
+  //         }
+  //         const extractedFile = new File([fileData], baseFileName, {
+  //           type: mimeType,
+  //         });
+  //         extractedFiles.push(extractedFile);
+  //       } catch (error) {
+  //         console.error(`Error extracting ${fileName} from ZIP:`, error);
+  //       }
+  //     }
 
-      return extractedFiles;
-    } catch (error) {
-      console.error("Error extracting TIFF from ZIP:", error);
-      return [];
-    }
-  };
+  //     return extractedFiles;
+  //   } catch (error) {
+  //     console.error("Error extracting TIFF from ZIP:", error);
+  //     return [];
+  //   }
+  // };
 
   // Extract all vector files (GeoJSON, CSV, GPX, KML, KMZ) from ZIP
-  const extractVectorFilesFromZip = async (file: File): Promise<File[]> => {
-    try {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(file);
+  // const extractVectorFilesFromZip = async (file: File): Promise<File[]> => {
+  //   try {
+  //     const JSZip = (await import("jszip")).default;
+  //     const zip = await JSZip.loadAsync(file);
 
-      // Find all vector files in the ZIP (including in subfolders)
-      const vectorFiles = Object.keys(zip.files).filter((name) => {
-        const lowerName = name.toLowerCase();
-        // Skip directories
-        if (zip.files[name].dir) {
-          return false;
-        }
-        // Check for vector file extensions
-        // Note: We allow files in "layers_export" folders (these are our exported ZIPs)
-        // but exclude the old JSON export format files
-        const isOldExportFormat =
-          lowerName.includes("layers_export") &&
-          lowerName.endsWith(".json") &&
-          !lowerName.includes("/"); // Root level JSON files with "layers_export" in name
-        return (
-          lowerName.endsWith(".geojson") ||
-          (lowerName.endsWith(".json") &&
-            !lowerName.includes("node_icon_mappings") &&
-            !isOldExportFormat) ||
-          lowerName.endsWith(".csv") ||
-          lowerName.endsWith(".gpx") ||
-          lowerName.endsWith(".kml") ||
-          lowerName.endsWith(".kmz")
-        );
-      });
+  //     // Find all vector files in the ZIP (including in subfolders)
+  //     const vectorFiles = Object.keys(zip.files).filter((name) => {
+  //       const lowerName = name.toLowerCase();
+  //       // Skip directories
+  //       if (zip.files[name].dir) {
+  //         return false;
+  //       }
+  //       // Check for vector file extensions
+  //       // Note: We allow files in "layers_export" folders (these are our exported ZIPs)
+  //       // but exclude the old JSON export format files
+  //       const isOldExportFormat =
+  //         lowerName.includes("layers_export") &&
+  //         lowerName.endsWith(".json") &&
+  //         !lowerName.includes("/"); // Root level JSON files with "layers_export" in name
+  //       return (
+  //         lowerName.endsWith(".geojson") ||
+  //         (lowerName.endsWith(".json") &&
+  //           !lowerName.includes("node_icon_mappings") &&
+  //           !isOldExportFormat) ||
+  //         lowerName.endsWith(".csv") ||
+  //         lowerName.endsWith(".gpx") ||
+  //         lowerName.endsWith(".kml") ||
+  //         lowerName.endsWith(".kmz")
+  //       );
+  //     });
 
-      if (vectorFiles.length === 0) {
-        return [];
-      }
+  //     if (vectorFiles.length === 0) {
+  //       return [];
+  //     }
 
-      // Extract all vector files
-      const extractedFiles: File[] = [];
-      for (const fileName of vectorFiles) {
-        try {
-          const fileData = await zip.files[fileName].async("blob");
-          // Extract just the filename without folder path
-          const baseFileName = fileName.split("/").pop() || fileName;
-          // Determine MIME type based on extension
-          const lowerName = fileName.toLowerCase();
-          let mimeType = "application/octet-stream";
-          if (lowerName.endsWith(".geojson") || lowerName.endsWith(".json")) {
-            mimeType = "application/json";
-          } else if (lowerName.endsWith(".csv")) {
-            mimeType = "text/csv";
-          } else if (lowerName.endsWith(".gpx")) {
-            mimeType = "application/gpx+xml";
-          } else if (lowerName.endsWith(".kml")) {
-            mimeType = "application/vnd.google-earth.kml+xml";
-          } else if (lowerName.endsWith(".kmz")) {
-            mimeType = "application/vnd.google-earth.kmz";
-          }
-          const extractedFile = new File([fileData], baseFileName, {
-            type: mimeType,
-          });
-          extractedFiles.push(extractedFile);
-        } catch (error) {
-          console.error(`Error extracting ${fileName} from ZIP:`, error);
-        }
-      }
+  //     // Extract all vector files
+  //     const extractedFiles: File[] = [];
+  //     for (const fileName of vectorFiles) {
+  //       try {
+  //         const fileData = await zip.files[fileName].async("blob");
+  //         // Extract just the filename without folder path
+  //         const baseFileName = fileName.split("/").pop() || fileName;
+  //         // Determine MIME type based on extension
+  //         const lowerName = fileName.toLowerCase();
+  //         let mimeType = "application/octet-stream";
+  //         if (lowerName.endsWith(".geojson") || lowerName.endsWith(".json")) {
+  //           mimeType = "application/json";
+  //         } else if (lowerName.endsWith(".csv")) {
+  //           mimeType = "text/csv";
+  //         } else if (lowerName.endsWith(".gpx")) {
+  //           mimeType = "application/gpx+xml";
+  //         } else if (lowerName.endsWith(".kml")) {
+  //           mimeType = "application/vnd.google-earth.kml+xml";
+  //         } else if (lowerName.endsWith(".kmz")) {
+  //           mimeType = "application/vnd.google-earth.kmz";
+  //         }
+  //         const extractedFile = new File([fileData], baseFileName, {
+  //           type: mimeType,
+  //         });
+  //         extractedFiles.push(extractedFile);
+  //       } catch (error) {
+  //         console.error(`Error extracting ${fileName} from ZIP:`, error);
+  //       }
+  //     }
 
-      return extractedFiles;
-    } catch (error) {
-      console.error("Error extracting vector files from ZIP:", error);
-      return [];
-    }
-  };
+  //     return extractedFiles;
+  //   } catch (error) {
+  //     console.error("Error extracting vector files from ZIP:", error);
+  //     return [];
+  //   }
+  // };
 
   // Find all valid files in ZIP for sequential processing (handles nested ZIPs)
   type ValidFile = {
@@ -401,71 +401,71 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
   };
 
   // Extract shapefile components from ZIP
-  const extractShapefileFromZip = async (file: File): Promise<File | null> => {
-    try {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(file);
+  // const extractShapefileFromZip = async (file: File): Promise<File | null> => {
+  //   try {
+  //     const JSZip = (await import("jszip")).default;
+  //     const zip = await JSZip.loadAsync(file);
 
-      // Find all shapefile components (.shp, .shx, .dbf)
-      const shapefileComponents = Object.keys(zip.files).filter((name) => {
-        const lowerName = name.toLowerCase();
-        if (zip.files[name].dir) {
-          return false;
-        }
-        return (
-          lowerName.endsWith(".shp") ||
-          lowerName.endsWith(".shx") ||
-          lowerName.endsWith(".dbf")
-        );
-      });
+  //     // Find all shapefile components (.shp, .shx, .dbf)
+  //     const shapefileComponents = Object.keys(zip.files).filter((name) => {
+  //       const lowerName = name.toLowerCase();
+  //       if (zip.files[name].dir) {
+  //         return false;
+  //       }
+  //       return (
+  //         lowerName.endsWith(".shp") ||
+  //         lowerName.endsWith(".shx") ||
+  //         lowerName.endsWith(".dbf")
+  //       );
+  //     });
 
-      if (shapefileComponents.length === 0) {
-        return null;
-      }
+  //     if (shapefileComponents.length === 0) {
+  //       return null;
+  //     }
 
-      // Group shapefile components by base name
-      const shapefileGroups = new Map<string, string[]>();
-      for (const fileName of shapefileComponents) {
-        const baseName = fileName.toLowerCase().replace(/\.(shp|shx|dbf)$/, "");
-        if (!shapefileGroups.has(baseName)) {
-          shapefileGroups.set(baseName, []);
-        }
-        shapefileGroups.get(baseName)!.push(fileName);
-      }
+  //     // Group shapefile components by base name
+  //     const shapefileGroups = new Map<string, string[]>();
+  //     for (const fileName of shapefileComponents) {
+  //       const baseName = fileName.toLowerCase().replace(/\.(shp|shx|dbf)$/, "");
+  //       if (!shapefileGroups.has(baseName)) {
+  //         shapefileGroups.set(baseName, []);
+  //       }
+  //       shapefileGroups.get(baseName)!.push(fileName);
+  //     }
 
-      // Find a complete shapefile (has .shp, .shx, and .dbf)
-      for (const [baseName, files] of shapefileGroups.entries()) {
-        const hasShp = files.some((f) => f.toLowerCase().endsWith(".shp"));
-        const hasShx = files.some((f) => f.toLowerCase().endsWith(".shx"));
-        const hasDbf = files.some((f) => f.toLowerCase().endsWith(".dbf"));
+  //     // Find a complete shapefile (has .shp, .shx, and .dbf)
+  //     for (const [baseName, files] of shapefileGroups.entries()) {
+  //       const hasShp = files.some((f) => f.toLowerCase().endsWith(".shp"));
+  //       const hasShx = files.some((f) => f.toLowerCase().endsWith(".shx"));
+  //       const hasDbf = files.some((f) => f.toLowerCase().endsWith(".dbf"));
 
-        if (hasShp && hasShx && hasDbf) {
-          // Create a new ZIP with just this shapefile's components
-          const shapefileZip = new JSZip();
-          for (const fileName of files) {
-            const fileData = await zip.files[fileName].async("blob");
-            shapefileZip.file(fileName, fileData);
-          }
+  //       if (hasShp && hasShx && hasDbf) {
+  //         // Create a new ZIP with just this shapefile's components
+  //         const shapefileZip = new JSZip();
+  //         for (const fileName of files) {
+  //           const fileData = await zip.files[fileName].async("blob");
+  //           shapefileZip.file(fileName, fileData);
+  //         }
 
-          // Generate the shapefile ZIP as a blob
-          const zipBlob = await shapefileZip.generateAsync({
-            type: "blob",
-            compression: "DEFLATE",
-          });
+  //         // Generate the shapefile ZIP as a blob
+  //         const zipBlob = await shapefileZip.generateAsync({
+  //           type: "blob",
+  //           compression: "DEFLATE",
+  //         });
 
-          // Return as a File object
-          return new File([zipBlob], `${baseName}.zip`, {
-            type: "application/zip",
-          });
-        }
-      }
+  //         // Return as a File object
+  //         return new File([zipBlob], `${baseName}.zip`, {
+  //           type: "application/zip",
+  //         });
+  //       }
+  //     }
 
-      return null;
-    } catch (error) {
-      console.error("Error extracting shapefile from ZIP:", error);
-      return null;
-    }
-  };
+  //     return null;
+  //   } catch (error) {
+  //     console.error("Error extracting shapefile from ZIP:", error);
+  //     return null;
+  //   }
+  // };
   const importLayersFromJson = async (file: File) => {
     try {
       const text = await file.text();

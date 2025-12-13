@@ -8,8 +8,10 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        // Register plugin BEFORE super
+        // Register plugins BEFORE super
         registerPlugin(UdpPlugin.class);
+        registerPlugin(NativeUploaderPlugin.class);
+
         super.onCreate(savedInstanceState);
     }
 
@@ -17,7 +19,7 @@ public class MainActivity extends BridgeActivity {
     public void onResume() {
         super.onResume();
 
-        // Optional: test event
+        // Optional: test event (your existing code)
         PluginHandle handle = getBridge().getPlugin("Udp");
         if (handle != null) {
             UdpPlugin plugin = (UdpPlugin) handle.getInstance();

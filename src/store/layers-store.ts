@@ -3,6 +3,7 @@ import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds, calculateLayerZoomRange } from "@/lib/layers";
 import { saveLayers, saveNodeIconMappings } from "@/lib/autosave";
+import { markLayerStagedDelete } from "@/sessions/manifestStore";
 
 interface LayerState {
   layers: LayerProps[];
@@ -124,7 +125,19 @@ const useLayerStore = create<LayerState>()((set, get) => ({
       return { layers: newLayers };
     });
   },
-  deleteLayer: (layerId: string) =>
+  deleteLayer: (layerId: string) => {
+    // Mark layer as staged_delete in manifest before filtering
+    console.log(
+      `[LayerDelete] Marking layer ${layerId} as staged_delete in manifest`
+    );
+    markLayerStagedDelete(layerId).catch((error) => {
+      console.error(
+        `[LayerDelete] Error marking layer as staged_delete:`,
+        error
+      );
+      // Continue with deletion even if manifest update fails
+    });
+
     set((state) => {
       // Check if the deleted layer is the one being hovered
       let shouldClearHoverInfo = false;
@@ -159,7 +172,8 @@ const useLayerStore = create<LayerState>()((set, get) => ({
         layers: newLayers,
         hoverInfo: shouldClearHoverInfo ? undefined : state.hoverInfo,
       };
-    }),
+    });
+  },
   updateLayer: (layerId: string, updatedLayer: LayerProps) =>
     set((state) => {
       const newLayers = state.layers.map((layer) => {
