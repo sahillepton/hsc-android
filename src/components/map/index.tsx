@@ -65,7 +65,6 @@ import { MAX_UPLOAD_FILES } from "@/sessions/constants";
 import {
   upsertManifestEntry,
   finalizeSaveManifest,
-  addToUntracked,
   type ManifestEntry,
 } from "@/sessions/manifestStore";
 import { stampedFileName } from "@/sessions/nativeFile";
@@ -74,6 +73,7 @@ import {
   createDemLayer,
   parseVectorFile,
   createVectorLayer,
+  findAllValidFilesInZip,
 } from "@/utils/parser";
 import { generateRandomColor } from "@/lib/utils";
 
@@ -256,230 +256,6 @@ const MapComponent = ({
   // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
   // const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Process a single extracted file from ZIP worker
-  const processExtractedFileFromWorker = async (
-    extractedFile: {
-      name: string;
-      fileType: "tiff" | "vector" | "shapefile";
-      buffer: ArrayBuffer;
-      mimeType: string;
-      geojson?: GeoJSON.FeatureCollection;
-      components?: Array<{ name: string; buffer: ArrayBuffer; size: number }>;
-    },
-    zipFileNum: number,
-    totalFiles: number,
-    fileNum: number
-  ) => {
-    // Convert ArrayBuffer to File for storage
-    const fileBlob = new Blob([extractedFile.buffer], {
-      type: extractedFile.mimeType,
-    });
-    const extractedFileObj = new File([fileBlob], extractedFile.name, {
-      type: extractedFile.mimeType,
-    });
-
-    // Save main file to device storage
-    let extractedPaths: {
-      stampedName: string;
-      relPath: string;
-      absolutePath: string;
-      logicalPath: string;
-    };
-    try {
-      extractedPaths = await saveExtractedFileToStorage(
-        extractedFileObj,
-        extractedFile.name
-      );
-    } catch (persistError) {
-      console.error(
-        `[FileUpload] Error saving extracted file ${extractedFile.name} to storage:`,
-        persistError
-      );
-      return;
-    }
-
-    // Save shapefile components if present
-    const componentsWithPaths: Array<{
-      name: string;
-      absolutePath: string;
-      size: number;
-    }> = [];
-    if (extractedFile.components && extractedFile.components.length > 0) {
-      for (const comp of extractedFile.components) {
-        try {
-          const compBlob = new Blob([comp.buffer], {
-            type: "application/octet-stream",
-          });
-          const compFile = new File([compBlob], comp.name, {
-            type: "application/octet-stream",
-          });
-          const compPaths = await saveExtractedFileToStorage(
-            compFile,
-            comp.name
-          );
-          componentsWithPaths.push({
-            name: comp.name,
-            absolutePath: compPaths.absolutePath,
-            size: comp.size,
-          });
-        } catch (compError) {
-          console.error(
-            `[FileUpload] Error saving shapefile component ${comp.name}:`,
-            compError
-          );
-        }
-      }
-    }
-
-    // Create manifest entry
-    const extractedLayerId = generateLayerId();
-    const extractedLayerName = extractedFile.name.split(".")[0];
-    const extractedManifestEntry: ManifestEntry = {
-      layerId: extractedLayerId,
-      layerName: extractedLayerName,
-      path: extractedPaths.logicalPath,
-      absolutePath: extractedPaths.absolutePath,
-      originalName: extractedFile.name,
-      mimeType: extractedFile.mimeType,
-      size: extractedFile.buffer.byteLength,
-      status: "staged",
-      createdAt: Date.now(),
-      type: extractedFile.fileType,
-      components:
-        componentsWithPaths.length > 0 ? componentsWithPaths : undefined,
-    };
-
-    try {
-      await upsertManifestEntry(extractedManifestEntry);
-      console.log(
-        `[FileUpload] Added extracted file to manifest: ${extractedLayerId}`
-      );
-    } catch (manifestError) {
-      console.error(
-        `[FileUpload] Error adding extracted file to manifest:`,
-        manifestError
-      );
-      return;
-    }
-
-    // Add to untracked (with all components if shapefile)
-    try {
-      if (componentsWithPaths.length > 0) {
-        // Add main file and all components
-        await addToUntracked(
-          extractedPaths.absolutePath,
-          extractedLayerId,
-          componentsWithPaths.map((c) => ({ absolutePath: c.absolutePath }))
-        );
-      } else {
-        await addToUntracked(extractedPaths.absolutePath, extractedLayerId);
-      }
-    } catch (untrackedError) {
-      console.warn(
-        `[FileUpload] Error adding to untracked (non-fatal):`,
-        untrackedError
-      );
-    }
-
-    const renderToastId = toast.loading(
-      `Rendering File ${fileNum}-${zipFileNum}/${totalFiles} (${extractedFile.name}): 0/100 %`
-    );
-
-    try {
-      if (extractedFile.fileType === "tiff") {
-        // Process as DEM/raster
-        console.log(
-          `[FileUpload] Processing extracted TIFF as DEM: ${extractedFile.name}`
-        );
-        const demResult = await parseDemFile(extractedFileObj, {
-          layerId: extractedLayerId,
-          layerName: extractedLayerName,
-          onProgress: (percent) => {
-            toast.update(
-              renderToastId,
-              `Rendering File ${fileNum}-${zipFileNum}/${totalFiles} (${extractedFile.name}): ${percent}/100 %`,
-              "loading"
-            );
-          },
-        });
-        const newLayer = createDemLayer(demResult, {
-          layerId: extractedLayerId,
-          layerName: extractedLayerName,
-        });
-        addLayer(newLayer);
-        console.log(
-          `[FileUpload] DEM layer created from ZIP: ${extractedLayerId}`
-        );
-      } else if (extractedFile.fileType === "shapefile") {
-        // Process shapefile on main thread (worker just extracts it)
-        console.log(
-          `[FileUpload] Processing shapefile from ZIP: ${extractedFile.name}`
-        );
-        toast.update(
-          renderToastId,
-          `Rendering shapefile: ${extractedFile.name}...`,
-          "loading"
-        );
-
-        // Process shapefile using shpToGeoJSON (handles LCC)
-        const { shpToGeoJSON } = await import("@/lib/utils");
-        const featureCollection = await shpToGeoJSON(extractedFileObj);
-        const newLayer = createVectorLayer(featureCollection, {
-          layerId: extractedLayerId,
-          layerName: extractedLayerName,
-          generateRandomColor,
-        });
-        addLayer(newLayer);
-        console.log(
-          `[FileUpload] Shapefile layer created from ZIP: ${extractedLayerId}`
-        );
-      } else if (extractedFile.fileType === "vector") {
-        // Process vector file on main thread (worker just extracts it)
-        // This uses existing workers (vector-worker) which handle memory better
-        console.log(
-          `[FileUpload] Processing extracted vector: ${extractedFile.name}`
-        );
-        const featureCollection = await parseVectorFile(extractedFileObj, {
-          layerId: extractedLayerId,
-          layerName: extractedLayerName,
-          generateRandomColor,
-          onProgress: (percent) => {
-            toast.update(
-              renderToastId,
-              `Rendering File ${fileNum}-${zipFileNum}/${totalFiles} (${extractedFile.name}): ${percent}/100 %`,
-              "loading"
-            );
-          },
-        });
-        const newLayer = createVectorLayer(featureCollection, {
-          layerId: extractedLayerId,
-          layerName: extractedLayerName,
-          generateRandomColor,
-        });
-        addLayer(newLayer);
-        console.log(
-          `[FileUpload] Vector layer created from ZIP: ${extractedLayerId}`
-        );
-      }
-
-      toast.update(renderToastId, "File Rendered Successfully", "success");
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      toast.dismiss(renderToastId);
-    } catch (renderError) {
-      console.error(
-        `[FileUpload] Error rendering extracted file ${extractedFile.name}:`,
-        renderError
-      );
-      toast.update(
-        renderToastId,
-        `Error rendering ${extractedFile.name}: ${
-          renderError instanceof Error ? renderError.message : "Unknown error"
-        }`,
-        "error"
-      );
-    }
-  };
-
   const handleUpload = async () => {
     console.log("[FileUpload] Upload button clicked");
     const toastId = toast.loading("Opening file picker...");
@@ -601,118 +377,32 @@ const MapComponent = ({
           const isZip = fileNameLower.endsWith(".zip");
 
           if (isZip) {
-            // Handle ZIP file: extract in worker thread and process one at a time
+            // Handle ZIP file: extract and process each file inside
             console.log(
-              `[FileUpload] ZIP file detected, extracting in worker thread...`
+              `[FileUpload] ZIP file detected, extracting contents...`
             );
             const extractToastId = toast.loading(
               `Extracting ZIP: ${stagedFile.originalName}...`
             );
 
             try {
-              // Extract ZIP in worker thread
-              const worker = new Worker(
-                new URL("@/workers/zip-extraction.worker.ts", import.meta.url),
-                { type: "module" }
+              const validFiles = await findAllValidFilesInZip(file);
+              console.log(
+                `[FileUpload] Found ${validFiles.length} valid file(s) in ZIP`
               );
 
-              const arrayBuffer = await file.arrayBuffer();
-              let totalFiles = 0;
-              let currentFileIndex = 0;
+              if (validFiles.length === 0) {
+                toast.update(
+                  extractToastId,
+                  "No supported files found in ZIP",
+                  "error"
+                );
+                continue;
+              }
 
-              // Start extraction
-              worker.postMessage(
-                {
-                  type: "extract-zip",
-                  name: stagedFile.originalName,
-                  buffer: arrayBuffer,
-                },
-                [arrayBuffer]
-              );
+              toast.dismiss(extractToastId);
 
-              // Process files one at a time as they come from worker
-              await new Promise<void>((resolve, reject) => {
-                const timer = setTimeout(() => {
-                  worker.terminate();
-                  reject(new Error("ZIP extraction timeout"));
-                }, 300000); // 5 minute timeout
-
-                worker.onmessage = async (e: MessageEvent) => {
-                  try {
-                    if (e.data.type === "error") {
-                      clearTimeout(timer);
-                      worker.terminate();
-                      reject(new Error(e.data.message));
-                      return;
-                    }
-
-                    if (e.data.type === "progress") {
-                      totalFiles = e.data.total;
-                      toast.update(
-                        extractToastId,
-                        `Extracting ZIP: Found ${totalFiles} file(s)...`,
-                        "loading"
-                      );
-                      if (totalFiles === 0) {
-                        clearTimeout(timer);
-                        worker.terminate();
-                        toast.update(
-                          extractToastId,
-                          "No supported files found in ZIP",
-                          "error"
-                        );
-                        resolve();
-                      }
-                      return;
-                    }
-
-                    if (e.data.type === "complete") {
-                      clearTimeout(timer);
-                      worker.terminate();
-                      toast.dismiss(extractToastId);
-                      resolve();
-                      return;
-                    }
-
-                    if (e.data.type === "file-ready") {
-                      currentFileIndex = e.data.index;
-                      const extractedFile = e.data;
-                      const zipFileNum = currentFileIndex + 1;
-
-                      console.log(
-                        `[FileUpload] Processing ZIP content ${zipFileNum}/${totalFiles}: ${extractedFile.name} (${extractedFile.fileType})`
-                      );
-
-                      // Process this file: save, manifest, untracked, render
-                      await processExtractedFileFromWorker(
-                        extractedFile,
-                        zipFileNum,
-                        totalFiles,
-                        fileNum
-                      );
-
-                      // Tell worker we're ready for next file
-                      worker.postMessage("next");
-                      return;
-                    }
-                  } catch (fileError) {
-                    console.error(
-                      `[FileUpload] Error processing extracted file:`,
-                      fileError
-                    );
-                    // Continue with next file even if this one fails
-                    worker.postMessage("next");
-                  }
-                };
-
-                worker.onerror = (err) => {
-                  clearTimeout(timer);
-                  worker.terminate();
-                  reject(err);
-                };
-              });
-
-              // Delete the original ZIP file after extraction
+              // Delete the original ZIP file after extraction (we only need extracted files)
               try {
                 await NativeUploader.deleteFile({
                   absolutePath: stagedFile.absolutePath,
@@ -725,6 +415,155 @@ const MapComponent = ({
                   `[FileUpload] Failed to delete original ZIP file:`,
                   deleteError
                 );
+                // Continue anyway - extracted files are what matter
+              }
+
+              // Process each extracted file
+              for (
+                let zipFileIdx = 0;
+                zipFileIdx < validFiles.length;
+                zipFileIdx++
+              ) {
+                const validFile = validFiles[zipFileIdx];
+                const zipFileNum = zipFileIdx + 1;
+                console.log(
+                  `[FileUpload] Processing ZIP content ${zipFileNum}/${validFiles.length}: ${validFile.name} (${validFile.type})`
+                );
+
+                // Persist extracted file to device storage
+                let extractedPaths: {
+                  stampedName: string;
+                  relPath: string;
+                  absolutePath: string;
+                  logicalPath: string;
+                };
+                try {
+                  extractedPaths = await saveExtractedFileToStorage(
+                    validFile.file,
+                    validFile.name
+                  );
+                } catch (persistError) {
+                  console.error(
+                    `[FileUpload] Error saving extracted file ${validFile.name} to storage:`,
+                    persistError
+                  );
+                  continue;
+                }
+
+                // Create manifest entry for each extracted file
+                const extractedLayerId = generateLayerId();
+                const extractedLayerName = validFile.name.split(".")[0];
+                const extractedManifestEntry: ManifestEntry = {
+                  layerId: extractedLayerId,
+                  layerName: extractedLayerName,
+                  path: extractedPaths.logicalPath,
+                  absolutePath: extractedPaths.absolutePath,
+                  originalName: validFile.name,
+                  mimeType: validFile.file.type,
+                  size: validFile.file.size,
+                  status: "staged",
+                  createdAt: Date.now(),
+                  type: validFile.type, // Store type: "tiff" | "vector" | "shapefile"
+                };
+
+                try {
+                  await upsertManifestEntry(extractedManifestEntry);
+                  console.log(
+                    `[FileUpload] Added extracted file to manifest: ${extractedLayerId}`
+                  );
+                } catch (manifestError) {
+                  console.error(
+                    `[FileUpload] Error adding extracted file to manifest:`,
+                    manifestError
+                  );
+                  continue; // Skip this extracted file
+                }
+
+                const renderToastId = toast.loading(
+                  `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): 0/100 %`
+                );
+
+                try {
+                  if (validFile.type === "tiff") {
+                    // Process as DEM/raster
+                    console.log(
+                      `[FileUpload] Processing extracted TIFF as DEM: ${validFile.name}`
+                    );
+                    const demResult = await parseDemFile(validFile.file, {
+                      layerId: extractedLayerId,
+                      layerName: extractedLayerName,
+                      onProgress: (percent) => {
+                        toast.update(
+                          renderToastId,
+                          `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): ${percent}/100 %`,
+                          "loading"
+                        );
+                      },
+                    });
+                    const newLayer = createDemLayer(demResult, {
+                      layerId: extractedLayerId,
+                      layerName: extractedLayerName,
+                    });
+                    addLayer(newLayer);
+                    console.log(
+                      `[FileUpload] DEM layer created from ZIP: ${extractedLayerId}`
+                    );
+                  } else if (
+                    validFile.type === "vector" ||
+                    validFile.type === "shapefile"
+                  ) {
+                    // Process as vector
+                    console.log(
+                      `[FileUpload] Processing extracted vector: ${validFile.name}`
+                    );
+                    const featureCollection = await parseVectorFile(
+                      validFile.file,
+                      {
+                        layerId: extractedLayerId,
+                        layerName: extractedLayerName,
+                        generateRandomColor,
+                        onProgress: (percent) => {
+                          toast.update(
+                            renderToastId,
+                            `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): ${percent}/100 %`,
+                            "loading"
+                          );
+                        },
+                      }
+                    );
+                    const newLayer = createVectorLayer(featureCollection, {
+                      layerId: extractedLayerId,
+                      layerName: extractedLayerName,
+                      generateRandomColor,
+                    });
+                    addLayer(newLayer);
+                    console.log(
+                      `[FileUpload] Vector layer created from ZIP: ${extractedLayerId}`
+                    );
+                  }
+
+                  toast.update(
+                    renderToastId,
+                    "File Rendered Successfully",
+                    "success"
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                  toast.dismiss(renderToastId);
+                } catch (renderError) {
+                  console.error(
+                    `[FileUpload] Error rendering extracted file ${validFile.name}:`,
+                    renderError
+                  );
+                  toast.update(
+                    renderToastId,
+                    `Error rendering ${validFile.name}: ${
+                      renderError instanceof Error
+                        ? renderError.message
+                        : "Unknown error"
+                    }`,
+                    "error"
+                  );
+                }
               }
             } catch (zipError) {
               console.error(
