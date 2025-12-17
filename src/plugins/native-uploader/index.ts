@@ -13,12 +13,25 @@ export type PickAndStageManyResult = {
   files: StagedNativeFile[];
 };
 
+export type SaveExtractedFileResult = {
+  absolutePath: string;
+  logicalPath: string;
+  size: number;
+  mimeType: string;
+};
+
 export interface NativeUploaderPlugin {
   pickAndStageMany(options?: {
     maxFiles?: 1 | 2;
   }): Promise<PickAndStageManyResult>;
 
   deleteFile(options: { absolutePath: string }): Promise<void>;
+
+  saveExtractedFile(options: {
+    base64Data: string;
+    fileName: string;
+    mimeType?: string;
+  }): Promise<SaveExtractedFileResult>;
 
   addListener(
     eventName: "uploadProgress",

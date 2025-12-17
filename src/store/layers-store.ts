@@ -2,7 +2,6 @@ import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds, calculateLayerZoomRange } from "@/lib/layers";
-import { saveLayers, saveNodeIconMappings } from "@/lib/autosave";
 import { markLayerStagedDelete } from "@/sessions/manifestStore";
 
 interface LayerState {
@@ -76,28 +75,10 @@ interface LayerState {
   setShowUserLocation: (show: boolean) => void;
 }
 
-// Debounce autosave to avoid saving too frequently
-let autosaveTimeout: NodeJS.Timeout | null = null;
-const AUTOSAVE_DELAY = 2 * 60 * 1000; // 2 minutes delay
-
-const triggerAutosave = (
-  layers: LayerProps[],
-  nodeIconMappings: Record<string, string>
-) => {
-  if (autosaveTimeout) {
-    clearTimeout(autosaveTimeout);
-  }
-  autosaveTimeout = setTimeout(() => {
-    saveLayers(layers).catch(console.error);
-    saveNodeIconMappings(nodeIconMappings).catch(console.error);
-  }, AUTOSAVE_DELAY);
-};
-
 const useLayerStore = create<LayerState>()((set, get) => ({
   layers: [],
   setLayers: (layers) => {
     set({ layers });
-    triggerAutosave(layers, get().nodeIconMappings);
   },
   addLayer: (layer) => {
     set((state) => {
@@ -121,7 +102,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
         }
       }
       const newLayers = [...state.layers, layerWithZoomRange];
-      triggerAutosave(newLayers, state.nodeIconMappings);
       return { layers: newLayers };
     });
   },
@@ -167,7 +147,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
       }
 
       const newLayers = state.layers.filter((layer) => layer.id !== layerId);
-      triggerAutosave(newLayers, state.nodeIconMappings);
       return {
         layers: newLayers,
         hoverInfo: shouldClearHoverInfo ? undefined : state.hoverInfo,
@@ -218,7 +197,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
         }
         return layer;
       });
-      triggerAutosave(newLayers, state.nodeIconMappings);
       return { layers: newLayers };
     }),
   bringLayerToTop: (layerId: string) =>
@@ -236,7 +214,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
         ...state.layers.slice(layerIndex + 1),
         layer, // Move to end (top of rendering stack)
       ];
-      triggerAutosave(newLayers, state.nodeIconMappings);
       return { layers: newLayers };
     }),
   isDrawing: false,
@@ -261,13 +238,11 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   nodeIconMappings: {},
   setNodeIconMappings: (nodeIconMappings) => {
     set({ nodeIconMappings });
-    triggerAutosave(get().layers, nodeIconMappings);
   },
   getNodeIcon: (nodeId: string) => get().nodeIconMappings[nodeId],
   setNodeIcon: (nodeId: string, iconName: string) =>
     set((state) => {
       const newMappings = { ...state.nodeIconMappings, [nodeId]: iconName };
-      triggerAutosave(state.layers, newMappings);
       return { nodeIconMappings: newMappings };
     }),
   focusLayerRequest: null,

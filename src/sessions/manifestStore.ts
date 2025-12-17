@@ -1,7 +1,12 @@
 import { Filesystem, Encoding } from "@capacitor/filesystem";
-import { HSC_DIRECTORY, HSC_MANIFEST_PATH, HSC_BASE_DIR } from "./constants";
+import {
+  HSC_DIRECTORY,
+  HSC_MANIFEST_PATH,
+  HSC_BASE_DIR,
+  HSC_UNTRACKED_PATH,
+} from "./constants";
 
-export type ManifestStatus = "staged" | "saved";
+export type ManifestStatus = "staged" | "saved" | "staged_delete";
 
 export type ManifestEntry = {
   layerId: string;
@@ -16,6 +21,9 @@ export type ManifestEntry = {
   size: number;
   status: ManifestStatus;
   createdAt: number;
+
+  // file type: "tiff" | "vector" | "shapefile" | undefined (for backward compatibility)
+  type?: "tiff" | "vector" | "shapefile";
 
   // allow extra properties without breaking (Cursor can extend)
   [k: string]: any;
@@ -86,14 +94,177 @@ export async function writeManifest(entries: ManifestEntry[]): Promise<void> {
 }
 
 /**
- * Add or update entry in temp manifest (in-memory only)
+ * Untracked file structure
  */
-export function upsertTempManifestEntry(entry: ManifestEntry): void {
+type UntrackedFile = {
+  absolutePath: string;
+  layerId: string;
+};
+
+type UntrackedManifest = {
+  files: UntrackedFile[];
+};
+
+/**
+ * Add staged file to untracked.json
+ */
+async function addToUntracked(
+  absolutePath: string,
+  layerId: string
+): Promise<void> {
+  try {
+    // Load existing untracked files
+    let untracked: UntrackedManifest = { files: [] };
+    try {
+      const result = await Filesystem.readFile({
+        path: HSC_UNTRACKED_PATH,
+        directory: HSC_DIRECTORY,
+        encoding: Encoding.UTF8,
+      });
+      const content = (result.data ?? "") as string;
+      untracked = safeJsonParse<UntrackedManifest>(content, { files: [] });
+    } catch {
+      // File doesn't exist yet, start with empty
+      untracked = { files: [] };
+    }
+
+    // Check if already exists
+    if (!untracked.files.some((f) => f.layerId === layerId)) {
+      untracked.files.push({ absolutePath, layerId });
+    }
+
+    // Ensure directory exists
+    try {
+      await Filesystem.mkdir({
+        path: HSC_BASE_DIR,
+        directory: HSC_DIRECTORY,
+        recursive: true,
+      });
+    } catch {
+      // Directory may already exist, ignore
+    }
+
+    // Write back to disk
+    await Filesystem.writeFile({
+      path: HSC_UNTRACKED_PATH,
+      directory: HSC_DIRECTORY,
+      data: JSON.stringify(untracked, null, 2),
+      encoding: Encoding.UTF8,
+      recursive: true,
+    });
+  } catch (error) {
+    console.error("[Manifest] Error adding to untracked.json:", error);
+    // Don't throw - untracked.json is best-effort
+  }
+}
+
+/**
+ * Remove file from untracked.json
+ */
+async function removeFromUntracked(layerId: string): Promise<void> {
+  try {
+    // Load existing untracked files
+    let untracked: UntrackedManifest = { files: [] };
+    try {
+      const result = await Filesystem.readFile({
+        path: HSC_UNTRACKED_PATH,
+        directory: HSC_DIRECTORY,
+        encoding: Encoding.UTF8,
+      });
+      const content = (result.data ?? "") as string;
+      untracked = safeJsonParse<UntrackedManifest>(content, { files: [] });
+    } catch {
+      // File doesn't exist, nothing to remove
+      return;
+    }
+
+    // Remove the entry
+    untracked.files = untracked.files.filter((f) => f.layerId !== layerId);
+
+    // Write back to disk (or delete if empty)
+    if (untracked.files.length === 0) {
+      try {
+        await Filesystem.deleteFile({
+          path: HSC_UNTRACKED_PATH,
+          directory: HSC_DIRECTORY,
+        });
+      } catch {
+        // File might not exist, ignore
+      }
+    } else {
+      await Filesystem.writeFile({
+        path: HSC_UNTRACKED_PATH,
+        directory: HSC_DIRECTORY,
+        data: JSON.stringify(untracked, null, 2),
+        encoding: Encoding.UTF8,
+        recursive: true,
+      });
+    }
+  } catch (error) {
+    console.error("[Manifest] Error removing from untracked.json:", error);
+    // Don't throw - untracked.json is best-effort
+  }
+}
+
+/**
+ * Load untracked files from disk
+ */
+export async function loadUntrackedFiles(): Promise<UntrackedFile[]> {
+  try {
+    const result = await Filesystem.readFile({
+      path: HSC_UNTRACKED_PATH,
+      directory: HSC_DIRECTORY,
+      encoding: Encoding.UTF8,
+    });
+    const content = (result.data ?? "") as string;
+    const untracked = safeJsonParse<UntrackedManifest>(content, { files: [] });
+    return untracked.files || [];
+  } catch {
+    // File doesn't exist, return empty array
+    return [];
+  }
+}
+
+/**
+ * Clear untracked.json (after cleanup or save)
+ */
+export async function clearUntracked(): Promise<void> {
+  try {
+    await Filesystem.deleteFile({
+      path: HSC_UNTRACKED_PATH,
+      directory: HSC_DIRECTORY,
+    });
+  } catch {
+    // File might not exist, ignore
+  }
+}
+
+/**
+ * Add or update entry in temp manifest (in-memory only)
+ * If status is "staged", also add to untracked.json
+ */
+export async function upsertTempManifestEntry(
+  entry: ManifestEntry
+): Promise<void> {
   const idx = tempManifest.findIndex((x) => x.layerId === entry.layerId);
+  const wasStaged = idx >= 0 && tempManifest[idx].status === "staged";
+  const isNowStaged = entry.status === "staged";
+  const isNowSaved = entry.status === "saved";
+
   if (idx >= 0) {
     tempManifest[idx] = entry;
   } else {
     tempManifest.push(entry);
+  }
+
+  // If status changed to "staged", add to untracked.json
+  if (isNowStaged && !wasStaged) {
+    await addToUntracked(entry.absolutePath, entry.layerId);
+  }
+
+  // If status changed to "saved", remove from untracked.json
+  if (isNowSaved && wasStaged) {
+    await removeFromUntracked(entry.layerId);
   }
 }
 
@@ -101,7 +272,7 @@ export function upsertTempManifestEntry(entry: ManifestEntry): void {
  * Upsert entry (for backward compatibility - uses temp manifest)
  */
 export async function upsertManifestEntry(entry: ManifestEntry): Promise<void> {
-  upsertTempManifestEntry(entry);
+  await upsertTempManifestEntry(entry);
 }
 
 /**
@@ -112,13 +283,31 @@ export function removeFromTempManifest(layerId: string): void {
 }
 
 /**
- * Mark layer for deletion (for backward compatibility - now just removes from temp)
+ * Mark layer for deletion:
+ * - If status is "staged", delete immediately and remove from temp manifest
+ * - If status is "saved", mark as "staged_delete" in temp manifest (don't delete yet)
+ * - If status is "staged_delete", delete immediately
  */
 export async function markLayerStagedDelete(layerId: string): Promise<void> {
-  // Find entry in temp manifest to get file path
+  // Find entry in temp manifest
   const entry = tempManifest.find((x) => x.layerId === layerId);
-  if (entry) {
-    // Delete file first using absolutePath (same as restore uses)
+  if (!entry) {
+    // Also check stored manifest for saved layers
+    const stored = await loadStoredManifest();
+    const storedEntry = stored.find((x) => x.layerId === layerId);
+    if (storedEntry && storedEntry.status === "saved") {
+      // Add to temp manifest with staged_delete status
+      upsertTempManifestEntry({
+        ...storedEntry,
+        status: "staged_delete",
+      });
+      return;
+    }
+    return;
+  }
+
+  // If already staged_delete, delete immediately
+  if (entry.status === "staged_delete") {
     const { deleteFileByAbsolutePath } = await import("./nativeFile");
     try {
       await deleteFileByAbsolutePath(entry.absolutePath);
@@ -128,8 +317,33 @@ export async function markLayerStagedDelete(layerId: string): Promise<void> {
         error
       );
     }
-    // Then remove from temp manifest
     removeFromTempManifest(layerId);
+    return;
+  }
+
+  // If status is "staged", delete immediately and remove from untracked.json
+  if (entry.status === "staged") {
+    const { deleteFileByAbsolutePath } = await import("./nativeFile");
+    try {
+      await deleteFileByAbsolutePath(entry.absolutePath);
+    } catch (error) {
+      console.error(
+        `[Manifest] Error deleting file for layer ${layerId}:`,
+        error
+      );
+    }
+    // Remove from untracked.json
+    await removeFromUntracked(layerId);
+    removeFromTempManifest(layerId);
+    return;
+  }
+
+  // If status is "saved", mark as staged_delete (don't delete yet)
+  if (entry.status === "saved") {
+    upsertTempManifestEntry({
+      ...entry,
+      status: "staged_delete",
+    });
   }
 }
 
@@ -142,15 +356,39 @@ export async function removeLayerFromManifest(layerId: string): Promise<void> {
 
 /**
  * Save: Replace stored manifest with temp manifest
+ * - Delete all files with "staged_delete" status
+ * - Remove "staged_delete" entries from manifest
  * - Upgrade all "staged" to "saved"
  * - Sort by size (increasing order)
  * - Write to disk (replaces previous manifest, even if empty)
  */
 export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
-  // Upgrade "staged" to "saved"
-  let m: ManifestEntry[] = tempManifest.map((e) =>
-    e.status === "staged" ? { ...e, status: "saved" as ManifestStatus } : e
+  const { deleteFileByAbsolutePath } = await import("./nativeFile");
+
+  // Delete files with staged_delete status
+  const stagedDeleteEntries = tempManifest.filter(
+    (e) => e.status === "staged_delete"
   );
+  for (const entry of stagedDeleteEntries) {
+    try {
+      await deleteFileByAbsolutePath(entry.absolutePath);
+      console.log(
+        `[Manifest] Deleted staged_delete file: ${entry.originalName}`
+      );
+    } catch (error) {
+      console.error(
+        `[Manifest] Error deleting staged_delete file ${entry.originalName}:`,
+        error
+      );
+    }
+  }
+
+  // Filter out staged_delete entries and upgrade "staged" to "saved"
+  let m: ManifestEntry[] = tempManifest
+    .filter((e) => e.status !== "staged_delete")
+    .map((e) =>
+      e.status === "staged" ? { ...e, status: "saved" as ManifestStatus } : e
+    );
 
   // Sort by size (increasing order)
   m.sort((a, b) => a.size - b.size);
@@ -158,31 +396,41 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
   // Replace stored manifest with temp (even if empty)
   await writeManifest(m);
 
+  // Clear untracked.json (all staged files are now saved)
+  await clearUntracked();
+
   return m;
 }
 
 /**
  * Restore: Merge temp manifest with stored manifest
  * - Load stored manifest from disk
- * - Merge with temp manifest (temp + stored)
+ * - Merge with temp manifest ensuring unique layer_id objects only
  * - Return merged manifest
  */
 export async function restoreManifest(): Promise<ManifestEntry[]> {
   // Load stored manifest
   const stored = await loadStoredManifest();
 
-  // Merge: temp + stored (temp takes precedence for same layerId)
-  const merged: ManifestEntry[] = [...stored];
-  for (const tempEntry of tempManifest) {
-    const existingIdx = merged.findIndex(
-      (x) => x.layerId === tempEntry.layerId
-    );
-    if (existingIdx >= 0) {
-      merged[existingIdx] = tempEntry; // Temp overrides stored
-    } else {
-      merged.push(tempEntry); // Add new from temp
+  // Create a map to ensure unique layer_id objects
+  const layerIdMap = new Map<string, ManifestEntry>();
+
+  // First, add all stored entries (excluding staged_delete)
+  for (const entry of stored) {
+    if (entry.status !== "staged_delete") {
+      layerIdMap.set(entry.layerId, entry);
     }
   }
+
+  // Then, add/override with temp entries (excluding staged_delete)
+  for (const tempEntry of tempManifest) {
+    if (tempEntry.status !== "staged_delete") {
+      layerIdMap.set(tempEntry.layerId, tempEntry); // Temp overrides stored
+    }
+  }
+
+  // Convert map back to array
+  const merged: ManifestEntry[] = Array.from(layerIdMap.values());
 
   // Update temp manifest with merged result
   tempManifest = merged;

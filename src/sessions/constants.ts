@@ -3,6 +3,7 @@ import { Directory } from "@capacitor/filesystem";
 export const HSC_BASE_DIR = "HSC-SESSIONS";
 export const HSC_FILES_DIR = `${HSC_BASE_DIR}/FILES`; // inside Directory.Documents
 export const HSC_MANIFEST_PATH = `${HSC_BASE_DIR}/manifest.json`;
+export const HSC_UNTRACKED_PATH = `${HSC_BASE_DIR}/untracked.json`;
 
 export const HSC_DIRECTORY = Directory.Documents;
 

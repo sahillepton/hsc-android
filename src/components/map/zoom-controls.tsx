@@ -22,7 +22,7 @@ import { Switch } from "../ui/switch";
 import { useDrawingMode } from "@/store/layers-store";
 import type { DrawingMode } from "@/lib/definitions";
 import { cn } from "@/lib/utils";
-import { useEffect, useRef, useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 type CameraPopoverProps = {
   isOpen: boolean;
@@ -96,6 +96,7 @@ const ZoomControls = ({
   }, [onSaveSession]);
 
   // Auto-save every 30 seconds (only when enabled)
+  // Uses the new session save mechanism
   useEffect(() => {
     // Clear any existing interval
     if (autoSaveIntervalRef.current) {
@@ -121,7 +122,7 @@ const ZoomControls = ({
           setIsSaving(false);
         }
       }
-    }, 30000); // 30 seconds
+    }, 60000); // 30 seconds
 
     // Cleanup on unmount or when disabled
     return () => {

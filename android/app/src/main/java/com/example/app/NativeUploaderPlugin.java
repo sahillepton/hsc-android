@@ -75,6 +75,55 @@ public class NativeUploaderPlugin extends Plugin {
         });
     }
 
+    @PluginMethod
+    public void saveExtractedFile(PluginCall call) {
+        String base64Data = call.getString("base64Data");
+        String fileName = call.getString("fileName");
+        
+        if (base64Data == null || base64Data.isEmpty()) {
+            call.reject("base64Data is required");
+            return;
+        }
+        if (fileName == null || fileName.isEmpty()) {
+            call.reject("fileName is required");
+            return;
+        }
+
+        ioExecutor.execute(() -> {
+            try {
+                // Use the same directory as pickAndStageMany
+                File docsRoot = getContext().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+                if (docsRoot == null) docsRoot = getContext().getFilesDir();
+
+                File destDir = new File(docsRoot, "HSC-SESSIONS/FILES");
+                //noinspection ResultOfMethodCallIgnored
+                destDir.mkdirs();
+
+                File finalFile = new File(destDir, fileName);
+
+                // Decode base64 and write to file
+                byte[] fileData = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT);
+                try (FileOutputStream out = new FileOutputStream(finalFile)) {
+                    out.write(fileData);
+                    out.flush();
+                }
+
+                String mimeType = call.getString("mimeType");
+                if (mimeType == null) mimeType = "application/octet-stream";
+
+                JSObject result = new JSObject();
+                result.put("absolutePath", finalFile.getAbsolutePath());
+                result.put("logicalPath", "DOCUMENTS/HSC-SESSIONS/FILES/" + finalFile.getName());
+                result.put("size", finalFile.length());
+                result.put("mimeType", mimeType);
+
+                resolveOnMain(call, result);
+            } catch (Exception e) {
+                rejectOnMain(call, "Save failed: " + e.getMessage());
+            }
+        });
+    }
+
     // ✅ correct signature for Capacitor v3+
     @ActivityCallback
     private void onPickedFiles(PluginCall call, ActivityResult result) {

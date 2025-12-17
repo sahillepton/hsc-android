@@ -183,7 +183,7 @@ export const saveLayers = async (
 
 // Deserialize layers, reconstructing non-serializable data
 // Accepts optional zip object to load bitmaps from separate PNG files
-const deserializeLayers = async (
+export const deserializeLayers = async (
   layers: LayerProps[],
   zip?: any
 ): Promise<LayerProps[]> => {

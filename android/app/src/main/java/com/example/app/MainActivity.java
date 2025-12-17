@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
         // Register plugins BEFORE super
         registerPlugin(UdpPlugin.class);
         registerPlugin(NativeUploaderPlugin.class);
+        registerPlugin(ZipFolderPlugin.class);
 
         super.onCreate(savedInstanceState);
     }
