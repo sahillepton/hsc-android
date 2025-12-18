@@ -285,7 +285,7 @@ const SketchLayersPanel = ({
                         />
                       )}
                       <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground mb-2">
-                        <span className="truncate text-[16px]">
+                        <span className="truncate text-[16px] max-w-[200px] overflow-hidden text-ellipsis">
                           {layer.name}
                           <span
                             className={`text-[10px] ml-2 font-semibold uppercase tracking-wide ${badgeClass}`}

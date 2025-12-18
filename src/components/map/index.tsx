@@ -60,20 +60,19 @@ import type { LayerProps, Node } from "@/lib/definitions";
 import { Directory } from "@capacitor/filesystem";
 import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
+import { ZipFolder } from "@/plugins/zip-folder";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
-import { MAX_UPLOAD_FILES } from "@/sessions/constants";
+import { MAX_UPLOAD_FILES, HSC_FILES_DIR } from "@/sessions/constants";
 import {
   upsertManifestEntry,
   finalizeSaveManifest,
   type ManifestEntry,
 } from "@/sessions/manifestStore";
-import { stampedFileName } from "@/sessions/nativeFile";
 import {
   parseDemFile,
   createDemLayer,
   parseVectorFile,
   createVectorLayer,
-  findAllValidFilesInZip,
 } from "@/utils/parser";
 import { generateRandomColor } from "@/lib/utils";
 
@@ -112,40 +111,6 @@ const MapComponent = ({
 
   const mapRef = useRef<any>(null);
   const zoomUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const arrayBufferToBase64 = useCallback((buffer: ArrayBuffer) => {
-    let binary = "";
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-  }, []);
-
-  const saveExtractedFileToStorage = useCallback(
-    async (file: File, nameHint: string) => {
-      const stampedName = stampedFileName(nameHint);
-
-      // Convert file to base64
-      const arrayBuffer = await file.arrayBuffer();
-      const base64Data = arrayBufferToBase64(arrayBuffer);
-
-      // Use plugin to save file to exact same location as pickAndStageMany
-      const result = await NativeUploader.saveExtractedFile({
-        base64Data,
-        fileName: stampedName,
-        mimeType: file.type || "application/octet-stream",
-      });
-
-      return {
-        stampedName,
-        relPath: result.logicalPath.replace("DOCUMENTS/", ""),
-        absolutePath: result.absolutePath,
-        logicalPath: result.logicalPath,
-      };
-    },
-    [arrayBufferToBase64]
-  );
 
   useEffect(() => {
     (window as any).mapRef = mapRef;
@@ -222,7 +187,7 @@ const MapComponent = ({
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { dragStart, setDragStart } = useDragStart();
   const { mousePosition, setMousePosition } = useMousePosition();
-  const { layers, addLayer } = useLayers();
+  const { layers, addLayer, deleteLayer } = useLayers();
   // const { setNodeIconMappings } = useNodeIconMappings();
   const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
   const { drawingMode } = useDrawingMode();
@@ -377,21 +342,26 @@ const MapComponent = ({
           const isZip = fileNameLower.endsWith(".zip");
 
           if (isZip) {
-            // Handle ZIP file: extract and process each file inside
+            // Handle ZIP file using native extraction
             console.log(
-              `[FileUpload] ZIP file detected, extracting contents...`
+              `[FileUpload] ZIP file detected, using native extraction...`
             );
             const extractToastId = toast.loading(
               `Extracting ZIP: ${stagedFile.originalName}...`
             );
 
             try {
-              const validFiles = await findAllValidFilesInZip(file);
+              // Use native plugin to extract ZIP recursively
+              const extractResult = await ZipFolder.extractZipRecursive({
+                zipPath: stagedFile.absolutePath,
+                outputDir: HSC_FILES_DIR,
+              });
+
               console.log(
-                `[FileUpload] Found ${validFiles.length} valid file(s) in ZIP`
+                `[FileUpload] Native extraction found ${extractResult.files.length} file(s)`
               );
 
-              if (validFiles.length === 0) {
+              if (extractResult.files.length === 0) {
                 toast.update(
                   extractToastId,
                   "No supported files found in ZIP",
@@ -400,9 +370,145 @@ const MapComponent = ({
                 continue;
               }
 
-              toast.dismiss(extractToastId);
+              toast.update(
+                extractToastId,
+                `Found ${extractResult.files.length} file(s), processing...`,
+                "loading"
+              );
 
-              // Delete the original ZIP file after extraction (we only need extracted files)
+              // Process each extracted file sequentially
+              for (
+                let zipFileIdx = 0;
+                zipFileIdx < extractResult.files.length;
+                zipFileIdx++
+              ) {
+                const extractedFile = extractResult.files[zipFileIdx];
+                const zipFileNum = zipFileIdx + 1;
+                console.log(
+                  `[FileUpload] Processing extracted file ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${extractedFile.type})`
+                );
+
+                try {
+                  // Add to manifest
+                  const layerId = generateLayerId();
+                  const layerName = extractedFile.name.split(".")[0];
+                  await upsertManifestEntry({
+                    layerId: layerId,
+                    layerName: layerName,
+                    path: `DOCUMENTS/${HSC_FILES_DIR}/${extractedFile.name}`,
+                    absolutePath: extractedFile.absolutePath,
+                    originalName: extractedFile.name,
+                    size: extractedFile.size,
+                    status: "staged",
+                    type: extractedFile.type as "tiff" | "vector" | "shapefile",
+                    createdAt: Date.now(),
+                  });
+
+                  // Create progress toast for this file
+                  const progressToastId = toast.loading(
+                    `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name}...`
+                  );
+
+                  // Convert absolute path to File object for parsing
+                  const file = await stagedPathToFile({
+                    absolutePath: extractedFile.absolutePath,
+                    originalName: extractedFile.name,
+                    mimeType:
+                      extractedFile.type === "tiff"
+                        ? "image/tiff"
+                        : "application/octet-stream",
+                  });
+
+                  if (extractedFile.type === "tiff") {
+                    // Process DEM file
+                    const demResult = await parseDemFile(file, {
+                      layerId: layerId,
+                      layerName: layerName,
+                      onProgress: (percent) => {
+                        toast.update(
+                          progressToastId,
+                          `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
+                          "loading"
+                        );
+                      },
+                    });
+
+                    const newLayer = createDemLayer(demResult, {
+                      layerId: layerId,
+                      layerName: layerName,
+                    });
+                    addLayer(newLayer);
+                    // Update manifest with layer color
+                    const { updateManifestColor } = await import(
+                      "@/sessions/manifestStore"
+                    );
+                    await updateManifestColor(layerId, newLayer.color);
+
+                    toast.update(
+                      progressToastId,
+                      `DEM: ${extractedFile.name}`,
+                      "success"
+                    );
+                  } else if (
+                    extractedFile.type === "vector" ||
+                    extractedFile.type === "shapefile"
+                  ) {
+                    // Process vector file
+                    const vectorResult = await parseVectorFile(file, {
+                      layerId: layerId,
+                      layerName: layerName,
+                      generateRandomColor,
+                      onProgress: (percent) => {
+                        toast.update(
+                          progressToastId,
+                          `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
+                          "loading"
+                        );
+                      },
+                    });
+
+                    const newLayer = createVectorLayer(vectorResult, {
+                      layerId: layerId,
+                      layerName: layerName,
+                      generateRandomColor,
+                    });
+                    addLayer(newLayer);
+                    // Update manifest with layer color
+                    const { updateManifestColor } = await import(
+                      "@/sessions/manifestStore"
+                    );
+                    await updateManifestColor(layerId, newLayer.color);
+
+                    toast.update(
+                      progressToastId,
+                      `Vector: ${extractedFile.name}`,
+                      "success"
+                    );
+                  }
+
+                  // Small delay between files
+                  await new Promise((resolve) => setTimeout(resolve, 100));
+                } catch (fileError) {
+                  console.error(
+                    `[FileUpload] Error processing extracted file ${extractedFile.name}:`,
+                    fileError
+                  );
+                  toast.error(
+                    `Error processing ${extractedFile.name}: ${
+                      fileError instanceof Error
+                        ? fileError.message
+                        : "Unknown error"
+                    }`
+                  );
+                }
+              }
+
+              toast.dismiss(extractToastId);
+              toast.success(
+                `Successfully processed ${extractResult.files.length} file(s) from ZIP`
+              );
+
+              // Delete the original ZIP file after extraction
               try {
                 await NativeUploader.deleteFile({
                   absolutePath: stagedFile.absolutePath,
@@ -415,164 +521,15 @@ const MapComponent = ({
                   `[FileUpload] Failed to delete original ZIP file:`,
                   deleteError
                 );
-                // Continue anyway - extracted files are what matter
-              }
-
-              // Process each extracted file
-              for (
-                let zipFileIdx = 0;
-                zipFileIdx < validFiles.length;
-                zipFileIdx++
-              ) {
-                const validFile = validFiles[zipFileIdx];
-                const zipFileNum = zipFileIdx + 1;
-                console.log(
-                  `[FileUpload] Processing ZIP content ${zipFileNum}/${validFiles.length}: ${validFile.name} (${validFile.type})`
-                );
-
-                // Persist extracted file to device storage
-                let extractedPaths: {
-                  stampedName: string;
-                  relPath: string;
-                  absolutePath: string;
-                  logicalPath: string;
-                };
-                try {
-                  extractedPaths = await saveExtractedFileToStorage(
-                    validFile.file,
-                    validFile.name
-                  );
-                } catch (persistError) {
-                  console.error(
-                    `[FileUpload] Error saving extracted file ${validFile.name} to storage:`,
-                    persistError
-                  );
-                  continue;
-                }
-
-                // Create manifest entry for each extracted file
-                const extractedLayerId = generateLayerId();
-                const extractedLayerName = validFile.name.split(".")[0];
-                const extractedManifestEntry: ManifestEntry = {
-                  layerId: extractedLayerId,
-                  layerName: extractedLayerName,
-                  path: extractedPaths.logicalPath,
-                  absolutePath: extractedPaths.absolutePath,
-                  originalName: validFile.name,
-                  mimeType: validFile.file.type,
-                  size: validFile.file.size,
-                  status: "staged",
-                  createdAt: Date.now(),
-                  type: validFile.type, // Store type: "tiff" | "vector" | "shapefile"
-                };
-
-                try {
-                  await upsertManifestEntry(extractedManifestEntry);
-                  console.log(
-                    `[FileUpload] Added extracted file to manifest: ${extractedLayerId}`
-                  );
-                } catch (manifestError) {
-                  console.error(
-                    `[FileUpload] Error adding extracted file to manifest:`,
-                    manifestError
-                  );
-                  continue; // Skip this extracted file
-                }
-
-                const renderToastId = toast.loading(
-                  `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): 0/100 %`
-                );
-
-                try {
-                  if (validFile.type === "tiff") {
-                    // Process as DEM/raster
-                    console.log(
-                      `[FileUpload] Processing extracted TIFF as DEM: ${validFile.name}`
-                    );
-                    const demResult = await parseDemFile(validFile.file, {
-                      layerId: extractedLayerId,
-                      layerName: extractedLayerName,
-                      onProgress: (percent) => {
-                        toast.update(
-                          renderToastId,
-                          `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): ${percent}/100 %`,
-                          "loading"
-                        );
-                      },
-                    });
-                    const newLayer = createDemLayer(demResult, {
-                      layerId: extractedLayerId,
-                      layerName: extractedLayerName,
-                    });
-                    addLayer(newLayer);
-                    console.log(
-                      `[FileUpload] DEM layer created from ZIP: ${extractedLayerId}`
-                    );
-                  } else if (
-                    validFile.type === "vector" ||
-                    validFile.type === "shapefile"
-                  ) {
-                    // Process as vector
-                    console.log(
-                      `[FileUpload] Processing extracted vector: ${validFile.name}`
-                    );
-                    const featureCollection = await parseVectorFile(
-                      validFile.file,
-                      {
-                        layerId: extractedLayerId,
-                        layerName: extractedLayerName,
-                        generateRandomColor,
-                        onProgress: (percent) => {
-                          toast.update(
-                            renderToastId,
-                            `Rendering File ${fileNum}-${zipFileNum} (${validFile.name}): ${percent}/100 %`,
-                            "loading"
-                          );
-                        },
-                      }
-                    );
-                    const newLayer = createVectorLayer(featureCollection, {
-                      layerId: extractedLayerId,
-                      layerName: extractedLayerName,
-                      generateRandomColor,
-                    });
-                    addLayer(newLayer);
-                    console.log(
-                      `[FileUpload] Vector layer created from ZIP: ${extractedLayerId}`
-                    );
-                  }
-
-                  toast.update(
-                    renderToastId,
-                    "File Rendered Successfully",
-                    "success"
-                  );
-                  await new Promise((resolve) => setTimeout(resolve, 1000));
-                  toast.dismiss(renderToastId);
-                } catch (renderError) {
-                  console.error(
-                    `[FileUpload] Error rendering extracted file ${validFile.name}:`,
-                    renderError
-                  );
-                  toast.update(
-                    renderToastId,
-                    `Error rendering ${validFile.name}: ${
-                      renderError instanceof Error
-                        ? renderError.message
-                        : "Unknown error"
-                    }`,
-                    "error"
-                  );
-                }
               }
             } catch (zipError) {
               console.error(
-                `[FileUpload] Error processing ZIP file:`,
+                `[FileUpload] Error extracting ZIP file:`,
                 zipError
               );
               toast.update(
                 extractToastId,
-                `Error processing ZIP: ${
+                `Error extracting ZIP: ${
                   zipError instanceof Error ? zipError.message : "Unknown error"
                 }`,
                 "error"
@@ -685,6 +642,11 @@ const MapComponent = ({
                   layerName,
                 });
                 addLayer(newLayer);
+                // Update manifest with layer color
+                const { updateManifestColor } = await import(
+                  "@/sessions/manifestStore"
+                );
+                await updateManifestColor(layerId, newLayer.color);
                 console.log(`[FileUpload] DEM layer created: ${layerId}`);
               } else {
                 const featureCollection = await parseVectorFile(file, {
@@ -705,6 +667,11 @@ const MapComponent = ({
                   generateRandomColor,
                 });
                 addLayer(newLayer);
+                // Update manifest with layer color
+                const { updateManifestColor } = await import(
+                  "@/sessions/manifestStore"
+                );
+                await updateManifestColor(layerId, newLayer.color);
                 console.log(`[FileUpload] Vector layer created: ${layerId}`);
               }
 
@@ -835,18 +802,33 @@ const MapComponent = ({
       // Save sketch layers as ZIP file in HSC-SESSIONS/FILES folder
       const { isSketchLayer } = await import("@/lib/sketch-layers");
       const sketchLayers = layers.filter(isSketchLayer);
+      const { HSC_FILES_DIR } = await import("@/sessions/constants");
+      const { Filesystem } = await import("@capacitor/filesystem");
+      const sketchLayersPath = `${HSC_FILES_DIR}/sketch_layers.zip`;
+
       if (sketchLayers.length > 0) {
         console.log(
           `[SessionSave] Saving ${sketchLayers.length} sketch layer(s)...`
         );
         const { saveLayers } = await import("@/lib/autosave");
-        const { HSC_FILES_DIR } = await import("@/sessions/constants");
-        await saveLayers(
-          sketchLayers,
-          `${HSC_FILES_DIR}/sketch_layers.zip`,
-          Directory.Documents
-        );
+        await saveLayers(sketchLayers, sketchLayersPath, Directory.Documents);
         console.log(`[SessionSave] Sketch layers saved successfully`);
+      } else {
+        // Delete sketch_layers.zip if no sketch layers exist (clear old sketch layers)
+        try {
+          await Filesystem.deleteFile({
+            path: sketchLayersPath,
+            directory: Directory.Documents,
+          });
+          console.log(
+            `[SessionSave] Deleted sketch_layers.zip (no sketch layers in session)`
+          );
+        } catch (error) {
+          // File might not exist, which is fine
+          console.log(
+            `[SessionSave] sketch_layers.zip doesn't exist (this is OK)`
+          );
+        }
       }
 
       if (finalizedEntries.length === 0 && sketchLayers.length === 0) {
@@ -883,11 +865,51 @@ const MapComponent = ({
       // Filter to only "saved" entries for rendering
       const savedEntries = mergedEntries.filter((x) => x.status === "saved");
       console.log(
-        `[SessionRestore] Cleanup complete. Saved entries: ${savedEntries.length}`
+        `[SessionRestore] Found ${savedEntries.length} saved entries to restore`
       );
 
-      // Get existing layer IDs to ensure uniqueness
-      const existingLayerIds = new Set(layers.map((l) => l.id));
+      // Create set of saved layer IDs
+      const savedLayerIds = new Set(savedEntries.map((e) => e.layerId));
+
+      // Clear all current layers that are NOT in the saved manifest
+      // This ensures we only show layers from the saved session
+      const currentLayers = layers;
+      const layersToKeep: LayerProps[] = [];
+      const layersToRemove: string[] = [];
+
+      for (const layer of currentLayers) {
+        // Keep sketch layers (point, line, polygon, azimuth) as they're restored separately
+        const isSketchLayer =
+          layer.type === "point" ||
+          layer.type === "line" ||
+          layer.type === "polygon" ||
+          layer.type === "azimuth";
+
+        if (isSketchLayer) {
+          // Sketch layers will be restored from ZIP, so we'll keep them for now
+          // They'll be replaced when sketch layers are restored
+          layersToKeep.push(layer);
+        } else if (savedLayerIds.has(layer.id)) {
+          // Keep layers that are in saved manifest
+          layersToKeep.push(layer);
+        } else {
+          // Mark for removal - these are staged layers not in saved manifest
+          layersToRemove.push(layer.id);
+        }
+      }
+
+      // Remove layers that are not in saved manifest
+      if (layersToRemove.length > 0) {
+        console.log(
+          `[SessionRestore] Removing ${layersToRemove.length} layer(s) not in saved session`
+        );
+        for (const layerId of layersToRemove) {
+          deleteLayer(layerId);
+        }
+      }
+
+      // Get existing layer IDs after cleanup to ensure uniqueness
+      const existingLayerIds = new Set(layersToKeep.map((l) => l.id));
 
       // Restore layers from saved files (only if layer_id is unique)
       let restoredFileCount = 0;
@@ -1009,6 +1031,14 @@ const MapComponent = ({
               layerId: entry.layerId,
               layerName: entry.layerName,
             });
+            // Use createdAt from manifest instead of current time
+            if (entry.createdAt) {
+              (newLayer as any).uploadedAt = entry.createdAt;
+            }
+            // Use color from manifest if available
+            if (entry.color) {
+              newLayer.color = entry.color;
+            }
             addLayer(newLayer);
             existingLayerIds.add(entry.layerId);
             restoredFileCount++;
@@ -1030,6 +1060,14 @@ const MapComponent = ({
               layerName: entry.layerName,
               generateRandomColor,
             });
+            // Use createdAt from manifest instead of current time
+            if (entry.createdAt) {
+              (newLayer as any).uploadedAt = entry.createdAt;
+            }
+            // Use color from manifest if available
+            if (entry.color) {
+              newLayer.color = entry.color;
+            }
             addLayer(newLayer);
             existingLayerIds.add(entry.layerId);
             restoredFileCount++;
@@ -1054,6 +1092,14 @@ const MapComponent = ({
               layerName: entry.layerName,
               generateRandomColor,
             });
+            // Use createdAt from manifest instead of current time
+            if (entry.createdAt) {
+              (newLayer as any).uploadedAt = entry.createdAt;
+            }
+            // Use color from manifest if available
+            if (entry.color) {
+              newLayer.color = entry.color;
+            }
             addLayer(newLayer);
             existingLayerIds.add(entry.layerId);
             restoredFileCount++;
@@ -1073,6 +1119,26 @@ const MapComponent = ({
       }
 
       // Restore sketch layers from ZIP file
+      // First, remove existing sketch layers to avoid duplicates
+      const currentSketchLayerIds = layersToKeep
+        .filter(
+          (l) =>
+            l.type === "point" ||
+            l.type === "line" ||
+            l.type === "polygon" ||
+            l.type === "azimuth"
+        )
+        .map((l) => l.id);
+
+      if (currentSketchLayerIds.length > 0) {
+        console.log(
+          `[SessionRestore] Removing ${currentSketchLayerIds.length} existing sketch layer(s) before restore`
+        );
+        for (const layerId of currentSketchLayerIds) {
+          deleteLayer(layerId);
+        }
+      }
+
       try {
         const { HSC_FILES_DIR } = await import("@/sessions/constants");
         const { Filesystem, Directory, Encoding } = await import(
@@ -1115,11 +1181,16 @@ const MapComponent = ({
                   zip
                 );
 
+                // Get updated existing layer IDs after cleanup
+                const updatedExistingLayerIds = new Set(
+                  layers.map((l) => l.id)
+                );
+
                 // Add sketch layers ensuring unique layer_id
                 for (const sketchLayer of sketchLayers) {
-                  if (!existingLayerIds.has(sketchLayer.id)) {
+                  if (!updatedExistingLayerIds.has(sketchLayer.id)) {
                     addLayer(sketchLayer);
-                    existingLayerIds.add(sketchLayer.id);
+                    updatedExistingLayerIds.add(sketchLayer.id);
                     restoredSketchCount++;
                   } else {
                     console.log(

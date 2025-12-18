@@ -2,7 +2,10 @@ import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds, calculateLayerZoomRange } from "@/lib/layers";
-import { markLayerStagedDelete } from "@/sessions/manifestStore";
+import {
+  markLayerStagedDelete,
+  updateManifestColor,
+} from "@/sessions/manifestStore";
 
 interface LayerState {
   layers: LayerProps[];
@@ -155,6 +158,12 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   },
   updateLayer: (layerId: string, updatedLayer: LayerProps) =>
     set((state) => {
+      const oldLayer = state.layers.find((l) => l.id === layerId);
+      const colorChanged =
+        oldLayer &&
+        updatedLayer.color &&
+        JSON.stringify(oldLayer.color) !== JSON.stringify(updatedLayer.color);
+
       const newLayers = state.layers.map((layer) => {
         if (layer.id === layerId) {
           // Ensure color array is a new reference to avoid sharing
@@ -197,6 +206,17 @@ const useLayerStore = create<LayerState>()((set, get) => ({
         }
         return layer;
       });
+
+      // Update manifest color if it changed
+      if (colorChanged && updatedLayer.color) {
+        updateManifestColor(layerId, updatedLayer.color).catch((error) => {
+          console.error(
+            `[LayerUpdate] Error updating manifest color for layer ${layerId}:`,
+            error
+          );
+        });
+      }
+
       return { layers: newLayers };
     }),
   bringLayerToTop: (layerId: string) =>
@@ -286,11 +306,13 @@ export const useLayers = () => {
   const layers = useLayerStore((state) => state.layers);
   const setLayers = useLayerStore((state) => state.setLayers);
   const addLayer = useLayerStore((state) => state.addLayer);
+  const deleteLayer = useLayerStore((state) => state.deleteLayer);
   const bringLayerToTop = useLayerStore((state) => state.bringLayerToTop);
   return {
     layers,
     setLayers,
     addLayer,
+    deleteLayer,
     bringLayerToTop,
   };
 };

@@ -62,9 +62,9 @@ export async function deleteFileByAbsolutePath(
   // This avoids Capacitor Filesystem directory mapping issues
   try {
     await NativeUploader.deleteFile({ absolutePath });
-    console.log(`[DeleteFile] ✓ Successfully deleted: ${absolutePath}`);
+    console.log(`[DeleteFile] Successfully deleted: ${absolutePath}`);
   } catch (error) {
-    const errorMsg = `[DeleteFile] ✗ FAILED to delete: ${absolutePath}`;
+    const errorMsg = `[DeleteFile] FAILED to delete: ${absolutePath}`;
     console.error(errorMsg);
     console.error(`[DeleteFile] Error:`, error);
     console.error(

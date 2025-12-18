@@ -5,6 +5,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -12,13 +13,19 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
 @CapacitorPlugin(name = "ZipFolder")
@@ -184,6 +191,287 @@ public class ZipFolderPlugin extends Plugin {
             else size += f.length();
         }
         return size;
+    }
+
+    // Helper class to store extracted file information
+    private static class ExtractedFileInfo {
+        String absolutePath;
+        String name;
+        String type; // "vector", "tiff", "shapefile"
+        long size;
+    }
+
+    @PluginMethod
+    public void extractZipRecursive(PluginCall call) {
+        String zipPath = call.getString("zipPath");
+        String outputDirParam = call.getString("outputDir");
+        
+        if (zipPath == null || zipPath.isEmpty()) {
+            main.post(() -> call.reject("zipPath is required"));
+            return;
+        }
+        
+        // Make outputDir final for use in lambda
+        final String outputDir = (outputDirParam == null || outputDirParam.isEmpty()) 
+            ? "HSC-SESSIONS/FILES" 
+            : outputDirParam;
+
+        new Thread(() -> {
+            try {
+                // Get destination directory
+                File docsRoot = getContext().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+                if (docsRoot == null) {
+                    docsRoot = getContext().getFilesDir();
+                }
+                
+                File destDir = new File(docsRoot, outputDir);
+                if (!destDir.exists()) {
+                    boolean created = destDir.mkdirs();
+                    if (!created && !destDir.exists()) {
+                        main.post(() -> call.reject("Failed to create output directory: " + destDir.getAbsolutePath()));
+                        return;
+                    }
+                }
+
+                // Extract ZIP recursively
+                File zipFile = new File(zipPath);
+                if (!zipFile.exists()) {
+                    main.post(() -> call.reject("ZIP file does not exist: " + zipPath));
+                    return;
+                }
+
+                List<ExtractedFileInfo> extractedFiles = extractRecursive(zipFile, destDir, 0, 10);
+
+                // Group shapefiles and re-zip them
+                List<ExtractedFileInfo> finalFiles = processShapefiles(extractedFiles, destDir);
+
+                // Build result array
+                JSArray filesArray = new JSArray();
+                for (ExtractedFileInfo file : finalFiles) {
+                    JSObject fileObj = new JSObject();
+                    fileObj.put("absolutePath", file.absolutePath);
+                    fileObj.put("name", file.name);
+                    fileObj.put("type", file.type);
+                    fileObj.put("size", file.size);
+                    filesArray.put(fileObj);
+                }
+
+                JSObject result = new JSObject();
+                result.put("files", filesArray);
+
+                main.post(() -> call.resolve(result));
+
+            } catch (Exception e) {
+                main.post(() -> call.reject("Extraction failed: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private List<ExtractedFileInfo> extractRecursive(File zipFile, File destDir, int depth, int maxDepth) throws Exception {
+        List<ExtractedFileInfo> extractedFiles = new ArrayList<>();
+        
+        if (depth > maxDepth) {
+            return extractedFiles; // Skip if too deep
+        }
+
+        byte[] buffer = new byte[8192];
+        
+        try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(zipFile)))) {
+            ZipEntry entry;
+            
+            while ((entry = zis.getNextEntry()) != null) {
+                String entryName = entry.getName();
+                
+                // Skip directory entries
+                if (entry.isDirectory()) {
+                    continue;
+                }
+
+                // Handle nested ZIPs
+                if (entryName.toLowerCase().endsWith(".zip")) {
+                    // Extract nested ZIP to temp location (use only filename, not full path)
+                    String zipFileName = new File(entryName).getName(); // Get just the filename
+                    File tempZip = new File(destDir, "temp_" + System.currentTimeMillis() + "_" + zipFileName);
+                    
+                    try (FileOutputStream fos = new FileOutputStream(tempZip);
+                         BufferedOutputStream bos = new BufferedOutputStream(fos)) {
+                        int len;
+                        while ((len = zis.read(buffer)) > 0) {
+                            bos.write(buffer, 0, len);
+                        }
+                    }
+                    
+                    // Recursively extract nested ZIP
+                    List<ExtractedFileInfo> nestedFiles = extractRecursive(tempZip, destDir, depth + 1, maxDepth);
+                    extractedFiles.addAll(nestedFiles);
+                    
+                    // Delete temp ZIP file (and ensure it's deleted)
+                    if (tempZip.exists()) {
+                        boolean deleted = tempZip.delete();
+                        if (!deleted) {
+                            // If delete fails, try to delete on exit (best effort cleanup)
+                            tempZip.deleteOnExit();
+                        }
+                    }
+                } else {
+                    // Extract regular file
+                    String fileName = new File(entryName).getName();
+                    File outputFile = new File(destDir, fileName);
+                    
+                    // Handle duplicate names
+                    int counter = 1;
+                    String baseName = fileName;
+                    String extension = "";
+                    int dotIndex = fileName.lastIndexOf('.');
+                    if (dotIndex > 0) {
+                        baseName = fileName.substring(0, dotIndex);
+                        extension = fileName.substring(dotIndex);
+                    }
+                    
+                    while (outputFile.exists()) {
+                        outputFile = new File(destDir, baseName + "_" + counter + extension);
+                        counter++;
+                    }
+                    
+                    outputFile.getParentFile().mkdirs();
+                    
+                    try (FileOutputStream fos = new FileOutputStream(outputFile);
+                         BufferedOutputStream bos = new BufferedOutputStream(fos)) {
+                        int len;
+                        while ((len = zis.read(buffer)) > 0) {
+                            bos.write(buffer, 0, len);
+                        }
+                    }
+                    
+                    // Determine file type
+                    String lowerName = outputFile.getName().toLowerCase();
+                    String fileType = "vector"; // default
+                    
+                    if (lowerName.endsWith(".tif") || lowerName.endsWith(".tiff") || 
+                        lowerName.endsWith(".hgt") || lowerName.endsWith(".dett")) {
+                        fileType = "tiff";
+                    } else if (lowerName.endsWith(".shp") || lowerName.endsWith(".shx") || 
+                               lowerName.endsWith(".dbf") || lowerName.endsWith(".prj")) {
+                        fileType = "shapefile_component";
+                    }
+                    
+                    ExtractedFileInfo fileInfo = new ExtractedFileInfo();
+                    fileInfo.absolutePath = outputFile.getAbsolutePath();
+                    fileInfo.name = outputFile.getName();
+                    fileInfo.type = fileType;
+                    fileInfo.size = outputFile.length();
+                    
+                    extractedFiles.add(fileInfo);
+                }
+                
+                zis.closeEntry();
+            }
+        }
+        
+        return extractedFiles;
+    }
+
+    private List<ExtractedFileInfo> processShapefiles(List<ExtractedFileInfo> files, File destDir) throws Exception {
+        // Group shapefile components by base name
+        Map<String, List<ExtractedFileInfo>> shapefileGroups = new HashMap<>();
+        
+        for (ExtractedFileInfo file : files) {
+            String lowerName = file.name.toLowerCase();
+            if (lowerName.endsWith(".shp") || lowerName.endsWith(".shx") || 
+                lowerName.endsWith(".dbf") || lowerName.endsWith(".prj")) {
+                
+                String baseName = lowerName.replaceAll("\\.(shp|shx|dbf|prj)$", "");
+                shapefileGroups.computeIfAbsent(baseName, k -> new ArrayList<>()).add(file);
+            }
+        }
+        
+        List<ExtractedFileInfo> result = new ArrayList<>();
+        // Track which files were processed as part of complete shapefile groups
+        java.util.Set<String> processedComponentPaths = new java.util.HashSet<>();
+        
+        // Process each shapefile group
+        for (Map.Entry<String, List<ExtractedFileInfo>> group : shapefileGroups.entrySet()) {
+            List<ExtractedFileInfo> components = group.getValue();
+            
+            // Check if we have required components
+            boolean hasShp = false, hasShx = false, hasDbf = false;
+            for (ExtractedFileInfo comp : components) {
+                String lower = comp.name.toLowerCase();
+                if (lower.endsWith(".shp")) hasShp = true;
+                if (lower.endsWith(".shx")) hasShx = true;
+                if (lower.endsWith(".dbf")) hasDbf = true;
+            }
+            
+            if (hasShp && hasShx && hasDbf) {
+                // Create ZIP with all components
+                String zipName = group.getKey() + ".zip";
+                File zipFile = new File(destDir, zipName);
+                
+                // Handle duplicate names
+                int counter = 1;
+                while (zipFile.exists()) {
+                    zipFile = new File(destDir, group.getKey() + "_" + counter + ".zip");
+                    counter++;
+                }
+                
+                try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+                    byte[] buffer = new byte[8192];
+                    
+                    for (ExtractedFileInfo component : components) {
+                        File compFile = new File(component.absolutePath);
+                        if (!compFile.exists()) continue;
+                        
+                        ZipEntry entry = new ZipEntry(component.name);
+                        zos.putNextEntry(entry);
+                        
+                        try (FileInputStream fis = new FileInputStream(compFile);
+                             BufferedInputStream bis = new BufferedInputStream(fis)) {
+                            int len;
+                            while ((len = bis.read(buffer)) > 0) {
+                                zos.write(buffer, 0, len);
+                            }
+                        }
+                        zos.closeEntry();
+                    }
+                }
+                
+                // Delete individual component files and mark them as processed
+                for (ExtractedFileInfo component : components) {
+                    File compFile = new File(component.absolutePath);
+                    if (compFile.exists()) {
+                        compFile.delete();
+                    }
+                    processedComponentPaths.add(component.absolutePath);
+                }
+                
+                // Add ZIP to results
+                ExtractedFileInfo zipInfo = new ExtractedFileInfo();
+                zipInfo.absolutePath = zipFile.getAbsolutePath();
+                zipInfo.name = zipFile.getName();
+                zipInfo.type = "shapefile";
+                zipInfo.size = zipFile.length();
+                result.add(zipInfo);
+                
+            } else {
+                // Incomplete shapefile, keep as individual files (but mark as vector for processing)
+                for (ExtractedFileInfo comp : components) {
+                    comp.type = "vector"; // Change type so it can be processed
+                    result.add(comp);
+                }
+            }
+        }
+        
+        // Add non-shapefile files, excluding those that were processed as part of complete shapefile groups
+        for (ExtractedFileInfo file : files) {
+            // Skip shapefile components that were already processed and zipped
+            if (file.type.equals("shapefile_component") && processedComponentPaths.contains(file.absolutePath)) {
+                continue;
+            }
+            // Add all other files (non-shapefile files, or incomplete shapefile components that weren't processed)
+            result.add(file);
+        }
+        
+        return result;
     }
 }
 

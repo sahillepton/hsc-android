@@ -373,21 +373,79 @@ export function rgbToHex(
 }
 
 /**
- * Generate a random RGB color from a predefined palette
- * Colors: Red, Pink, Purple, Orange, Yellow
+ * Convert HSL to RGB
+ * @param h Hue (0-360)
+ * @param s Saturation (0-100)
+ * @param l Lightness (0-100)
+ * @returns RGB array [r, g, b]
  */
-export function generateRandomColor(): [number, number, number] {
-  const colors: [number, number, number][] = [
-    [255, 0, 0], // Red: #FF0000
-    [255, 192, 203], // Pink: #FFC0CB
-    [128, 0, 128], // Purple: #800080
-    [255, 165, 0], // Orange: #FFA500
-    [255, 255, 0], // Yellow: #FFFF00
-  ];
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  h = h / 360;
+  s = s / 100;
+  l = l / 100;
 
-  // Randomly select one of the predefined colors
-  const randomIndex = Math.floor(Math.random() * colors.length);
-  return colors[randomIndex];
+  let r: number, g: number, b: number;
+
+  if (s === 0) {
+    r = g = b = l; // achromatic
+  } else {
+    const hue2rgb = (p: number, q: number, t: number) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1 / 3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1 / 3);
+  }
+
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+/**
+ * Generate a unique RGB color based on an index/seed
+ * Avoids green shades (hue range 100-160 degrees) and ensures good visibility
+ * Can generate thousands of unique colors
+ *
+ * @param seed Optional seed/index for deterministic color generation
+ * @returns RGB array [r, g, b]
+ */
+export function generateRandomColor(seed?: number): [number, number, number] {
+  // Use provided seed or generate random one
+  const colorSeed = seed ?? Math.random() * 1000000;
+
+  // Map seed to hue range, avoiding green (100-160 degrees)
+  // We'll use two ranges: 0-100 (red to yellow) and 160-360 (cyan to red)
+  // This gives us 300 degrees of usable hue space
+  const hueRange = 300; // Total usable degrees
+  let hue = colorSeed % hueRange;
+
+  // Map to avoid green: if hue < 100, use it directly; if >= 100, add 60 to skip green
+  if (hue >= 100) {
+    hue += 60; // Skip the green range (100-160)
+  }
+
+  // Ensure hue is in valid range (0-360)
+  hue = hue % 360;
+
+  // Vary saturation and lightness based on seed for more variety
+  // Use different parts of seed for different properties
+  const saturationSeed = Math.floor(colorSeed / 1000);
+  const lightnessSeed = Math.floor(colorSeed / 100);
+
+  // Saturation: 60-100% for vibrant colors
+  const saturation = 60 + (saturationSeed % 40);
+
+  // Lightness: 40-70% for good visibility (not too dark, not too light)
+  const lightness = 40 + (lightnessSeed % 30);
+
+  return hslToRgb(hue, saturation, lightness);
 }
 
 export function hexToRgb(hex: string): [number, number, number] | null {

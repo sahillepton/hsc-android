@@ -6,6 +6,20 @@ export interface ZipFolderPlugin {
     fileName: string;
     size: number;
   }>;
+  
+  extractZipRecursive(options: {
+    zipPath: string;
+    outputDir?: string;
+  }): Promise<{
+    files: Array<{
+      absolutePath: string;
+      name: string;
+      type: "vector" | "tiff" | "shapefile";
+      size: number;
+    }>;
+  }>;
 }
 
-export const ZipFolder = registerPlugin<ZipFolderPlugin>("ZipFolder");
+const ZipFolder = registerPlugin<ZipFolderPlugin>("ZipFolder");
+
+export { ZipFolder };

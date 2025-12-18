@@ -25,6 +25,9 @@ export type ManifestEntry = {
   // file type: "tiff" | "vector" | "shapefile" | undefined (for backward compatibility)
   type?: "tiff" | "vector" | "shapefile";
 
+  // layer color: RGB or RGBA array (optional for backward compatibility)
+  color?: [number, number, number] | [number, number, number, number];
+
   // allow extra properties without breaking (Cursor can extend)
   [k: string]: any;
 };
@@ -276,6 +279,30 @@ export async function upsertManifestEntry(entry: ManifestEntry): Promise<void> {
 }
 
 /**
+ * Update layer color in manifest
+ */
+export async function updateManifestColor(
+  layerId: string,
+  color: [number, number, number] | [number, number, number, number]
+): Promise<void> {
+  const entry = tempManifest.find((x) => x.layerId === layerId);
+  if (entry) {
+    entry.color = color;
+  } else {
+    // Also check stored manifest for saved layers
+    const stored = await loadStoredManifest();
+    const storedEntry = stored.find((x) => x.layerId === layerId);
+    if (storedEntry) {
+      // Add to temp manifest with updated color
+      await upsertTempManifestEntry({
+        ...storedEntry,
+        color,
+      });
+    }
+  }
+}
+
+/**
  * Remove layer from temp manifest (after deleting file)
  */
 export function removeFromTempManifest(layerId: string): void {
@@ -357,6 +384,7 @@ export async function removeLayerFromManifest(layerId: string): Promise<void> {
 /**
  * Save: Replace stored manifest with temp manifest
  * - Delete all files with "staged_delete" status
+ * - If temp manifest is empty, delete all files from stored manifest first
  * - Remove "staged_delete" entries from manifest
  * - Upgrade all "staged" to "saved"
  * - Sort by size (increasing order)
@@ -389,6 +417,39 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
     .map((e) =>
       e.status === "staged" ? { ...e, status: "saved" as ManifestStatus } : e
     );
+
+  // Load stored manifest to find files that need to be deleted
+  const storedManifest = await loadStoredManifest();
+
+  // Create a set of layerIds that will be in the new manifest
+  const newManifestLayerIds = new Set(m.map((e) => e.layerId));
+
+  // Find files in stored manifest that are not in the new manifest
+  const filesToDelete = storedManifest.filter(
+    (entry) =>
+      entry.status === "saved" && !newManifestLayerIds.has(entry.layerId)
+  );
+
+  // Delete files that are in stored manifest but not in new manifest
+  if (filesToDelete.length > 0) {
+    console.log(
+      `[Manifest] Deleting ${filesToDelete.length} file(s) that are no longer in current session`
+    );
+
+    for (const entry of filesToDelete) {
+      try {
+        await deleteFileByAbsolutePath(entry.absolutePath);
+        console.log(
+          `[Manifest] Deleted file no longer in session: ${entry.originalName}`
+        );
+      } catch (error) {
+        console.error(
+          `[Manifest] Error deleting file ${entry.originalName}:`,
+          error
+        );
+      }
+    }
+  }
 
   // Sort by size (increasing order)
   m.sort((a, b) => a.size - b.size);

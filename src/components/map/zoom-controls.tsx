@@ -23,6 +23,7 @@ import { useDrawingMode } from "@/store/layers-store";
 import type { DrawingMode } from "@/lib/definitions";
 import { cn } from "@/lib/utils";
 import { useState, useEffect, useRef } from "react";
+import ResetToNorth from "@/utils/icons/ResetToNorth";
 
 type CameraPopoverProps = {
   isOpen: boolean;
@@ -146,6 +147,13 @@ const ZoomControls = ({
       const map = mapRef.current.getMap();
       const currentZoom = map.getZoom();
       map.easeTo({ zoom: currentZoom - 1, duration: 300 });
+    }
+  };
+
+  const handleResetToNorth = () => {
+    if (mapRef.current) {
+      const map = mapRef.current.getMap();
+      map.easeTo({ bearing: 0, duration: 300 });
     }
   };
 
@@ -322,21 +330,6 @@ const ZoomControls = ({
               <Network className="h-4 w-4" />
             </Button>
           )}
-
-          {onResetHome && (
-            <div>
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={onResetHome}
-                className="h-10 w-10 hover:bg-white cursor-pointer"
-                title="Reset to Home View"
-              >
-                <Home className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-
           {/* {cameraPopoverProps && (
             <Popover
               open={cameraPopoverProps.isOpen}
@@ -368,18 +361,6 @@ const ZoomControls = ({
               </PopoverContent>
             </Popover>
           )} */}
-
-          {onOpenConnectionConfig && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-10 w-10 text-slate-800 hover:text-foreground  rounded-none"
-              title="Connection Settings"
-              onClick={onOpenConnectionConfig}
-            >
-              <WifiPen className="h-4 w-4" />
-            </Button>
-          )}
         </div>
         <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
           <div className="flex items-center p-0.5 ">
@@ -437,7 +418,46 @@ const ZoomControls = ({
               );
             })}
           </div>
-
+        </div>
+        <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
+          {onOpenConnectionConfig && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-10 w-10 text-slate-800 hover:text-foreground  rounded-none"
+              title="Connection Settings"
+              onClick={onOpenConnectionConfig}
+            >
+              <WifiPen className="h-4 w-4" />
+            </Button>
+          )}
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={handleResetToNorth}
+            className="h-10 w-10 hover:bg-transparent cursor-pointer"
+            title="Reset to North"
+          >
+            <ResetToNorth
+              width={16}
+              height={16}
+              strokeWidth={1.2}
+              style={{ zoom: 1.5 }}
+            />
+          </Button>
+          {onResetHome && (
+            <div>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={onResetHome}
+                className="h-10 w-10 hover:bg-white cursor-pointer"
+                title="Reset to Home View"
+              >
+                <Home className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
           {igrsToggleProps && (
             <div className="flex items-center gap-2 px-3 border-l border-slate-200">
               <span className="text-[10px] font-semibold text-slate-800 uppercase">

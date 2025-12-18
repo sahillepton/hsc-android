@@ -258,7 +258,7 @@ const LayersList = ({
                             />
                           )}
                           <div className="flex items-center gap-2">
-                            <div className="text-sm font-semibold text-ellipsis text-foreground">
+                            <div className="text-sm font-semibold text-ellipsis max-w-[200px] overflow-hidden text-foreground">
                               {layer.name}
                             </div>
                           </div>
