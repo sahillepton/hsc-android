@@ -21,12 +21,164 @@ import {
   useIgrsPreference,
 } from "@/store/layers-store";
 import LayerPopover from "./layer-popover";
+import SketchLayerCardSkeleton from "./sketch-layer-card-skeleton";
 import {
   calculateBearingDegrees,
   formatLayerMeasurements,
   normalizeAngleSigned,
 } from "@/lib/layers";
 import { isSketchLayer } from "@/lib/sketch-layers";
+import type { LayerProps } from "@/lib/definitions";
+
+// Component to handle skeleton transition for individual sketch layer items
+type SketchLayerCardItemProps = {
+  layer: LayerProps;
+  isSelected: boolean;
+  isFocused: boolean;
+  measurements: Array<{ label: string; value: string }>;
+  badgeClass: string;
+  enableSelection: boolean;
+  useIgrs: boolean;
+  onToggleSelect: (layerId: string) => void;
+  onToggleVisibility: (layerId: string, visible: boolean) => void;
+  onFocusLayer: (layerId: string) => void;
+  onUpdateLayer: (layerId: string, layer: LayerProps) => void;
+  setFocusedLayerId: (layerId: string | null) => void;
+  onItemRendered: (layerId: string) => void;
+  isRendered: boolean;
+};
+
+const SketchLayerCardItem = ({
+  layer,
+  isSelected,
+  isFocused,
+  measurements,
+  badgeClass,
+  enableSelection,
+  onToggleSelect,
+  onToggleVisibility,
+  onFocusLayer,
+  onUpdateLayer,
+  setFocusedLayerId,
+  onItemRendered,
+  isRendered,
+}: SketchLayerCardItemProps) => {
+  useEffect(() => {
+    if (!isRendered) {
+      const timeout = setTimeout(() => {
+        onItemRendered(layer.id);
+      }, 50);
+      return () => clearTimeout(timeout);
+    }
+  }, [layer.id, isRendered, onItemRendered]);
+
+  if (!isRendered) {
+    return <SketchLayerCardSkeleton />;
+  }
+
+  return (
+    <div className="mb-3">
+      <div
+        key={layer.id}
+        className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
+          isFocused ? "border-l-4 border-l-sky-300" : ""
+        }`}
+      >
+        <div className="absolute right-3 top-3 flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            title={`Focus layer: ${layer.name}`}
+            onClick={() => {
+              setFocusedLayerId(layer.id);
+              onFocusLayer(layer.id);
+            }}
+          >
+            <LocateFixed size={10} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={() =>
+              onToggleVisibility(layer.id, layer.visible === false)
+            }
+            title={
+              layer.visible === false
+                ? `Show layer: ${layer.name}`
+                : `Hide layer: ${layer.name}`
+            }
+          >
+            {layer.visible === true ? (
+              <EyeIcon size={10} />
+            ) : (
+              <EyeOffIcon size={10} />
+            )}
+          </Button>
+          <LayerPopover layer={layer} updateLayer={onUpdateLayer}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              title={`Layer settings: ${layer.name}`}
+            >
+              <Settings2 size={10} />
+            </Button>
+          </LayerPopover>
+        </div>
+
+        <div className="min-w-0 pr-14">
+          <div className="flex items-start gap-2">
+            {enableSelection && (
+              <input
+                type="checkbox"
+                className="mt-1 -ml-1 h-4 w-4 rounded border-border"
+                checked={isSelected}
+                onChange={() => onToggleSelect(layer.id)}
+              />
+            )}
+            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground mb-2">
+              <span className="truncate text-[16px] max-w-[200px] overflow-hidden text-ellipsis">
+                {layer.name}
+                <span
+                  className={`text-[10px] ml-2 font-semibold uppercase tracking-wide ${badgeClass}`}
+                >
+                  {layer.type}
+                </span>
+              </span>
+              <span
+                className={`rounded-full text-[10px] font-semibold uppercase tracking-wide ${badgeClass}`}
+              ></span>
+            </div>
+          </div>
+
+          <dl className="mt-3 grid w-full grid-cols-2 gap-x-4 gap-y-2">
+            {measurements.length === 0 ? (
+              <span className="col-span-2 text-muted-foreground text-xs">
+                No measurements
+              </span>
+            ) : (
+              measurements.map((measurement, index) => (
+                <div
+                  key={`${layer.id}-${measurement.label}-${index}`}
+                  className="flex flex-col"
+                >
+                  <dt className="text-[13px] font-semibold tracking-wide text-foreground mb-2">
+                    {measurement.label}
+                  </dt>
+                  <dd className="font-mono text-[12px] text-zinc-600">
+                    {measurement.value}
+                  </dd>
+                </div>
+              ))
+            )}
+          </dl>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 type SketchLayersPanelProps = {
   isOpen: boolean;
@@ -66,6 +218,7 @@ const SketchLayersPanel = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
   const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
+  const [renderedItems, setRenderedItems] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const handleResize = () => {
@@ -91,6 +244,21 @@ const SketchLayersPanel = ({
       setFocusedLayerId(null);
     }
   }, [focusedLayerId, layerIdSignature, layerIds]);
+
+  // Reset rendered items when layers change significantly
+  useEffect(() => {
+    const layerIdsSet = new Set(layerIds);
+    setRenderedItems((prev) => {
+      const filtered = new Set(
+        Array.from(prev).filter((id) => layerIdsSet.has(id))
+      );
+      return filtered;
+    });
+  }, [layerIds.length]);
+
+  const handleItemRendered = (layerId: string) => {
+    setRenderedItems((prev) => new Set(prev).add(layerId));
+  };
 
   const toggleSelect = (layerId: string) => {
     setSelectedIds((prev) =>
@@ -185,15 +353,15 @@ const SketchLayersPanel = ({
     }
 
     // Calculate height based on number of layers, capped at 90% of screen height
-    const estimatedItemHeight = 200; // Estimated height per item in pixels
-    const calculatedHeight = sketchLayers.length * estimatedItemHeight + 24; // 24px for padding
+    const estimatedItemHeight = 300; // Estimated height per item in pixels
+    const calculatedHeight = sketchLayers.length * estimatedItemHeight + 32; // 24px for padding
     const maxHeight = windowHeight * 0.9;
     const dynamicHeight = Math.min(calculatedHeight, maxHeight);
 
     return (
       <div className="overflow-y-auto" style={{ height: `${dynamicHeight}px` }}>
         <Virtuoso
-          style={{ height: "100%" }}
+          style={{ height: `${dynamicHeight - 150}px`, marginBottom: "150px" }}
           data={sketchLayers}
           increaseViewportBy={280}
           itemContent={(_, layer) => {
@@ -219,110 +387,25 @@ const SketchLayersPanel = ({
               typeAccent[layer.type] ?? "text-slate-600 bg-slate-100";
             const isSelected = selectedIds.includes(layer.id);
             const isFocused = focusedLayerId === layer.id;
+            const isRendered = renderedItems.has(layer.id);
+
             return (
-              <div className="mb-3">
-                <div
-                  key={layer.id}
-                  className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
-                    isFocused ? "border-l-4 border-l-sky-300" : ""
-                  }`}
-                >
-                  <div className="absolute right-3 top-3 flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      title={`Focus layer: ${layer.name}`}
-                      onClick={() => {
-                        setFocusedLayerId(layer.id);
-                        focusLayer(layer.id);
-                      }}
-                    >
-                      <LocateFixed size={10} />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() =>
-                        handleToggleVisibility(
-                          layer.id,
-                          layer.visible === false
-                        )
-                      }
-                      title={
-                        layer.visible === false
-                          ? `Show layer: ${layer.name}`
-                          : `Hide layer: ${layer.name}`
-                      }
-                    >
-                      {layer.visible === true ? (
-                        <EyeIcon size={10} />
-                      ) : (
-                        <EyeOffIcon size={10} />
-                      )}
-                    </Button>
-                    <LayerPopover layer={layer} updateLayer={updateLayer}>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title={`Layer settings: ${layer.name}`}
-                      >
-                        <Settings2 size={10} />
-                      </Button>
-                    </LayerPopover>
-                  </div>
-
-                  <div className="min-w-0 pr-14">
-                    <div className="flex items-start gap-2">
-                      {enableSelection && (
-                        <input
-                          type="checkbox"
-                          className="mt-1 -ml-1 h-4 w-4 rounded border-border"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(layer.id)}
-                        />
-                      )}
-                      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground mb-2">
-                        <span className="truncate text-[16px] max-w-[200px] overflow-hidden text-ellipsis">
-                          {layer.name}
-                          <span
-                            className={`text-[10px] ml-2 font-semibold uppercase tracking-wide ${badgeClass}`}
-                          >
-                            {layer.type}
-                          </span>
-                        </span>
-                        <span
-                          className={`rounded-full text-[10px] font-semibold uppercase tracking-wide ${badgeClass}`}
-                        ></span>
-                      </div>
-                    </div>
-
-                    <dl className="mt-3 grid w-full grid-cols-2 gap-x-4 gap-y-2">
-                      {measurements.length === 0 ? (
-                        <span className="col-span-2 text-muted-foreground text-xs">
-                          No measurements
-                        </span>
-                      ) : (
-                        measurements.map((measurement, index) => (
-                          <div
-                            key={`${layer.id}-${measurement.label}-${index}`}
-                            className="flex flex-col"
-                          >
-                            <dt className="text-[13px] font-semibold tracking-wide text-foreground mb-2">
-                              {measurement.label}
-                            </dt>
-                            <dd className="font-mono text-[12px] text-zinc-600">
-                              {measurement.value}
-                            </dd>
-                          </div>
-                        ))
-                      )}
-                    </dl>
-                  </div>
-                </div>
-              </div>
+              <SketchLayerCardItem
+                layer={layer}
+                isSelected={isSelected}
+                isFocused={isFocused}
+                measurements={measurements}
+                badgeClass={badgeClass}
+                enableSelection={enableSelection}
+                useIgrs={useIgrs}
+                onToggleSelect={toggleSelect}
+                onToggleVisibility={handleToggleVisibility}
+                onFocusLayer={focusLayer}
+                onUpdateLayer={updateLayer}
+                setFocusedLayerId={setFocusedLayerId}
+                onItemRendered={handleItemRendered}
+                isRendered={isRendered}
+              />
             );
           }}
         />

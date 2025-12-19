@@ -57,7 +57,7 @@ import {
   // generateRandomColor,
 } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
-import { Directory } from "@capacitor/filesystem";
+import { isSketchLayer } from "@/lib/sketch-layers";
 import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
 import { ZipFolder } from "@/plugins/zip-folder";
@@ -211,6 +211,7 @@ const MapComponent = ({
     null
   );
   const [mapZoom, setMapZoom] = useState(4);
+  const [mapBearing, setMapBearing] = useState(0);
   const [isUdpConfigDialogOpen, setIsUdpConfigDialogOpen] = useState(false);
   const [configKey, setConfigKey] = useState(0);
   const [showConnectionError, setShowConnectionError] = useState(false);
@@ -742,13 +743,42 @@ const MapComponent = ({
     }
   };
 
-  // Export HSC-SESSIONS folder as ZIP to public Documents folder
+  // Export layers based on tempManifest
   const handleExportLayers = async () => {
     const toastId = toast.loading("Exporting layers...");
     try {
-      const { ZipFolder } = await import("@/plugins/zip-folder");
+      // Get tempManifest and filter for staged/saved entries
+      const { getTempManifest } = await import("@/sessions/manifestStore");
+      const tempManifest = getTempManifest();
+      const filesToExport = tempManifest.filter(
+        (entry) => entry.status === "staged" || entry.status === "saved"
+      );
 
-      const result = await ZipFolder.zipHscSessionsFolder();
+      // Check if there's anything to export
+      if (filesToExport.length === 0) {
+        toast.update(toastId, "Nothing to download.", "error");
+        return;
+      }
+
+      // Prepare manifest file entries for Android
+      const manifestFiles = filesToExport.map((entry) => ({
+        absolutePath: entry.absolutePath,
+        originalName: entry.originalName,
+        layerId: entry.layerId,
+        layerName: entry.layerName,
+        size: entry.size,
+      }));
+
+      console.log(
+        `[Export] Preparing to export ${manifestFiles.length} file(s)`
+      );
+      console.log(`[Export] Files to export:`, manifestFiles);
+
+      // Call Android plugin to create ZIP
+      const { ZipFolder } = await import("@/plugins/zip-folder");
+      const result = await ZipFolder.zipManifestFiles({
+        files: manifestFiles,
+      });
 
       toast.update(
         toastId,
@@ -786,6 +816,17 @@ const MapComponent = ({
         );
       }
 
+      // Check sketch layers count BEFORE any operations
+      const { isSketchLayer } = await import("@/lib/sketch-layers");
+      const sketchLayers = layers.filter(isSketchLayer);
+
+      // Check if session is empty BEFORE doing any operations
+      if (beforeManifest.length === 0 && sketchLayers.length === 0) {
+        console.warn("[SessionSave] No files or sketch layers in session!");
+        toast.update(toastId, "Nothing to save", "error");
+        return;
+      }
+
       // Step 7 & 8: Finalize manifest according to system design:
       // - Sort all layers in manifest by size (increasing order)
       // - Upgrade "staged" files to "saved" status
@@ -799,9 +840,16 @@ const MapComponent = ({
         `[SessionSave] Files sorted by size and staged files upgraded to saved`
       );
 
+      // Double-check after finalization (in case finalization removed everything)
+      if (finalizedEntries.length === 0 && sketchLayers.length === 0) {
+        console.warn(
+          "[SessionSave] No files or sketch layers in session after finalization!"
+        );
+        toast.update(toastId, "Nothing to save", "error");
+        return;
+      }
+
       // Save sketch layers as ZIP file in HSC-SESSIONS/FILES folder
-      const { isSketchLayer } = await import("@/lib/sketch-layers");
-      const sketchLayers = layers.filter(isSketchLayer);
       const { HSC_FILES_DIR } = await import("@/sessions/constants");
       const { Filesystem } = await import("@capacitor/filesystem");
       const sketchLayersPath = `${HSC_FILES_DIR}/sketch_layers.zip`;
@@ -811,11 +859,13 @@ const MapComponent = ({
           `[SessionSave] Saving ${sketchLayers.length} sketch layer(s)...`
         );
         const { saveLayers } = await import("@/lib/autosave");
+        const { Directory } = await import("@capacitor/filesystem");
         await saveLayers(sketchLayers, sketchLayersPath, Directory.Documents);
         console.log(`[SessionSave] Sketch layers saved successfully`);
       } else {
         // Delete sketch_layers.zip if no sketch layers exist (clear old sketch layers)
         try {
+          const { Directory } = await import("@capacitor/filesystem");
           await Filesystem.deleteFile({
             path: sketchLayersPath,
             directory: Directory.Documents,
@@ -829,10 +879,6 @@ const MapComponent = ({
             `[SessionSave] sketch_layers.zip doesn't exist (this is OK)`
           );
         }
-      }
-
-      if (finalizedEntries.length === 0 && sketchLayers.length === 0) {
-        console.warn("[SessionSave] No files or sketch layers in session!");
       }
 
       toast.update(toastId, `Session saved successfully.`, "success");
@@ -1278,20 +1324,30 @@ const MapComponent = ({
     if (!isDrawing) return null;
 
     if (drawingMode === "polyline" && currentPath.length >= 1) {
+      // Only use committed points (currentPath), not the preview mouse position
+      // This ensures we only show segments that are actually drawn
       const path = [...currentPath];
-      if (mousePosition) path.push(mousePosition);
       if (path.length < 2) return null;
 
       const segmentDistances = computeSegmentDistancesKm(path);
-      const totalKm = segmentDistances.reduce((sum, dist) => sum + dist, 0);
-      const segments = segmentDistances.map((dist, idx) => ({
-        label: `Segment ${idx + 1}`,
-        lengthKm: dist,
-      }));
+      // Filter out segments with zero or invalid distance
+      const validSegments = segmentDistances
+        .map((dist, idx) => ({
+          label: `Segment ${idx + 1}`,
+          lengthKm: dist,
+        }))
+        .filter(
+          (segment) => segment.lengthKm > 0 && Number.isFinite(segment.lengthKm)
+        );
+
+      const totalKm = validSegments.reduce(
+        (sum, segment) => sum + segment.lengthKm,
+        0
+      );
 
       return {
         type: "polyline" as const,
-        segments,
+        segments: validSegments,
         totalKm,
       };
     }
@@ -1850,20 +1906,90 @@ const MapComponent = ({
     setDragStart(null);
   };
 
+  // Helper to get next power-of-2 value, capped at WebGL max texture size
+  const nextPowerOf2 = (n: number, maxSize: number = 8192): number => {
+    const pow2 = Math.pow(2, Math.ceil(Math.log2(n)));
+    return Math.min(pow2, maxSize);
+  };
+
   // Ensure we always hand BitmapLayer a canvas (avoid createImageBitmap on blob)
+  // Also pad to power-of-2 dimensions for WebGL compatibility and cap at max texture size
   const ensureCanvasImage = (img: any): HTMLCanvasElement | null => {
-    if (img instanceof HTMLCanvasElement) return img;
-    if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) {
+    if (!img) return null;
+
+    let sourceCanvas: HTMLCanvasElement | null = null;
+
+    if (img instanceof HTMLCanvasElement) {
+      sourceCanvas = img;
+    } else if (
+      typeof ImageBitmap !== "undefined" &&
+      img instanceof ImageBitmap
+    ) {
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
       if (ctx) {
         ctx.drawImage(img, 0, 0);
-        return canvas;
+        sourceCanvas = canvas;
       }
     }
-    return null;
+
+    if (!sourceCanvas) return null;
+
+    // WebGL max texture size (most devices support 8192, some support 16384)
+    // Use 8192 to be safe across all devices
+    const MAX_TEXTURE_SIZE = 8192;
+
+    // If image is too large, scale it down first
+    let workingCanvas = sourceCanvas;
+    if (
+      sourceCanvas.width > MAX_TEXTURE_SIZE ||
+      sourceCanvas.height > MAX_TEXTURE_SIZE
+    ) {
+      const scale = Math.min(
+        MAX_TEXTURE_SIZE / sourceCanvas.width,
+        MAX_TEXTURE_SIZE / sourceCanvas.height
+      );
+      const scaledWidth = Math.floor(sourceCanvas.width * scale);
+      const scaledHeight = Math.floor(sourceCanvas.height * scale);
+
+      const scaledCanvas = document.createElement("canvas");
+      scaledCanvas.width = scaledWidth;
+      scaledCanvas.height = scaledHeight;
+      const scaledCtx = scaledCanvas.getContext("2d");
+      if (scaledCtx) {
+        scaledCtx.drawImage(sourceCanvas, 0, 0, scaledWidth, scaledHeight);
+        workingCanvas = scaledCanvas;
+      }
+    }
+
+    // Check if dimensions are power-of-2
+    const isPowerOf2 = (n: number): boolean => {
+      return n > 0 && (n & (n - 1)) === 0;
+    };
+
+    if (isPowerOf2(workingCanvas.width) && isPowerOf2(workingCanvas.height)) {
+      // Already power-of-2, return as-is
+      return workingCanvas;
+    }
+
+    // Pad to power-of-2 dimensions for WebGL compatibility
+    const paddedWidth = nextPowerOf2(workingCanvas.width, MAX_TEXTURE_SIZE);
+    const paddedHeight = nextPowerOf2(workingCanvas.height, MAX_TEXTURE_SIZE);
+
+    const paddedCanvas = document.createElement("canvas");
+    paddedCanvas.width = paddedWidth;
+    paddedCanvas.height = paddedHeight;
+    const paddedCtx = paddedCanvas.getContext("2d");
+
+    if (paddedCtx) {
+      // Draw original image at top-left, rest will be transparent
+      paddedCtx.drawImage(workingCanvas, 0, 0);
+      return paddedCanvas;
+    }
+
+    return workingCanvas;
   };
 
   const handleLayerHover = useCallback(
@@ -1934,6 +2060,30 @@ const MapComponent = ({
   );
 
   const deckGlLayers = useMemo(() => {
+    // Track pickable layers separately for normal and sketch layers
+    let normalPickableCount = 0;
+    let sketchPickableCount = 0;
+    const MAX_NORMAL_PICKABLE = 85; // 255 - 170 = 85
+    const MAX_SKETCH_PICKABLE = 170; // Rest for sketch layers
+
+    const shouldBePickable = (layer: LayerProps): boolean => {
+      if (isSketchLayer(layer)) {
+        // Sketch layers: allow up to 75 pickable
+        if (sketchPickableCount >= MAX_SKETCH_PICKABLE) {
+          return false;
+        }
+        sketchPickableCount++;
+        return true;
+      } else {
+        // Normal layers: allow up to 180 pickable
+        if (normalPickableCount >= MAX_NORMAL_PICKABLE) {
+          return false;
+        }
+        normalPickableCount++;
+        return true;
+      }
+    };
+
     const isLayerVisible = (layer: LayerProps) => {
       if (layer.visible === false) return false;
       const name = layer.name || "";
@@ -2117,7 +2267,7 @@ const MapComponent = ({
           id: `${layer.id}-bitmap`,
           image,
           bounds: [minLng, minLat, maxLng, maxLat],
-          pickable: true,
+          pickable: shouldBePickable(layer),
           visible: layer.visible !== false,
           minZoom: layer.minzoom,
           onHover: handleLayerHover,
@@ -2130,6 +2280,19 @@ const MapComponent = ({
       const radiusKey = pointLayers
         .map((l) => `${l.id}:${l.radius ?? 5}`)
         .join("|");
+
+      // Check if any point layer is a sketch layer
+      const hasSketchPoints = pointLayers.some((l) => isSketchLayer(l));
+      const pointLayerPickable = hasSketchPoints
+        ? sketchPickableCount < MAX_SKETCH_PICKABLE
+        : normalPickableCount < MAX_NORMAL_PICKABLE;
+      if (pointLayerPickable) {
+        if (hasSketchPoints) {
+          sketchPickableCount++;
+        } else {
+          normalPickableCount++;
+        }
+      }
 
       deckLayers.push(
         new ScatterplotLayer({
@@ -2157,7 +2320,7 @@ const MapComponent = ({
           },
           getLineWidth: 1,
           stroked: true,
-          pickable: true,
+          pickable: pointLayerPickable,
           pickingRadius: 300, // Larger picking radius for touch devices
           radiusMinPixels: 1,
           radiusMaxPixels: 50,
@@ -2214,6 +2377,19 @@ const MapComponent = ({
       });
 
       if (pathData.length > 0) {
+        // Check if any line layer is a sketch layer
+        const hasSketchLines = lineLayers.some((l) => isSketchLayer(l));
+        const lineLayerPickable = hasSketchLines
+          ? sketchPickableCount < MAX_SKETCH_PICKABLE
+          : normalPickableCount < MAX_NORMAL_PICKABLE;
+        if (lineLayerPickable) {
+          if (hasSketchLines) {
+            sketchPickableCount++;
+          } else {
+            normalPickableCount++;
+          }
+        }
+
         deckLayers.push(
           new LineLayer({
             id: "line-layer",
@@ -2228,7 +2404,7 @@ const MapComponent = ({
             widthUnits: "pixels", // Use pixels instead of meters
             widthMinPixels: 1, // Minimum width of 1 pixel
             widthMaxPixels: 50, // Maximum width of 50 pixels
-            pickable: true,
+            pickable: lineLayerPickable,
             pickingRadius: 300, // Larger picking radius for touch devices
             onHover: handleLayerHover,
           })
@@ -2273,6 +2449,13 @@ const MapComponent = ({
       });
 
       if (connectionPathData.length > 0) {
+        // Connection layers are always normal (not sketch)
+        const connectionLayerPickable =
+          normalPickableCount < MAX_NORMAL_PICKABLE;
+        if (connectionLayerPickable) {
+          normalPickableCount++;
+        }
+
         deckLayers.push(
           new LineLayer({
             id: "connection-line-layer",
@@ -2284,7 +2467,7 @@ const MapComponent = ({
             widthUnits: "pixels", // Use pixels instead of meters
             widthMinPixels: 1, // Minimum width of 1 pixel
             widthMaxPixels: 50, // Maximum width of 50 pixels
-            pickable: true,
+            pickable: connectionLayerPickable,
             pickingRadius: 300, // Larger picking radius for touch devices
             onHover: handleLayerHover,
           })
@@ -2293,6 +2476,19 @@ const MapComponent = ({
     }
 
     if (polygonLayers.length) {
+      // Check if any polygon layer is a sketch layer
+      const hasSketchPolygons = polygonLayers.some((l) => isSketchLayer(l));
+      const polygonLayerPickable = hasSketchPolygons
+        ? sketchPickableCount < MAX_SKETCH_PICKABLE
+        : normalPickableCount < MAX_NORMAL_PICKABLE;
+      if (polygonLayerPickable) {
+        if (hasSketchPolygons) {
+          sketchPickableCount++;
+        } else {
+          normalPickableCount++;
+        }
+      }
+
       deckLayers.push(
         new PolygonLayer({
           id: "polygon-layer",
@@ -2307,7 +2503,7 @@ const MapComponent = ({
               ? ([...d.color.slice(0, 3)] as [number, number, number])
               : [32, 32, 32], // Create a copy
           getLineWidth: 2,
-          pickable: true,
+          pickable: polygonLayerPickable,
           pickingRadius: 300, // Larger picking radius for touch devices
           onHover: handleLayerHover,
         })
@@ -2358,6 +2554,19 @@ const MapComponent = ({
       });
 
       if (pathData.length > 0) {
+        // Check if any line layer is a sketch layer (same as line-layer above)
+        const hasSketchLines = lineLayers.some((l) => isSketchLayer(l));
+        const lineVerticesLayerPickable = hasSketchLines
+          ? sketchPickableCount < MAX_SKETCH_PICKABLE
+          : normalPickableCount < MAX_NORMAL_PICKABLE;
+        if (lineVerticesLayerPickable) {
+          if (hasSketchLines) {
+            sketchPickableCount++;
+          } else {
+            normalPickableCount++;
+          }
+        }
+
         deckLayers.push(
           new LineLayer({
             id: "line-layer-vertices",
@@ -2372,7 +2581,7 @@ const MapComponent = ({
             widthUnits: "pixels",
             widthMinPixels: 1,
             widthMaxPixels: 50,
-            pickable: true,
+            pickable: lineVerticesLayerPickable,
             pickingRadius: 300,
             onHover: handleLayerHover,
             capRounded: true,
@@ -2533,7 +2742,7 @@ const MapComponent = ({
         new GeoJsonLayer({
           id: layer.id,
           data: layer.geojson,
-          pickable: true,
+          pickable: shouldBePickable(layer), // GeoJSON layers are always normal
           pickingRadius: 300, // Larger picking radius for touch devices
           stroked: true,
           filled: true,
@@ -2576,7 +2785,7 @@ const MapComponent = ({
           getAngle: 0,
           getTextAnchor: "middle",
           getAlignmentBaseline: "center",
-          pickable: true,
+          pickable: shouldBePickable(layer), // Annotation layers are always normal
           pickingRadius: 300, // Larger picking radius for touch devices
           sizeScale: 1,
           fontFamily: "Arial, sans-serif",
@@ -2590,11 +2799,21 @@ const MapComponent = ({
       if (!layer.nodes?.length) return;
       const nodes = [...layer.nodes];
 
+      // Node layers are always normal (not sketch)
+      const nodeIconLayerPickable = normalPickableCount < MAX_NORMAL_PICKABLE;
+      if (nodeIconLayerPickable) {
+        normalPickableCount++;
+      }
+      const nodeSignalLayerPickable = normalPickableCount < MAX_NORMAL_PICKABLE;
+      if (nodeSignalLayerPickable) {
+        normalPickableCount++;
+      }
+
       deckLayers.push(
         new IconLayer({
           id: `${layer.id}-icon-layer`,
           data: nodes,
-          pickable: true,
+          pickable: nodeIconLayerPickable,
           pickingRadius: 300, // Larger picking radius for touch devices
           getIcon: (node: Node) => getNodeIcon(node, nodes),
           getPosition: (node: Node) => [node.longitude, node.latitude],
@@ -2625,7 +2844,7 @@ const MapComponent = ({
           getLineWidth: 2,
           radiusMinPixels: 8,
           radiusMaxPixels: 32,
-          pickable: true,
+          pickable: nodeSignalLayerPickable,
           pickingRadius: 300, // Larger picking radius for touch devices
           onHover: handleLayerHover,
           onClick: handleNodeIconClick,
@@ -2636,9 +2855,27 @@ const MapComponent = ({
     // --- Preview layers ---
     const previewLayers: any[] = [];
 
-    // Add UDP layers to the deck layers
+    // Add UDP layers to the deck layers (UDP layers are always normal, not sketch)
     if (udpLayers && udpLayers.length > 0) {
-      deckLayers.push(...udpLayers);
+      udpLayers.forEach((layer: any) => {
+        if (layer.props?.pickable) {
+          const udpLayerPickable = normalPickableCount < MAX_NORMAL_PICKABLE;
+          if (udpLayerPickable) {
+            normalPickableCount++;
+            // Create new layer with pickable set correctly
+            const LayerClass = layer.constructor;
+            const newProps = { ...layer.props, pickable: true };
+            deckLayers.push(new LayerClass(newProps));
+          } else {
+            // Create new layer with pickable: false
+            const LayerClass = layer.constructor;
+            const newProps = { ...layer.props, pickable: false };
+            deckLayers.push(new LayerClass(newProps));
+          }
+        } else {
+          deckLayers.push(layer);
+        }
+      });
     }
     if (
       isDrawing &&
@@ -2883,9 +3120,6 @@ const MapComponent = ({
         >
           <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
             <span>Drawing Measurements</span>
-            <span className="text-[10px] font-semibold text-slate-500">
-              {useIgrs ? "IGRS" : "LAT / LNG"}
-            </span>
           </div>
           {measurementPreview.type === "polygon" ? (
             <div className="space-y-1 text-sm text-gray-700">
@@ -2904,20 +3138,24 @@ const MapComponent = ({
             </div>
           ) : (
             <>
-              <div className="text-xs text-gray-500">Segments</div>
-              <div className="space-y-1 max-h-64 overflow-y-auto text-sm text-gray-700">
-                {measurementPreview.segments.map((segment, idx) => (
-                  <div
-                    key={`${segment.label}-${idx}`}
-                    className="flex justify-between"
-                  >
-                    <span>{segment.label}</span>
-                    <span className="font-mono">
-                      {segment.lengthKm.toFixed(2)} km
-                    </span>
+              {measurementPreview.segments.length > 0 && (
+                <>
+                  <div className="text-xs text-gray-500">Segments</div>
+                  <div className="space-y-1 max-h-64 overflow-y-auto text-sm text-gray-700">
+                    {measurementPreview.segments.map((segment, idx) => (
+                      <div
+                        key={`${segment.label}-${idx}`}
+                        className="flex justify-between"
+                      >
+                        <span>{segment.label}</span>
+                        <span className="font-mono">
+                          {segment.lengthKm.toFixed(2)} km
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </>
+              )}
               {polylinePreviewStats && (
                 <div className="mt-2 space-y-1 border-t border-dashed border-slate-200 pt-2 text-xs text-gray-700">
                   <div className="flex justify-between">
@@ -3137,14 +3375,19 @@ const MapComponent = ({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMove={(e: any) => {
-          if (e && e.viewState && typeof e.viewState.zoom === "number") {
-            // Throttle zoom updates to reduce re-renders during zoom operations
+          if (e && e.viewState) {
+            // Throttle updates to reduce re-renders during map operations
             if (zoomUpdateTimeoutRef.current) {
               clearTimeout(zoomUpdateTimeoutRef.current);
             }
             zoomUpdateTimeoutRef.current = setTimeout(() => {
-              setMapZoom(e.viewState.zoom);
-            }, 100); // Update zoom at most every 100ms
+              if (typeof e.viewState.zoom === "number") {
+                setMapZoom(e.viewState.zoom);
+              }
+              if (typeof e.viewState.bearing === "number") {
+                setMapBearing(e.viewState.bearing);
+              }
+            }, 100); // Update at most every 100ms
           }
         }}
       >
@@ -3211,6 +3454,7 @@ const MapComponent = ({
       <ZoomControls
         mapRef={mapRef}
         zoom={mapZoom}
+        bearing={mapBearing}
         onToggleLayersBox={() => {
           const willBeOpen = !(isLayersBoxOpen ?? false);
           // If opening layers box, close other panels

@@ -9,7 +9,144 @@ import {
 import { Virtuoso } from "react-virtuoso";
 import { Button } from "../ui/button";
 import LayerPopover from "./layer-popover";
+import LayerCardSkeleton from "./layer-card-skeleton";
 import type { LayerProps } from "@/lib/definitions";
+
+// Component to handle skeleton transition for individual layer items
+type LayerCardItemProps = {
+  layer: LayerProps;
+  isSelected: boolean;
+  isFocused: boolean;
+  uploadedDate: string | null;
+  enableSelection: boolean;
+  onToggleSelect: (layerId: string) => void;
+  onToggleVisibility: (layerId: string, visible: boolean) => void;
+  onFocusLayer: (layerId: string) => void;
+  onBringToTop: (layerId: string) => void;
+  onUpdateLayer: (layerId: string, layer: LayerProps) => void;
+  setFocusedLayerId: (layerId: string | null) => void;
+  onItemRendered: (layerId: string) => void;
+  isRendered: boolean;
+};
+
+const LayerCardItem = ({
+  layer,
+  isSelected,
+  isFocused,
+  uploadedDate,
+  enableSelection,
+  onToggleSelect,
+  onToggleVisibility,
+  onFocusLayer,
+  onBringToTop,
+  onUpdateLayer,
+  setFocusedLayerId,
+  onItemRendered,
+  isRendered,
+}: LayerCardItemProps) => {
+  useEffect(() => {
+    if (!isRendered) {
+      const timeout = setTimeout(() => {
+        onItemRendered(layer.id);
+      }, 50);
+      return () => clearTimeout(timeout);
+    }
+  }, [layer.id, isRendered, onItemRendered]);
+
+  if (!isRendered) {
+    return <LayerCardSkeleton />;
+  }
+
+  return (
+    <div className="mb-3">
+      <div
+        key={layer.id}
+        className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
+          isFocused ? "border-l-4 border-l-sky-300" : ""
+        }`}
+      >
+        <div className="absolute right-3 top-3 flex items-center gap-1">
+          {/* Don't show bring to top for raster layers (DEM) */}
+          {layer.type !== "dem" && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              title={`Bring to top: ${layer.name}`}
+              onClick={() => onBringToTop(layer.id)}
+            >
+              <ArrowUp size={10} />
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            title={`Focus layer: ${layer.name}`}
+            onClick={() => {
+              setFocusedLayerId(layer.id);
+              onFocusLayer(layer.id);
+            }}
+          >
+            <LocateFixed size={10} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={() =>
+              onToggleVisibility(layer.id, layer.visible === false)
+            }
+            title={
+              layer.visible === false
+                ? `Show layer: ${layer.name}`
+                : `Hide layer: ${layer.name}`
+            }
+          >
+            {layer.visible === true ? (
+              <EyeIcon size={10} />
+            ) : (
+              <EyeOffIcon size={10} />
+            )}
+          </Button>
+          <LayerPopover layer={layer} updateLayer={onUpdateLayer}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              title={`Layer settings: ${layer.name}`}
+            >
+              <Settings2 size={10} />
+            </Button>
+          </LayerPopover>
+        </div>
+
+        <div className="min-w-0 pr-14">
+          <div className="flex items-start gap-2">
+            {enableSelection && (
+              <input
+                type="checkbox"
+                className="mt-0.5 -ml-1 h-4 w-4 rounded border-border"
+                checked={isSelected}
+                onChange={() => onToggleSelect(layer.id)}
+              />
+            )}
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-semibold text-ellipsis max-w-[200px] overflow-hidden text-foreground">
+                {layer.name}
+              </div>
+            </div>
+          </div>
+          {uploadedDate && (
+            <div className="text-[10px] text-muted-foreground mt-1">
+              Uploaded: {uploadedDate}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 type LayersListProps = {
   layers: LayerProps[];
@@ -39,6 +176,8 @@ const LayersList = ({
   const [searchQuery] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
   const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
+  const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
+  const [renderedItems, setRenderedItems] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const handleResize = () => {
@@ -47,6 +186,28 @@ const LayersList = ({
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  // Clear focused layer if it's no longer in the list
+  useEffect(() => {
+    if (focusedLayerId && !layers.find((l) => l.id === focusedLayerId)) {
+      setFocusedLayerId(null);
+    }
+  }, [focusedLayerId, layers]);
+
+  // Reset rendered items when layers change significantly
+  useEffect(() => {
+    const layerIds = new Set(layers.map((l) => l.id));
+    setRenderedItems((prev) => {
+      const filtered = new Set(
+        Array.from(prev).filter((id) => layerIds.has(id))
+      );
+      return filtered;
+    });
+  }, [layers.length]);
+
+  const handleItemRendered = (layerId: string) => {
+    setRenderedItems((prev) => new Set(prev).add(layerId));
+  };
 
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return null;
@@ -184,93 +345,25 @@ const LayersList = ({
                 const uploadedDate = formatDate(
                   (layer as any).uploadedAt || (layer as any).createdAt
                 );
+                const isFocused = focusedLayerId === layer.id;
+                const isRendered = renderedItems.has(layer.id);
 
                 return (
-                  <div className="mb-3">
-                    <div
-                      key={layer.id}
-                      className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm"
-                    >
-                      <div className="absolute right-3 top-3 flex items-center gap-1">
-                        {/* Don't show bring to top for raster layers (DEM) */}
-                        {layer.type !== "dem" && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            title={`Bring to top: ${layer.name}`}
-                            onClick={() => onBringToTop(layer.id)}
-                          >
-                            <ArrowUp size={10} />
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          title={`Focus layer: ${layer.name}`}
-                          onClick={() => onFocusLayer(layer.id)}
-                        >
-                          <LocateFixed size={10} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() =>
-                            onToggleVisibility(
-                              layer.id,
-                              layer.visible === false
-                            )
-                          }
-                          title={
-                            layer.visible === false
-                              ? `Show layer: ${layer.name}`
-                              : `Hide layer: ${layer.name}`
-                          }
-                        >
-                          {layer.visible === true ? (
-                            <EyeIcon size={10} />
-                          ) : (
-                            <EyeOffIcon size={10} />
-                          )}
-                        </Button>
-                        <LayerPopover layer={layer} updateLayer={onUpdateLayer}>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            title={`Layer settings: ${layer.name}`}
-                          >
-                            <Settings2 size={10} />
-                          </Button>
-                        </LayerPopover>
-                      </div>
-
-                      <div className="min-w-0 pr-14">
-                        <div className="flex items-start gap-2">
-                          {enableSelection && (
-                            <input
-                              type="checkbox"
-                              className="mt-0.5 -ml-1 h-4 w-4 rounded border-border"
-                              checked={isSelected}
-                              onChange={() => onToggleSelect(layer.id)}
-                            />
-                          )}
-                          <div className="flex items-center gap-2">
-                            <div className="text-sm font-semibold text-ellipsis max-w-[200px] overflow-hidden text-foreground">
-                              {layer.name}
-                            </div>
-                          </div>
-                        </div>
-                        {uploadedDate && (
-                          <div className="text-[10px] text-muted-foreground mt-1">
-                            Uploaded: {uploadedDate}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                  <LayerCardItem
+                    layer={layer}
+                    isSelected={isSelected}
+                    isFocused={isFocused}
+                    uploadedDate={uploadedDate}
+                    enableSelection={enableSelection}
+                    onToggleSelect={onToggleSelect}
+                    onToggleVisibility={onToggleVisibility}
+                    onFocusLayer={onFocusLayer}
+                    onBringToTop={onBringToTop}
+                    onUpdateLayer={onUpdateLayer}
+                    setFocusedLayerId={setFocusedLayerId}
+                    onItemRendered={handleItemRendered}
+                    isRendered={isRendered}
+                  />
                 );
               }}
             />

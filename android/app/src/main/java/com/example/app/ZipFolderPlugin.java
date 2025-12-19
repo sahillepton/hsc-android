@@ -202,6 +202,169 @@ public class ZipFolderPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void zipManifestFiles(PluginCall call) {
+        new Thread(() -> {
+            try {
+                JSArray filesArray = call.getArray("files");
+                
+                if (filesArray == null || filesArray.length() == 0) {
+                    main.post(() -> call.reject("NOTHING_TO_DOWNLOAD"));
+                    return;
+                }
+                
+                // Generate filename: GIS-DATA MM-dd-yyyy HH-mm-ss.zip
+                SimpleDateFormat dateFormat = new SimpleDateFormat("MM-dd-yyyy", Locale.US);
+                SimpleDateFormat timeFormat = new SimpleDateFormat("HH-mm-ss", Locale.US);
+                Date now = new Date();
+                String dateStr = dateFormat.format(now);
+                String timeStr = timeFormat.format(now);
+                String zipFileName = String.format("GIS-DATA %s %s.zip", dateStr, timeStr);
+                
+                // Destination: Public Documents folder
+                File publicDocsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+                if (publicDocsDir == null) {
+                    main.post(() -> call.reject("Cannot access Documents directory"));
+                    return;
+                }
+                
+                // Ensure directory exists
+                if (!publicDocsDir.exists()) {
+                    boolean created = publicDocsDir.mkdirs();
+                    if (!created && !publicDocsDir.exists()) {
+                        main.post(() -> call.reject("Failed to create Documents directory: " + publicDocsDir.getAbsolutePath()));
+                        return;
+                    }
+                }
+                
+                if (!publicDocsDir.canWrite()) {
+                    main.post(() -> call.reject("Documents directory is not writable: " + publicDocsDir.getAbsolutePath()));
+                    return;
+                }
+                
+                File outZip = new File(publicDocsDir, zipFileName);
+                
+                // Delete existing zip if it exists
+                if (outZip.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    outZip.delete();
+                }
+                
+                byte[] buffer = new byte[1024 * 1024]; // 1MB buffer
+                
+                int filesAdded = 0;
+                int filesSkipped = 0;
+                
+                try (FileOutputStream fos = new FileOutputStream(outZip);
+                     ZipOutputStream zos = new ZipOutputStream(fos)) {
+                    
+                    // Add files from manifest
+                    if (filesArray != null && filesArray.length() > 0) {
+                        android.util.Log.d("ZipFolderPlugin", "Processing " + filesArray.length() + " files from manifest");
+                        for (int i = 0; i < filesArray.length(); i++) {
+                            Object obj = filesArray.get(i);
+                            JSObject fileObj = null;
+                            
+                            // Handle different object types from Capacitor
+                            String absolutePath = null;
+                            String originalName = null;
+                            
+                            if (obj instanceof JSObject) {
+                                fileObj = (JSObject) obj;
+                                absolutePath = fileObj.getString("absolutePath");
+                                originalName = fileObj.getString("originalName");
+                            } else if (obj instanceof org.json.JSONObject) {
+                                // Extract from JSONObject
+                                org.json.JSONObject jsonObj = (org.json.JSONObject) obj;
+                                absolutePath = jsonObj.optString("absolutePath", null);
+                                originalName = jsonObj.optString("originalName", null);
+                            } else if (obj instanceof java.util.Map) {
+                                // Extract from Map
+                                @SuppressWarnings("unchecked")
+                                java.util.Map<String, Object> map = (java.util.Map<String, Object>) obj;
+                                Object absPathObj = map.get("absolutePath");
+                                Object origNameObj = map.get("originalName");
+                                absolutePath = absPathObj != null ? absPathObj.toString() : null;
+                                originalName = origNameObj != null ? origNameObj.toString() : null;
+                            } else {
+                                android.util.Log.w("ZipFolderPlugin", "File " + i + " is not a recognized object type: " + (obj != null ? obj.getClass().getName() : "null") + ", obj: " + obj);
+                                filesSkipped++;
+                                continue;
+                            }
+                            
+                            android.util.Log.d("ZipFolderPlugin", "Processing file: " + originalName + " at " + absolutePath);
+                            
+                            if (absolutePath == null || originalName == null) {
+                                android.util.Log.w("ZipFolderPlugin", "File " + i + " missing absolutePath or originalName, skipping");
+                                filesSkipped++;
+                                continue;
+                            }
+                            
+                            File sourceFile = new File(absolutePath);
+                            if (!sourceFile.exists()) {
+                                android.util.Log.w("ZipFolderPlugin", "File does not exist: " + absolutePath);
+                                filesSkipped++;
+                                continue;
+                            }
+                            if (!sourceFile.isFile()) {
+                                android.util.Log.w("ZipFolderPlugin", "Path is not a file: " + absolutePath);
+                                filesSkipped++;
+                                continue;
+                            }
+                            
+                            // Add file to ZIP with original name
+                            ZipEntry entry = new ZipEntry(originalName);
+                            zos.putNextEntry(entry);
+                            
+                            try (BufferedInputStream bis = new BufferedInputStream(new FileInputStream(sourceFile))) {
+                                int count;
+                                long fileSize = 0;
+                                while ((count = bis.read(buffer)) != -1) {
+                                    zos.write(buffer, 0, count);
+                                    fileSize += count;
+                                }
+                                android.util.Log.d("ZipFolderPlugin", "Added file to ZIP: " + originalName + " (" + fileSize + " bytes)");
+                                filesAdded++;
+                            }
+                            
+                            zos.closeEntry();
+                        }
+                    } else {
+                        android.util.Log.d("ZipFolderPlugin", "No files array or empty files array");
+                    }
+                    
+                    android.util.Log.d("ZipFolderPlugin", "Files added: " + filesAdded + ", skipped: " + filesSkipped);
+                }
+                
+                // Force sync to ensure file is written to disk
+                try {
+                    java.io.FileOutputStream syncFos = new java.io.FileOutputStream(outZip, true);
+                    syncFos.getFD().sync();
+                    syncFos.close();
+                } catch (Exception syncEx) {
+                    android.util.Log.w("ZipFolderPlugin", "Could not sync file: " + syncEx.getMessage());
+                }
+                
+                long zipSize = outZip.length();
+                android.util.Log.d("ZipFolderPlugin", "ZIP file created: " + zipFileName + " (size: " + zipSize + " bytes)");
+                
+                if (zipSize == 0) {
+                    android.util.Log.e("ZipFolderPlugin", "WARNING: ZIP file is empty! Files added: " + filesAdded + ", skipped: " + filesSkipped);
+                }
+                
+                JSObject ret = new JSObject();
+                ret.put("absolutePath", outZip.getAbsolutePath());
+                ret.put("fileName", zipFileName);
+                ret.put("size", zipSize);
+                
+                main.post(() -> call.resolve(ret));
+                
+            } catch (Exception e) {
+                main.post(() -> call.reject("zipManifestFiles failed: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    @PluginMethod
     public void extractZipRecursive(PluginCall call) {
         String zipPath = call.getString("zipPath");
         String outputDirParam = call.getString("outputDir");
@@ -289,8 +452,9 @@ public class ZipFolderPlugin extends Plugin {
 
                 // Handle nested ZIPs
                 if (entryName.toLowerCase().endsWith(".zip")) {
-                    // Extract nested ZIP to temp location (use only filename, not full path)
                     String zipFileName = new File(entryName).getName(); // Get just the filename
+                    
+                    // For ZIPs, extract recursively
                     File tempZip = new File(destDir, "temp_" + System.currentTimeMillis() + "_" + zipFileName);
                     
                     try (FileOutputStream fos = new FileOutputStream(tempZip);

@@ -236,7 +236,10 @@ export type LayerMeasurement = {
   value: string;
 };
 
-const formatCoordinate = (point?: [number, number] | null) => {
+const formatCoordinate = (
+  point?: [number, number] | null,
+  addDegrees = false
+) => {
   if (
     !point ||
     point.length < 2 ||
@@ -247,7 +250,8 @@ const formatCoordinate = (point?: [number, number] | null) => {
   }
 
   const [lng, lat] = point;
-  return `${lat.toFixed(3)}, ${lng.toFixed(3)}`;
+  const degreeSymbol = addDegrees ? "°" : "";
+  return `${lat.toFixed(3)}${degreeSymbol}, ${lng.toFixed(3)}${degreeSymbol}`;
 };
 
 const getPathLengthMeters = (path?: [number, number][]) => {
@@ -296,16 +300,18 @@ export const computePolygonPerimeterMeters = (
 
 const formatCoordinateWithSystem = (
   point?: [number, number] | null,
-  useIgrs?: boolean
+  useIgrs?: boolean,
+  addDegrees = false
 ) => {
-  if (!point || point.length < 2) return formatCoordinate(point ?? null);
+  if (!point || point.length < 2)
+    return formatCoordinate(point ?? null, addDegrees);
   if (useIgrs) {
     const igrsValue = calculateIgrs(point[0], point[1]);
     if (igrsValue) {
       return igrsValue;
     }
   }
-  return formatCoordinate(point);
+  return formatCoordinate(point, addDegrees);
 };
 
 export const formatLayerMeasurements = (
@@ -318,27 +324,35 @@ export const formatLayerMeasurements = (
     measurements.push({ label, value });
   };
 
+  const coordinateLabel = options?.useIgrs ? "IGRS" : "LAT/LONG";
+  const addDegrees = !options?.useIgrs;
+
   if (layer.type === "point") {
     if (typeof layer.radius === "number") {
       pushMeasurement("Radius", `${layer.radius}px`);
     }
     pushMeasurement(
-      "Location",
-      formatCoordinateWithSystem(layer.position ?? null, options?.useIgrs)
+      `Location (${coordinateLabel})`,
+      formatCoordinateWithSystem(
+        layer.position ?? null,
+        options?.useIgrs,
+        addDegrees
+      )
     );
   }
 
   if (layer.type === "line" && layer.path) {
     if (layer.path.length >= 2) {
       pushMeasurement(
-        "From",
-        formatCoordinateWithSystem(layer.path[0], options?.useIgrs)
+        `From (${coordinateLabel})`,
+        formatCoordinateWithSystem(layer.path[0], options?.useIgrs, addDegrees)
       );
       pushMeasurement(
-        "To",
+        `To (${coordinateLabel})`,
         formatCoordinateWithSystem(
           layer.path[layer.path.length - 1],
-          options?.useIgrs
+          options?.useIgrs,
+          addDegrees
         )
       );
     }
@@ -407,6 +421,26 @@ export const formatLayerMeasurements = (
     }
     if (typeof layer.distanceMeters === "number") {
       pushMeasurement("Distance", formatDistance(layer.distanceMeters / 1000));
+    }
+    if (layer.azimuthCenter) {
+      pushMeasurement(
+        `Center (${coordinateLabel})`,
+        formatCoordinateWithSystem(
+          layer.azimuthCenter,
+          options?.useIgrs,
+          addDegrees
+        )
+      );
+    }
+    if (layer.azimuthTarget) {
+      pushMeasurement(
+        `Target (${coordinateLabel})`,
+        formatCoordinateWithSystem(
+          layer.azimuthTarget,
+          options?.useIgrs,
+          addDegrees
+        )
+      );
     }
   }
 

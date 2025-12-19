@@ -7,7 +7,6 @@ import {
 } from "@/lib/utils";
 import {
   normalizeAngleSigned,
-  calculateBearingDegrees,
   computePolygonPerimeterMeters,
   computePolygonAreaMeters,
 } from "@/lib/layers";
@@ -15,14 +14,22 @@ import {
   useHoverInfo,
   useLayers,
   useIgrsPreference,
+  useUserLocation,
 } from "@/store/layers-store";
 import { useEffect, useState } from "react";
 import { Video, Upload, MessageSquare, PhoneCall } from "lucide-react";
+import {
+  TooltipBox,
+  TooltipHeading,
+  TooltipProperties,
+  TooltipDivider,
+} from "@/lib/tooltip-components";
 
 const Tooltip = () => {
   const { hoverInfo } = useHoverInfo();
   const { layers } = useLayers();
   const useIgrs = useIgrsPreference();
+  const { showUserLocation } = useUserLocation();
   const [tooltipPosition, setTooltipPosition] = useState<{
     x: number;
     y: number;
@@ -32,7 +39,28 @@ const Tooltip = () => {
 
   // Update tooltip position when map moves/zooms
   useEffect(() => {
-    if (!hoverInfo || !hoverInfo.object || !mapRef?.current) {
+    if (!hoverInfo || !mapRef?.current) {
+      setTooltipPosition(null);
+      return;
+    }
+
+    // Check if this is a DEM layer (may not have object)
+    const deckLayerId = hoverInfo.layer?.id as string | undefined;
+    let isDemLayer = false;
+    if (deckLayerId) {
+      const baseId = deckLayerId
+        .replace(/-icon-layer$/, "")
+        .replace(/-signal-overlay$/, "")
+        .replace(/-bitmap$/, "")
+        .replace(/-mesh$/, "");
+      const matchingLayer = layers.find((l) => l.id === baseId);
+      if (matchingLayer?.type === "dem") {
+        isDemLayer = true;
+      }
+    }
+
+    // For DEM layers, we might not have an object, but we should still position the tooltip
+    if (!hoverInfo.object && !isDemLayer && !hoverInfo.coordinate) {
       setTooltipPosition(null);
       return;
     }
@@ -46,12 +74,19 @@ const Tooltip = () => {
         let lng: number | undefined;
         let lat: number | undefined;
 
-        // Try to get coordinates from different object structures
-        if (hoverInfo.object.geometry?.coordinates) {
+        // PRIORITY 1: Always use hoverInfo.coordinate if available
+        // This is the actual hovered point on the map (works for raster, LineString, etc.)
+        // This is especially important for DEM/raster layers and LineString layers
+        if (hoverInfo.coordinate && hoverInfo.coordinate.length >= 2) {
+          [lng, lat] = hoverInfo.coordinate;
+        }
+        // PRIORITY 2: Try to get coordinates from object geometry (only if object exists)
+        else if (hoverInfo.object?.geometry?.coordinates) {
           // GeoJSON Point
           if (
             Array.isArray(hoverInfo.object.geometry.coordinates) &&
-            hoverInfo.object.geometry.coordinates.length >= 2
+            hoverInfo.object.geometry.coordinates.length >= 2 &&
+            !Array.isArray(hoverInfo.object.geometry.coordinates[0])
           ) {
             lng = hoverInfo.object.geometry.coordinates[0];
             lat = hoverInfo.object.geometry.coordinates[1];
@@ -69,9 +104,23 @@ const Tooltip = () => {
               lng = firstRing[0][0];
               lat = firstRing[0][1];
             }
+          } else if (
+            hoverInfo.object.geometry.type === "LineString" &&
+            Array.isArray(hoverInfo.object.geometry.coordinates) &&
+            hoverInfo.object.geometry.coordinates.length > 0 &&
+            Array.isArray(hoverInfo.object.geometry.coordinates[0])
+          ) {
+            // LineString - use first point as fallback (coordinate should be handled above)
+            const firstPoint = hoverInfo.object.geometry.coordinates[0];
+            if (firstPoint && firstPoint.length >= 2) {
+              lng = firstPoint[0];
+              lat = firstPoint[1];
+            }
           }
-        } else if (
-          hoverInfo.object.polygon &&
+        }
+        // PRIORITY 3: Direct polygon layer (only if object exists)
+        else if (
+          hoverInfo.object?.polygon &&
           Array.isArray(hoverInfo.object.polygon)
         ) {
           // Direct polygon layer - use first point as reference
@@ -88,24 +137,24 @@ const Tooltip = () => {
             lng = firstRing[0][0];
             lat = firstRing[0][1];
           }
-        } else if (
-          hoverInfo.object.longitude !== undefined &&
-          hoverInfo.object.latitude !== undefined
+        }
+        // PRIORITY 4: Direct coordinates from object (only if object exists)
+        else if (
+          hoverInfo.object?.longitude !== undefined &&
+          hoverInfo.object?.latitude !== undefined
         ) {
           // Direct coordinates
           lng = hoverInfo.object.longitude;
           lat = hoverInfo.object.latitude;
-        } else if (
-          hoverInfo.object.position &&
+        }
+        // PRIORITY 5: Position array (only if object exists)
+        else if (
+          hoverInfo.object?.position &&
           Array.isArray(hoverInfo.object.position)
         ) {
           // Position array [lng, lat]
           lng = hoverInfo.object.position[0];
           lat = hoverInfo.object.position[1];
-        } else if (hoverInfo.coordinate) {
-          // PickingInfo coordinate
-          lng = hoverInfo.coordinate[0];
-          lat = hoverInfo.coordinate[1];
         }
 
         if (lng !== undefined && lat !== undefined) {
@@ -149,6 +198,13 @@ const Tooltip = () => {
     return null;
   }
 
+  const { object, layer } = hoverInfo;
+
+  // Check if user location is toggled off and this is user location layer
+  if (layer?.id === "user-location-layer" && !showUserLocation) {
+    return null;
+  }
+
   // Use calculated position or fallback to original
   const x = tooltipPosition?.x ?? hoverInfo.x ?? 0;
   const y = tooltipPosition?.y ?? hoverInfo.y ?? 0;
@@ -156,8 +212,6 @@ const Tooltip = () => {
   if (x === 0 && y === 0) {
     return null;
   }
-
-  const { object, layer } = hoverInfo;
 
   // Find the layer from the store using multiple strategies
   let layerInfo: (typeof layers)[0] | undefined = undefined;
@@ -212,9 +266,12 @@ const Tooltip = () => {
     return `[${point[1]?.toFixed(4)}, ${point[0]?.toFixed(4)}]`;
   };
   const coordinateLabel = useIgrs ? "IGRS" : "lat, lng";
+
   const getTooltipContent = () => {
     // Handle user location layer - show "Your Location" heading
     if (layer?.id === "user-location-layer") {
+      if (!showUserLocation) return null;
+
       let lng: number | undefined;
       let lat: number | undefined;
 
@@ -228,31 +285,23 @@ const Tooltip = () => {
       }
 
       return (
-        <div
-          className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
-          style={{ zoom: 0.9 }}
-        >
-          <div className="font-semibold text-base tracking-tight text-blue-600 mb-1">
-            Your Location
-          </div>
+        <TooltipBox>
+          <TooltipHeading title="Your Location" />
           {lng !== undefined && lat !== undefined && (
-            <div className="space-y-1">
-              <div className="flex justify-between gap-2">
-                <span className="text-zinc-800 text-xs font-semibold">
-                  {coordinateLabel}:
-                </span>
-                <span className="text-xs text-zinc-600">
-                  {formatCoordinatePair([lng, lat])}
-                </span>
-              </div>
-            </div>
+            <TooltipProperties
+              properties={[
+                {
+                  label: coordinateLabel,
+                  value: formatCoordinatePair([lng, lat]),
+                },
+              ]}
+            />
           )}
-        </div>
+        </TooltipBox>
       );
     }
 
     // Handle DEM (elevation raster) layers - show elevation at hovered point
-    // Supports .tiff, .tif, .dett, and .hgt files
     if (
       layerInfo?.type === "dem" &&
       layerInfo.elevationData &&
@@ -308,72 +357,47 @@ const Tooltip = () => {
             elevation !== null &&
             elevation !== undefined;
 
+          const properties = [
+            {
+              label: useIgrs ? "IGRS" : "Latitude",
+              value: useIgrs
+                ? calculateIgrs(lng, lat) ?? "—"
+                : `${lat.toFixed(5)}°`,
+            },
+          ];
+
+          if (!useIgrs) {
+            properties.push({
+              label: "Longitude",
+              value: `${lng.toFixed(5)}°`,
+            });
+          }
+
+          properties.push(
+            { label: "Pixel Index", value: `(${x}, ${y})` },
+            {
+              label: "Elevation",
+              value: hasValidElevation
+                ? `${elevation.toFixed(2)} m`
+                : "No data",
+            },
+            {
+              label: "Elevation Range",
+              value: `${min.toFixed(1)}–${max.toFixed(1)} m`,
+            },
+            {
+              label: "Raster Size",
+              value: `${width} × ${height} px`,
+            }
+          );
+
           return (
-            <div className="bg-white bg-opacity-80 text-white p-1 rounded shadow-lg text-sm max-w-xs">
+            <TooltipBox maxWidth="max-w-[200px]">
               {layerInfo.name && (
-                <div className="font-semibold text-blue-600 mb-2 uppercase tracking-tight">
-                  {layerInfo.name}
-                </div>
+                <TooltipHeading title={layerInfo.name.toUpperCase()} />
               )}
-              <div className="space-y-1">
-                <div className="flex justify-between gap-2">
-                  <span className="text-zinc-800 text-xs font-semibold">
-                    {useIgrs ? "IGRS" : "Latitude:"}
-                  </span>
-                  <span className="text-xs text-zinc-600">
-                    {useIgrs
-                      ? calculateIgrs(lng, lat) ?? "—"
-                      : `${lat.toFixed(5)}°`}
-                  </span>
-                </div>
-                {!useIgrs && (
-                  <div className="flex justify-between gap-2">
-                    <span className="text-zinc-800 text-xs font-semibold">
-                      Longitude:
-                    </span>
-                    <span className="text-xs text-zinc-600">
-                      {lng.toFixed(5)}°
-                    </span>
-                  </div>
-                )}
-                <div className="flex justify-between gap-2">
-                  <span className="text-zinc-800 text-xs font-semibold">
-                    Pixel Index:
-                  </span>
-                  <span className="text-xs text-zinc-600">
-                    ({x}, {y})
-                  </span>
-                </div>
-                <div className=" border-zinc-600">
-                  <div className="flex justify-between gap-2">
-                    <span className="text-zinc-800 text-xs font-semibold">
-                      Elevation:
-                    </span>
-                    <span className="text-xs text-zinc-600">
-                      {hasValidElevation
-                        ? `${elevation.toFixed(2)} m`
-                        : "No data"}
-                    </span>
-                  </div>
-                </div>
-                <div className="flex justify-between gap-2 text-[10px] text-zinc-800 mt-1">
-                  <span className="text-zinc-800 text-xs font-semibold">
-                    Elevation Range:
-                  </span>
-                  <span className="text-xs text-zinc-600">
-                    {min.toFixed(1)}–{max.toFixed(1)} m
-                  </span>
-                </div>
-                <div className="flex justify-between gap-2 text-[10px] text-zinc-600">
-                  <span className="text-zinc-800 text-xs font-semibold">
-                    Raster Size:
-                  </span>
-                  <span className="text-xs text-zinc-600">
-                    {width} × {height} px
-                  </span>
-                </div>
-              </div>
-            </div>
+              <TooltipProperties properties={properties} />
+            </TooltipBox>
           );
         }
       }
@@ -389,7 +413,6 @@ const Tooltip = () => {
       layer?.id === "udp-network-members-layer" ||
       layer?.id === "udp-targets-layer"
     ) {
-      // Only show these important properties
       const importantKeys = [
         "globalId",
         "callsign",
@@ -403,193 +426,109 @@ const Tooltip = () => {
         "controllingNodeId",
       ];
 
-      const displayProperties = Object.entries(object).filter(
-        ([key, value]) =>
-          importantKeys.includes(key) &&
-          value !== undefined &&
-          value !== null &&
-          typeof value !== "object"
-      );
+      const displayProperties = Object.entries(object)
+        .filter(
+          ([key, value]) =>
+            importantKeys.includes(key) &&
+            value !== undefined &&
+            value !== null &&
+            typeof value !== "object"
+        )
+        .map(([key, value]) => ({
+          label: formatLabel(key),
+          value:
+            typeof value === "number" && !Number.isInteger(value)
+              ? value.toFixed(2)
+              : String(value),
+        }));
 
       const useGridLayout = displayProperties.length > 8;
 
+      const properties = [];
+      if (object.longitude !== undefined && object.latitude !== undefined) {
+        properties.push({
+          label: "Location",
+          value: useIgrs
+            ? calculateIgrs(object.longitude, object.latitude) ||
+              `[${object.latitude.toFixed(3)}, ${object.longitude.toFixed(3)}]`
+            : `[${object.latitude.toFixed(3)}, ${object.longitude.toFixed(3)}]`,
+        });
+      }
+
       return (
-        <div
-          className="bg-white text-gray-900 p-2 rounded shadow-lg text-sm border border-gray-200"
-          style={{
-            zoom: 0.9,
-            maxWidth: useGridLayout ? "480px" : "280px",
-            maxHeight: "450px",
-            overflowY: "auto",
-          }}
+        <TooltipBox
+          maxWidth={useGridLayout ? "max-w-[320px]" : "max-w-[200px]"}
+          style={{ maxHeight: "450px", overflowY: "auto" }}
         >
-          <div className="font-semibold text-blue-600 mb-1">
-            {layer.id === "udp-network-members-layer"
-              ? "Network Member"
-              : "Target"}
-          </div>
-
-          {/* Location - full width */}
-          {object.longitude !== undefined && object.latitude !== undefined && (
-            <div className="flex justify-between gap-2 mb-1.5 pb-1.5 border-b border-gray-200">
-              <span className="text-zinc-800 font-semibold text-sm">
-                Location:
-              </span>
-              <span className="text-right text-gray-600 text-sm">
-                {useIgrs
-                  ? (() => {
-                      // calculateIgrs expects (longitude, latitude)
-                      const igrs = calculateIgrs(
-                        object.longitude,
-                        object.latitude
-                      );
-                      return (
-                        igrs ||
-                        `[${object.latitude.toFixed(
-                          3
-                        )}, ${object.longitude.toFixed(3)}]`
-                      );
-                    })()
-                  : `[${object.latitude.toFixed(3)}, ${object.longitude.toFixed(
-                      3
-                    )}]`}
-              </span>
-            </div>
+          <TooltipHeading
+            title={
+              layer.id === "udp-network-members-layer"
+                ? "Network Member"
+                : "Target"
+            }
+          />
+          {properties.length > 0 && (
+            <>
+              <TooltipProperties properties={properties} />
+              <TooltipDivider />
+            </>
           )}
-
-          {/* Properties - Grid layout for many items, single column for few */}
-          {useGridLayout ? (
-            <div className="flex gap-0">
-              {/* Left column */}
-              <div className="flex-1 pr-2 border-r border-gray-200 space-y-0.5">
-                {displayProperties
-                  .slice(0, Math.ceil(displayProperties.length / 2))
-                  .map(([key, value]) => (
-                    <div key={key} className="flex justify-between gap-2">
-                      <span className="text-zinc-800 font-semibold text-sm">
-                        {formatLabel(key)}:
-                      </span>
-                      <span className="text-right text-gray-600 text-sm">
-                        {typeof value === "number" && !Number.isInteger(value)
-                          ? value.toFixed(2)
-                          : String(value)}
-                      </span>
-                    </div>
-                  ))}
-              </div>
-              {/* Right column */}
-              <div className="flex-1 pl-2 space-y-0.5">
-                {displayProperties
-                  .slice(Math.ceil(displayProperties.length / 2))
-                  .map(([key, value]) => (
-                    <div key={key} className="flex justify-between gap-2">
-                      <span className="text-zinc-800 font-semibold text-sm">
-                        {formatLabel(key)}:
-                      </span>
-                      <span className="text-right text-gray-600 text-sm">
-                        {typeof value === "number" && !Number.isInteger(value)
-                          ? value.toFixed(2)
-                          : String(value)}
-                      </span>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {displayProperties.map(([key, value]) => (
-                <div key={key} className="flex justify-between gap-2">
-                  <span className="text-zinc-800 font-semibold text-sm">
-                    {formatLabel(key)}:
-                  </span>
-                  <span className="text-right text-gray-600 text-sm">
-                    {typeof value === "number" && !Number.isInteger(value)
-                      ? value.toFixed(2)
-                      : String(value)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Action Buttons */}
-          <div className="mt-2 pt-1.5 border-t border-gray-200">
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  alert("Video call initiated");
-                }}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
-                style={{ backgroundColor: "#7F1D1D" }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = "#4d4f3a";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "#606246";
-                }}
-                title="Video Call"
-              >
-                <Video size={12} />
-                <span>Video</span>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  alert("FTP connection initiated");
-                }}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
-                style={{ backgroundColor: "#3F6212" }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = "#4d4f3a";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "#606246";
-                }}
-                title="File Transfer"
-              >
-                <Upload size={12} />
-                <span>FTP</span>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  alert("Phone call initiated");
-                }}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
-                style={{ backgroundColor: "#1E3A8A" }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = "#4d4f3a";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "#606246";
-                }}
-                title="Voice Call"
-              >
-                <PhoneCall className="size-3" />
-                <span>Call</span>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  alert("Message sent");
-                }}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all"
-                style={{ backgroundColor: "#A16207" }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = "#4d4f3a";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "#606246";
-                }}
-                title="Send Message"
-              >
-                <MessageSquare size={12} />
-                <span>Message</span>
-              </button>
-            </div>
+          <TooltipProperties
+            properties={displayProperties}
+            useGridLayout={useGridLayout}
+          />
+          <TooltipDivider />
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                alert("Video call initiated");
+              }}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+              style={{ backgroundColor: "#7F1D1D" }}
+              title="Video Call"
+            >
+              <Video size={12} />
+              <span>Video</span>
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                alert("FTP connection initiated");
+              }}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+              style={{ backgroundColor: "#3F6212" }}
+              title="File Transfer"
+            >
+              <Upload size={12} />
+              <span>FTP</span>
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                alert("Phone call initiated");
+              }}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+              style={{ backgroundColor: "#1E3A8A" }}
+              title="Voice Call"
+            >
+              <PhoneCall className="size-3" />
+              <span>Call</span>
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                alert("Message sent");
+              }}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+              style={{ backgroundColor: "#A16207" }}
+              title="Send Message"
+            >
+              <MessageSquare size={12} />
+              <span>Message</span>
+            </button>
           </div>
-        </div>
+        </TooltipBox>
       );
     }
 
@@ -609,137 +548,78 @@ const Tooltip = () => {
         ? undefined
         : layerInfo.distanceMeters;
 
+      const properties = [
+        {
+          label: "Bearing angle",
+          value: isNorthSegment
+            ? "0° (reference axis)"
+            : `${angleDeg.toFixed(2)}°`,
+        },
+      ];
+
+      if (distanceMeters !== undefined) {
+        properties.push({
+          label: "Distance",
+          value: formatDistance(distanceMeters / 1000),
+        });
+      }
+
+      properties.push(
+        {
+          label: `Center (${coordinateLabel})`,
+          value: formatCoordinatePair(layerInfo.azimuthCenter),
+        },
+        {
+          label: `Target (${coordinateLabel})`,
+          value: formatCoordinatePair(layerInfo.azimuthTarget),
+        }
+      );
+
       return (
-        <div
-          className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
-          style={{ zoom: 0.9 }}
-        >
-          <div className="font-semibold text-base tracking-tight text-blue-600 mb-1">
-            Bearing Calculation
-          </div>
-          <div className="space-y-1.5">
-            {layerInfo?.name && (
-              <div className="flex justify-between gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Name:
-                </span>
-                <span className="text-right text-zinc-600 text-sm">
-                  {layerInfo.name}
-                </span>
-              </div>
-            )}
-            <div className="flex justify-between gap-3">
-              <span className="text-zinc-800 font-semibold text-sm">
-                Bearing angle:
-              </span>
-              <span className="text-right text-gray-600 text-sm">
-                {isNorthSegment
-                  ? "0° (reference axis)"
-                  : `${angleDeg.toFixed(2)}°`}
-              </span>
-            </div>
-            {distanceMeters !== undefined && (
-              <div className="flex justify-between gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Distance:
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {formatDistance(distanceMeters / 1000)}
-                </span>
-              </div>
-            )}
-            <div className="space-y-1">
-              <div className="flex justify-between gap-3 text-xs">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Center ({coordinateLabel}):
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {formatCoordinatePair(layerInfo.azimuthCenter)}
-                </span>
-              </div>
-              <div className="flex justify-between gap-3 text-xs">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Target ({coordinateLabel}):
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {formatCoordinatePair(layerInfo.azimuthTarget)}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <TooltipBox>
+          <TooltipHeading
+            title="Bearing Calculation"
+            subtitle={layerInfo?.name}
+          />
+          <TooltipProperties properties={properties} />
+        </TooltipBox>
       );
     }
 
     if (isDirectNodeObject) {
+      const properties = [
+        { label: "User ID", value: String(object.userId) },
+        { label: "SNR", value: `${object.snr} dB` },
+        { label: "RSSI", value: `${object.rssi} dBm` },
+        {
+          label: "Distance",
+          value: `${object.distance?.toFixed(2)} m`,
+        },
+        { label: "Hop Count", value: String(object.hopCount) },
+      ];
+
+      if (object.connectedNodeIds && object.connectedNodeIds.length > 0) {
+        properties.push({
+          label: "Connected Nodes",
+          value: `[${object.connectedNodeIds.join(", ")}]`,
+        });
+      }
+
+      properties.push({
+        label: `Location (${coordinateLabel})`,
+        value: formatCoordinatePair([object.longitude, object.latitude]),
+      });
+
       return (
-        <div
-          className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
-          style={{ zoom: 0.9 }}
-        >
-          {layerInfo?.name && (
-            <div className="font-semibold text-blue-600 mb-1">
-              {layerInfo.name}
-            </div>
-          )}
-          <div className="font-semibold text-blue-600 mb-1">Network Node</div>
-          <div className="space-y-1.5">
-            <div className="flex justify-between items-center gap-3">
-              <span className="text-gray-600">User ID:</span>
-              <span className="text-right text-gray-800">{object.userId}</span>
-            </div>
-            <div className="flex justify-between items-center gap-3">
-              <span className="text-gray-600">SNR:</span>
-              <span className="text-right text-gray-800">{object.snr} dB</span>
-            </div>
-            <div className="flex justify-between items-center gap-3">
-              <span className="text-gray-600">RSSI:</span>
-              <span className="text-right text-gray-800">
-                {object.rssi} dBm
-              </span>
-            </div>
-            <div className="flex justify-between items-center gap-3">
-              <span className="text-gray-600">Distance:</span>
-              <span className="text-right text-gray-800">
-                {object.distance?.toFixed(2)} m
-              </span>
-            </div>
-            <div className="flex justify-between items-center gap-3">
-              <span className="text-gray-600">Hop Count:</span>
-              <span className="text-right text-gray-800">
-                {object.hopCount}
-              </span>
-            </div>
-            {object.connectedNodeIds && object.connectedNodeIds.length > 0 && (
-              <div className="mt-2 pt-1.5">
-                <div className="flex justify-between items-start gap-4 mb-1">
-                  <span className="text-gray-600 text-xs">
-                    Connected Nodes:
-                  </span>
-                </div>
-                <div className="text-xs text-right text-gray-800">
-                  [{object.connectedNodeIds.join(", ")}]
-                </div>
-              </div>
-            )}
-            <div className="mt-2 pt-1.5">
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-gray-600 text-xs">
-                  Location ({coordinateLabel}):
-                </span>
-                <span className="text-xs text-right text-gray-800">
-                  {formatCoordinatePair([object.longitude, object.latitude])}
-                </span>
-              </div>
-            </div>
-            <div className="mt-2 pt-1.5">
-              <div className="text-gray-600 text-xs mb-1">Icon:</div>
-              <div className="text-xs text-gray-500">
-                Click on the node to change its icon
-              </div>
-            </div>
+        <TooltipBox>
+          {layerInfo?.name && <TooltipHeading title={layerInfo.name} />}
+          <TooltipHeading title="Network Node" />
+          <TooltipProperties properties={properties} />
+          <TooltipDivider />
+          <div className="text-gray-600 text-xs">
+            Click on the node to change its icon
           </div>
-        </div>
+        </TooltipBox>
       );
     }
 
@@ -754,83 +634,46 @@ const Tooltip = () => {
         properties.hasOwnProperty("hopCount");
 
       if (isNodeFeature) {
+        const nodeProperties = [
+          { label: "User ID", value: String(properties.userId) },
+          { label: "SNR", value: `${properties.snr} dB` },
+          { label: "RSSI", value: `${properties.rssi} dBm` },
+          {
+            label: "Distance",
+            value: `${properties.distance?.toFixed(2)} m`,
+          },
+          { label: "Hop Count", value: String(properties.hopCount) },
+        ];
+
+        if (
+          properties.connectedNodeIds &&
+          properties.connectedNodeIds.length > 0
+        ) {
+          nodeProperties.push({
+            label: "Connected Nodes",
+            value: `[${properties.connectedNodeIds.join(", ")}]`,
+          });
+        }
+
+        if (geometryType === "Point" && object.geometry.coordinates) {
+          nodeProperties.push({
+            label: `Location (${coordinateLabel})`,
+            value: formatCoordinatePair(
+              object.geometry.coordinates as [number, number]
+            ),
+          });
+        }
+
         return (
-          <div
-            className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
-            style={{ zoom: 0.9 }}
-          >
-            {layerInfo?.name && (
-              <div className="font-semibold text-blue-600 mb-1">
-                {layerInfo.name}
-              </div>
-            )}
-            <div className="font-semibold text-blue-600 mb-1">Network Node</div>
-            <div className="space-y-1.5">
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-gray-600">User ID:</span>
-                <span className="text-right text-gray-800">
-                  {properties.userId}
-                </span>
-              </div>
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-gray-600">SNR:</span>
-                <span className="text-right text-gray-800">
-                  {properties.snr} dB
-                </span>
-              </div>
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-gray-600">RSSI:</span>
-                <span className="text-right text-gray-800">
-                  {properties.rssi} dBm
-                </span>
-              </div>
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-gray-600">Distance:</span>
-                <span className="text-right text-gray-800">
-                  {properties.distance?.toFixed(2)} m
-                </span>
-              </div>
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-gray-600">Hop Count:</span>
-                <span className="text-right text-gray-600">
-                  {properties.hopCount}
-                </span>
-              </div>
-              {properties.connectedNodeIds &&
-                properties.connectedNodeIds.length > 0 && (
-                  <div className="mt-2 pt-1.5">
-                    <div className="flex justify-between items-start gap-4 mb-1">
-                      <span className="text-gray-600 text-xs">
-                        Connected Nodes:
-                      </span>
-                    </div>
-                    <div className="text-xs text-right text-gray-600">
-                      [{properties.connectedNodeIds.join(", ")}]
-                    </div>
-                  </div>
-                )}
-              {geometryType === "Point" && object.geometry.coordinates && (
-                <div className="mt-2 pt-1.5">
-                  <div className="flex justify-between items-center gap-3">
-                    <span className="text-gray-600 text-xs">
-                      Location ({coordinateLabel}):
-                    </span>
-                    <span className="text-xs text-right text-gray-600">
-                      {formatCoordinatePair(
-                        object.geometry.coordinates as [number, number]
-                      )}
-                    </span>
-                  </div>
-                </div>
-              )}
-              <div className="mt-2 pt-1.5">
-                <div className="text-gray-600 text-xs mb-1">Icon:</div>
-                <div className="text-xs text-gray-500">
-                  Click on the node to change its icon
-                </div>
-              </div>
+          <TooltipBox>
+            {layerInfo?.name && <TooltipHeading title={layerInfo.name} />}
+            <TooltipHeading title="Network Node" />
+            <TooltipProperties properties={nodeProperties} />
+            <TooltipDivider />
+            <div className="text-gray-600 text-xs">
+              Click on the node to change its icon
             </div>
-          </div>
+          </TooltipBox>
         );
       }
 
@@ -858,11 +701,7 @@ const Tooltip = () => {
             )
           );
         }
-        geometryInfo = (
-          <div className="text-gray-600">
-            Distance: {totalDistance.toFixed(2)} km
-          </div>
-        );
+        geometryInfo = `Distance: ${totalDistance.toFixed(2)} km`;
       }
 
       // Calculate area for Polygon
@@ -871,147 +710,81 @@ const Tooltip = () => {
         object.geometry.coordinates &&
         object.geometry.coordinates[0]
       ) {
-        // object.geometry.coordinates is already [number, number][][] (array of rings)
         const areaMeters = computePolygonAreaMeters(
           object.geometry.coordinates
         );
-        geometryInfo = (
-          <div className="text-gray-600">Area: {formatArea(areaMeters)}</div>
-        );
+        geometryInfo = `Area: ${formatArea(areaMeters)}`;
       }
 
-      return (
-        <div
-          className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm w-auto"
-          style={{ zoom: 0.9 }}
-        >
-          {layerInfo?.name && (
-            <div className="font-semibold text-lg text-blue-600 mb-1 flex items-end gap-2">
-              {layerInfo.name}
-              <span className="text-xs text-zinc-500 relative -top-1">
-                {geometryType === "Point" && layerInfo?.name
-                  ? `(${layerInfo.name} - Point)`
-                  : `(${geometryType} Feature)`}
-              </span>
-            </div>
-          )}
-          <div className="space-y-1">
-            {geometryType === "Point" && layerInfo?.pointRadius && (
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Radius:
-                </span>
-                <span className="text-zinc-600 text-xs">
-                  {layerInfo.pointRadius.toLocaleString()} px
-                </span>
-              </div>
-            )}
-            {geometryType === "LineString" && layerInfo?.lineWidth && (
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Width:
-                </span>
-                <span className="text-zinc-600 text-xs">
-                  {layerInfo.lineWidth} px
-                </span>
-              </div>
-            )}
-            {properties.name && (
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Name:
-                </span>
-                <span className="text-zinc-600 text-xs">{properties.name}</span>
-              </div>
-            )}
-            {geometryInfo && <div>{geometryInfo}</div>}
-            {geometryType === "Point" && object.geometry.coordinates && (
-              <div>
-                <div className="flex justify-between items-center gap-3">
-                  <span className="text-zinc-800 font-semibold text-sm">
-                    Coordinates ({coordinateLabel}):
-                  </span>
-                  <span className="text-zinc-600 text-xs">
-                    {formatCoordinatePair(
-                      object.geometry.coordinates as [number, number]
-                    )}
-                  </span>
-                </div>
-              </div>
-            )}
-            {Object.keys(properties).length > 0 &&
-              (() => {
-                // Filter out latitude and longitude since coordinates are already shown
-                const propertyEntries = Object.entries(properties).filter(
-                  ([key]) =>
-                    key.toLowerCase() !== "latitude" &&
-                    key.toLowerCase() !== "longitude"
-                );
-                const useGridLayout = propertyEntries.length > 6;
+      const tooltipProperties = [];
 
-                return (
-                  <div className="w-auto">
-                    <div
-                      className={
-                        useGridLayout
-                          ? "grid grid-cols-2 gap-y-1 w-auto"
-                          : "space-y-1"
-                      }
-                    >
-                      {useGridLayout ? (
-                        <>
-                          {/* Left column */}
-                          <div className="border-r border-gray-200 space-y-1 pr-6 w-auto">
-                            {propertyEntries
-                              .slice(0, Math.ceil(propertyEntries.length / 2))
-                              .map(([key, value]) => (
-                                <div key={key} className="flex flex-col">
-                                  <span className="text-zinc-800 font-semibold text-sm">
-                                    {formatLabel(key)}:
-                                  </span>
-                                  <span className="text-zinc-600 text-xs mr-2">
-                                    {String(value)}
-                                  </span>
-                                </div>
-                              ))}
-                          </div>
-                          {/* Right column */}
-                          <div className="pl-6 space-y-1">
-                            {propertyEntries
-                              .slice(Math.ceil(propertyEntries.length / 2))
-                              .map(([key, value]) => (
-                                <div key={key} className="flex flex-col">
-                                  <span className="text-zinc-800 font-semibold text-sm">
-                                    {formatLabel(key)}:
-                                  </span>
-                                  <span className="text-zinc-600 text-xs">
-                                    {String(value)}
-                                  </span>
-                                </div>
-                              ))}
-                          </div>
-                        </>
-                      ) : (
-                        propertyEntries.map(([key, value]) => (
-                          <div
-                            key={key}
-                            className="flex justify-between items-center gap-4"
-                          >
-                            <span className="text-zinc-800 font-semibold text-sm">
-                              {formatLabel(key)}:
-                            </span>
-                            <span className="text-zinc-600 text-xs capitalize">
-                              {String(value)}
-                            </span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-          </div>
-        </div>
+      if (geometryType === "Point" && layerInfo?.pointRadius) {
+        tooltipProperties.push({
+          label: "Radius",
+          value: `${layerInfo.pointRadius.toLocaleString()} px`,
+        });
+      }
+
+      if (geometryType === "LineString" && layerInfo?.lineWidth) {
+        tooltipProperties.push({
+          label: "Width",
+          value: `${layerInfo.lineWidth} px`,
+        });
+      }
+
+      if (properties.name) {
+        tooltipProperties.push({
+          label: "Name",
+          value: String(properties.name),
+        });
+      }
+
+      if (geometryInfo) {
+        tooltipProperties.push({
+          label: geometryInfo.split(":")[0],
+          value: geometryInfo.split(":")[1]?.trim() || "",
+        });
+      }
+
+      if (geometryType === "Point" && object.geometry.coordinates) {
+        tooltipProperties.push({
+          label: `Coordinates (${coordinateLabel})`,
+          value: formatCoordinatePair(
+            object.geometry.coordinates as [number, number]
+          ),
+        });
+      }
+
+      // Add other properties
+      const propertyEntries = Object.entries(properties).filter(
+        ([key]) =>
+          key.toLowerCase() !== "latitude" &&
+          key.toLowerCase() !== "longitude" &&
+          key.toLowerCase() !== "name"
+      );
+
+      propertyEntries.forEach(([key, value]) => {
+        tooltipProperties.push({
+          label: formatLabel(key),
+          value: String(value),
+        });
+      });
+
+      const useGridLayout = tooltipProperties.length > 6;
+
+      return (
+        <TooltipBox maxWidth="max-w-[200px]">
+          {layerInfo?.name && (
+            <TooltipHeading
+              title={layerInfo.name}
+              subtitle={`${geometryType} Feature`}
+            />
+          )}
+          <TooltipProperties
+            properties={tooltipProperties}
+            useGridLayout={useGridLayout}
+          />
+        </TooltipBox>
       );
     }
 
@@ -1034,179 +807,101 @@ const Tooltip = () => {
       const avgSegmentKm =
         segmentCount > 0 ? segmentsTotalKm / segmentCount : null;
 
-      // Check if this is an azimuthal line (has bearing or name starts with "Azimuthal")
-      const isAzimuthal =
-        layerInfo?.name?.startsWith("Azimuthal") ||
-        layerInfo?.bearing !== undefined ||
-        (object as any).bearing !== undefined;
+      const properties = [];
 
-      // Get bearing from layer info or object, or calculate it
-      let bearing: number | undefined =
-        layerInfo?.bearing ?? (object as any).bearing;
-      if (isAzimuthal && bearing === undefined) {
-        // Calculate bearing from coordinates
-        bearing = calculateBearingDegrees(
-          [object.sourcePosition[0], object.sourcePosition[1]],
-          [object.targetPosition[0], object.targetPosition[1]]
-        );
+      if (layerInfo?.lineWidth || object.width) {
+        properties.push({
+          label: "Width",
+          value: `${layerInfo?.lineWidth || object.width} px`,
+        });
       }
 
-      return (
-        <div
-          style={{ zoom: 0.9 }}
-          className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
-        >
-          {layerInfo?.name && (
-            <div className="font-semibold text-base text-blue-600 tracking-tight mb-1 flex items-end gap-2">
-              {layerInfo.name}{" "}
-              <div className="font-semibold text-zinc-500 text-xs relative -top-1">
-                (Line Segment)
-              </div>
-            </div>
-          )}
+      properties.push({
+        label: "Distance",
+        value: `${parseFloat(distance).toFixed(2)} km`,
+      });
 
-          <div className="space-y-1">
-            {(layerInfo?.lineWidth || object.width) && (
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Width:
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {layerInfo?.lineWidth || object.width} px
-                </span>
-              </div>
-            )}
-            <div>
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Distance:
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {parseFloat(distance).toFixed(2)} km
-                </span>
-              </div>
-            </div>
-            {segmentCount ? (
-              <div className="space-y-1 text-xs">
-                <div className="flex justify-between items-center gap-3">
-                  <span className="text-zinc-800 font-semibold text-sm">
-                    Total Segments:
-                  </span>
-                  <span className="text-right text-gray-600 text-sm">
-                    {segmentCount}
-                  </span>
-                </div>
-                {segmentCount > 1 ? (
-                  <>
-                    <div className="flex justify-between items-center gap-3">
-                      <span className="text-zinc-800 font-semibold text-sm">
-                        Max segment:
-                      </span>
-                      <span className="text-right text-gray-600 text-sm">
-                        {formatDistance(maxSegmentKm ?? 0)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center gap-3">
-                      <span className="text-zinc-800 font-semibold text-sm">
-                        Min segment:
-                      </span>
-                      <span className="text-right text-gray-600 text-sm">
-                        {formatDistance(minSegmentKm ?? 0)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center gap-3">
-                      <span className="text-zinc-800 font-semibold text-sm">
-                        Avg segment:
-                      </span>
-                      <span className="text-right text-gray-600 text-sm">
-                        {formatDistance(avgSegmentKm ?? 0)}
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex justify-between items-center gap-3">
-                    <span className="text-zinc-800 font-semibold text-sm">
-                      Segment length:
-                    </span>
-                    <span className="text-right text-gray-600 text-sm">
-                      {formatDistance(segmentDistances[0])}
-                    </span>
-                  </div>
-                )}
-                <div className="flex justify-between items-center gap-3 font-semibold">
-                  <span className="text-zinc-800 font-semibold text-sm">
-                    Total:
-                  </span>
-                  <span className="text-right text-zinc-600 text-sm">
-                    {formatDistance(segmentsTotalKm)}
-                  </span>
-                </div>
-              </div>
-            ) : null}
-            <div>
-              <div className="flex justify-between items-center gap-4 mb-1">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  From ({coordinateLabel}):
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {formatCoordinatePair(
-                    object.sourcePosition as [number, number]
-                  )}
-                </span>
-              </div>
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  To ({coordinateLabel}):
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {formatCoordinatePair(
-                    object.targetPosition as [number, number]
-                  )}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
+      if (segmentCount) {
+        properties.push({
+          label: "Total Segments",
+          value: String(segmentCount),
+        });
+
+        if (segmentCount > 1) {
+          properties.push(
+            {
+              label: "Max segment",
+              value: formatDistance(maxSegmentKm ?? 0),
+            },
+            {
+              label: "Min segment",
+              value: formatDistance(minSegmentKm ?? 0),
+            },
+            {
+              label: "Avg segment",
+              value: formatDistance(avgSegmentKm ?? 0),
+            }
+          );
+        } else {
+          properties.push({
+            label: "Segment length",
+            value: formatDistance(segmentDistances[0]),
+          });
+        }
+
+        properties.push({
+          label: "Total",
+          value: formatDistance(segmentsTotalKm),
+        });
+      }
+
+      properties.push(
+        {
+          label: `From (${coordinateLabel})`,
+          value: formatCoordinatePair(
+            object.sourcePosition as [number, number]
+          ),
+        },
+        {
+          label: `To (${coordinateLabel})`,
+          value: formatCoordinatePair(
+            object.targetPosition as [number, number]
+          ),
+        }
+      );
+
+      return (
+        <TooltipBox>
+          {layerInfo?.name && (
+            <TooltipHeading title={layerInfo.name} subtitle="Line Segment" />
+          )}
+          <TooltipProperties properties={properties} />
+        </TooltipBox>
       );
     }
 
     if (object.position) {
+      const properties = [];
+
+      if (layerInfo?.radius || object.radius) {
+        properties.push({
+          label: "Radius",
+          value: `${(layerInfo?.radius || object.radius).toLocaleString()} px`,
+        });
+      }
+
+      properties.push({
+        label: `Coordinates (${coordinateLabel})`,
+        value: formatCoordinatePair(object.position),
+      });
+
       return (
-        <div
-          className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
-          style={{ zoom: 0.9 }}
-        >
+        <TooltipBox>
           {layerInfo?.name && (
-            <div className="font-semibold text-blue-600 mb-1 tracking-tight text-base flex flex-row items-center gap-2">
-              {layerInfo.name}
-              <div className="font-semibold text-zinc-500 text-xs relative top-0">
-                {layerInfo?.name ? `(${layerInfo.name} - Point)` : "`(Point)"}
-              </div>
-            </div>
+            <TooltipHeading title={layerInfo.name} subtitle="Point" />
           )}
-          <div className="space-y-1">
-            {(layerInfo?.radius || object.radius) && (
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Radius:
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {(layerInfo?.radius || object.radius).toLocaleString()} px
-                </span>
-              </div>
-            )}
-            <div>
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Coordinates ({coordinateLabel}):
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {formatCoordinatePair(object.position)}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
+          <TooltipProperties properties={properties} />
+        </TooltipBox>
       );
     }
 
@@ -1218,9 +913,6 @@ const Tooltip = () => {
           ? object.polygon // Already array of rings [[[lng, lat], ...], ...]
           : [object.polygon]; // Single ring [[lng, lat], ...], wrap it
       const areaMeters = computePolygonAreaMeters(polygonRings);
-
-      // Calculate perimeter
-      // computePolygonPerimeterMeters expects [number, number][][] (array of rings)
       const perimeterMeters = computePolygonPerimeterMeters(polygonRings);
 
       // Calculate actual vertex count (excluding closing point if polygon is closed)
@@ -1237,60 +929,30 @@ const Tooltip = () => {
         vertexCount -= 1; // Subtract the closing point
       }
 
-      return (
-        <div
-          className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
-          style={{ zoom: 0.9 }}
-        >
-          {layerInfo?.name && (
-            <div className="font-semibold text-blue-600 mb-1 tracking-tight text-base flex flex-row items-center gap-2">
-              {layerInfo.name}{" "}
-              <div className="font-semibold text-zinc-500 text-xs relative">
-                ({layerInfo?.name ? `${layerInfo.name} - Polygon` : "Polygon"})
-              </div>
-            </div>
-          )}
+      const properties = [
+        { label: "Area", value: formatArea(areaMeters) },
+        {
+          label: "Perimeter",
+          value: formatDistance(perimeterMeters / 1000),
+        },
+        { label: "Vertices", value: String(vertexCount) },
+      ];
 
-          <div className="space-y-1">
-            <div>
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-zinc-800 font-semibold text-sm">
-                  Area:
-                </span>
-                <span className="text-right text-gray-600 text-sm">
-                  {formatArea(areaMeters)}
-                </span>
-              </div>
-            </div>
-            <div className="flex justify-between items-center gap-3">
-              <span className="text-zinc-800 font-semibold text-sm">
-                Perimeter:
-              </span>
-              <span className="text-right text-gray-600 text-sm">
-                {formatDistance(perimeterMeters / 1000)}
-              </span>
-            </div>
-            <div className="flex justify-between items-center gap-3">
-              <span className="text-zinc-800 font-semibold text-sm">
-                Vertices:
-              </span>
-              <span className="text-right text-gray-600 text-sm">
-                {vertexCount}
-              </span>
-            </div>
-          </div>
-        </div>
+      return (
+        <TooltipBox>
+          {layerInfo?.name && (
+            <TooltipHeading title={layerInfo.name} subtitle="Polygon" />
+          )}
+          <TooltipProperties properties={properties} />
+        </TooltipBox>
       );
     }
 
     return (
-      <div
-        className="bg-white text-gray-900 border border-gray-200 p-2 rounded shadow-lg text-sm max-w-xs"
-        style={{ zoom: 0.9 }}
-      >
-        <div className="font-semibold mb-1">Map Feature</div>
-        <div className="text-gray-600">Hover for details</div>
-      </div>
+      <TooltipBox>
+        <TooltipHeading title="Map Feature" />
+        <div className="text-gray-600 text-sm">Hover for details</div>
+      </TooltipBox>
     );
   };
 

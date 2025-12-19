@@ -10,8 +10,8 @@ import {
   WifiOff,
   Ruler,
   Network,
-  FileUp,
-  FileDown,
+  Plus,
+  Download,
   Save,
   RotateCcw,
   Home,
@@ -23,7 +23,6 @@ import { useDrawingMode } from "@/store/layers-store";
 import type { DrawingMode } from "@/lib/definitions";
 import { cn } from "@/lib/utils";
 import { useState, useEffect, useRef } from "react";
-import ResetToNorth from "@/utils/icons/ResetToNorth";
 
 type CameraPopoverProps = {
   isOpen: boolean;
@@ -48,6 +47,7 @@ type IgrsToggleProps = {
 const ZoomControls = ({
   mapRef,
   zoom,
+  bearing = 0,
   onToggleLayersBox,
   onOpenConnectionConfig,
   onToggleMeasurementBox,
@@ -67,6 +67,7 @@ const ZoomControls = ({
 }: {
   mapRef: React.RefObject<any>;
   zoom: number;
+  bearing?: number;
   onToggleLayersBox?: () => void;
   onOpenConnectionConfig?: () => void;
   onToggleMeasurementBox?: () => void;
@@ -210,9 +211,33 @@ const ZoomControls = ({
                 title="Upload File"
                 onClick={onUpload}
               >
-                <FileUp className="h-4 w-4" />
+                <Plus className="h-4 w-4" />
               </Button>
             </div>
+          )}
+          {onExportLayers && (
+            <div className="flex items-center gap-0 p-0">
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
+                title="Export Layers"
+                onClick={onExportLayers}
+              >
+                <Download className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+          {onRestoreSession && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
+              title="Restore Session"
+              onClick={onRestoreSession}
+            >
+              <RotateCcw className="h-4 w-4" />
+            </Button>
           )}
           {onSaveSession && (
             <Button
@@ -246,30 +271,6 @@ const ZoomControls = ({
                 <Save className="h-4 w-4" />
               )}
             </Button>
-          )}
-          {onRestoreSession && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
-              title="Restore Session"
-              onClick={onRestoreSession}
-            >
-              <RotateCcw className="h-4 w-4" />
-            </Button>
-          )}
-          {onExportLayers && (
-            <div className="flex items-center gap-0 p-0">
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
-                title="Export Layers"
-                onClick={onExportLayers}
-              >
-                <FileDown className="h-4 w-4" />
-              </Button>
-            </div>
           )}
           <div className="flex items-center gap-2 px-2 border-l border-slate-200">
             <span className="text-[10px] font-semibold text-slate-800 uppercase">
@@ -431,20 +432,6 @@ const ZoomControls = ({
               <WifiPen className="h-4 w-4" />
             </Button>
           )}
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={handleResetToNorth}
-            className="h-10 w-10 hover:bg-transparent cursor-pointer"
-            title="Reset to North"
-          >
-            <ResetToNorth
-              width={16}
-              height={16}
-              strokeWidth={1.2}
-              style={{ zoom: 1.5 }}
-            />
-          </Button>
           {onResetHome && (
             <div>
               <Button
@@ -470,6 +457,91 @@ const ZoomControls = ({
               />
             </div>
           )}
+        </div>
+        <div className="absolute -top-45 right-0.5 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
+          <div
+            style={{ zoom: 0.4 }}
+            className="cursor-pointer px-4.5 pt-5 pb-5"
+            onClick={handleResetToNorth}
+          >
+            <div
+              className="relative w-20 h-20 flex items-center justify-center"
+              title={`Bearing: ${bearing.toFixed(0)}°`}
+            >
+              {/* Compass background circle */}
+              <svg
+                width="80"
+                height="80"
+                viewBox="0 0 80 80"
+                className="absolute inset-0 overflow-visible"
+              >
+                <circle
+                  cx="42"
+                  cy="42"
+                  r="28"
+                  fill="none"
+                  stroke="#e5e7eb"
+                  strokeWidth="3"
+                />
+
+                {/* Direction labels on outer boundary (fixed, don't rotate) */}
+                {/* Cardinal directions */}
+                <text
+                  x="40"
+                  y="6"
+                  fontSize="22"
+                  fill="#ef4444"
+                  textAnchor="middle"
+                  fontWeight="bold"
+                >
+                  N
+                </text>
+                <text
+                  x="42"
+                  y="92"
+                  fontSize="22"
+                  fill="#6b7280"
+                  textAnchor="middle"
+                  fontWeight="bold"
+                >
+                  S
+                </text>
+                <text
+                  x="82"
+                  y="48"
+                  fontSize="22"
+                  fill="#6b7280"
+                  textAnchor="middle"
+                  fontWeight="bold"
+                >
+                  E
+                </text>
+                <text
+                  x="-2"
+                  y="48"
+                  fontSize="22"
+                  fill="#6b7280"
+                  textAnchor="middle"
+                  fontWeight="bold"
+                >
+                  W
+                </text>
+
+                {/* Compass needle - red kite/diamond shape pointing north (rotates with bearing) */}
+                <g transform={`rotate(${-bearing} 42 42)`}>
+                  {/* North-pointing red diamond/kite - larger and more prominent */}
+                  <path
+                    d="M 42 8 L 50 32 L 42 26 L 34 32 Z"
+                    fill="#ef4444"
+                    stroke="#dc2626"
+                    strokeWidth="1"
+                  />
+                  {/* Center pivot point */}
+                  <circle cx="42" cy="42" r="3" fill="#1f2937" />
+                </g>
+              </svg>
+            </div>
+          </div>
         </div>
         <div className="absolute -top-31 right-0.5 flex flex-col items-center gap-2 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm px-0.5 py-1">
           <Button

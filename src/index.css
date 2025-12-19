@@ -132,3 +132,24 @@
     pointer-events: none !important;
   }
 }
+
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+  background: linear-gradient(
+    to right,
+    rgb(244 244 245) 0%,
+    rgb(228 228 231) 20%,
+    rgb(244 244 245) 40%,
+    rgb(244 244 245) 100%
+  );
+  background-size: 1000px 100%;
+}

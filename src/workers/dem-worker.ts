@@ -272,9 +272,78 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
   const image = await tiff.getImage();
   const width = image.getWidth();
   const height = image.getHeight();
-  const raster = await image.readRasters({ interleave: true, samples: [0] });
-  if (!raster || raster.length !== width * height) {
-    throw new Error("Invalid raster data");
+
+  // Check number of samples/bands
+  const fileDirectory = image.fileDirectory;
+  const samplesPerPixel = fileDirectory?.SamplesPerPixel || 1;
+  const isRGB = samplesPerPixel >= 3;
+
+  let raster: any;
+  let isMultiBand = false;
+
+  if (isRGB) {
+    // For RGB, try interleaved first (RGBRGBRGB format)
+    try {
+      raster = await image.readRasters({
+        interleave: true,
+        samples: [0, 1, 2],
+      });
+      // Interleaved returns a single array: [R, G, B, R, G, B, ...]
+      if (raster && raster.length === width * height * 3) {
+        isMultiBand = true;
+      } else {
+        // Fallback to planar (separate bands)
+        raster = await image.readRasters({
+          interleave: false,
+          samples: [0, 1, 2],
+        });
+        isMultiBand = Array.isArray(raster) && raster.length > 1;
+      }
+    } catch {
+      // Fallback to planar
+      raster = await image.readRasters({
+        interleave: false,
+        samples: [0, 1, 2],
+      });
+      isMultiBand = Array.isArray(raster) && raster.length > 1;
+    }
+  } else {
+    // Grayscale: read first band
+    raster = await image.readRasters({
+      interleave: true,
+      samples: [0],
+    });
+  }
+
+  const expectedLength = width * height;
+
+  if (isMultiBand) {
+    if (Array.isArray(raster) && raster.length > 1) {
+      // Planar format: separate arrays for each band
+      const rBand = raster[0] as any;
+      const gBand = raster[1] as any;
+      const bBand = raster[2] as any;
+      if (
+        !raster ||
+        raster.length < 3 ||
+        rBand.length !== expectedLength ||
+        gBand.length !== expectedLength ||
+        bBand.length !== expectedLength
+      ) {
+        throw new Error("Invalid RGB raster data");
+      }
+    } else if (raster && raster.length === expectedLength * 3) {
+      // Interleaved format: single array [R, G, B, R, G, B, ...]
+      // This is valid, we'll handle it in the processing code
+    } else {
+      throw new Error("Invalid RGB raster data");
+    }
+  } else {
+    // Grayscale: verify single band
+    const singleBand = raster as any;
+    if (!singleBand || singleBand.length !== expectedLength) {
+      throw new Error("Invalid raster data");
+    }
   }
 
   let bounds: [number, number, number, number];
@@ -477,37 +546,186 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
     bounds = [68.0, 6.0, 97.0, 37.0];
   }
 
-  let minVal = Infinity;
-  let maxVal = -Infinity;
-  for (let i = 0; i < raster.length; i++) {
-    const v = raster[i] as number;
-    if (Number.isFinite(v)) {
-      if (v < minVal) minVal = v;
-      if (v > maxVal) maxVal = v;
-    }
-  }
-  if (
-    !Number.isFinite(minVal) ||
-    !Number.isFinite(maxVal) ||
-    minVal === maxVal
-  ) {
-    minVal = 0;
-    maxVal = 1;
-  }
-
   const elevationData = new Float32Array(width * height);
   const grayscale = new Uint8ClampedArray(width * height * 4);
-  for (let i = 0; i < width * height; i++) {
-    const v = raster[i] as number;
-    const val = Number.isFinite(v) ? v : minVal;
-    elevationData[i] = val;
-    const t = (val - minVal) / (maxVal - minVal);
-    const shade = Math.max(0, Math.min(255, Math.round(t * 255)));
-    const idx = i * 4;
-    grayscale[idx] = shade;
-    grayscale[idx + 1] = shade;
-    grayscale[idx + 2] = shade;
-    grayscale[idx + 3] = 255;
+  let minVal = Infinity;
+  let maxVal = -Infinity;
+
+  if (isMultiBand) {
+    // RGB image: handle both interleaved and planar formats
+    let rBand: any;
+    let gBand: any;
+    let bBand: any;
+
+    if (Array.isArray(raster) && raster.length > 1) {
+      // Planar format: separate arrays
+      rBand = raster[0];
+      gBand = raster[1];
+      bBand = raster[2];
+    } else {
+      // Interleaved format: single array [R, G, B, R, G, B, ...]
+      rBand = new Array(width * height);
+      gBand = new Array(width * height);
+      bBand = new Array(width * height);
+      for (let i = 0; i < width * height; i++) {
+        rBand[i] = raster[i * 3];
+        gBand[i] = raster[i * 3 + 1];
+        bBand[i] = raster[i * 3 + 2];
+      }
+    }
+
+    // Find min/max across all bands for elevation data
+    for (let i = 0; i < width * height; i++) {
+      const r = rBand[i] as number;
+      const g = gBand[i] as number;
+      const b = bBand[i] as number;
+      if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) {
+        const avg = (r + g + b) / 3;
+        if (avg < minVal) minVal = avg;
+        if (avg > maxVal) maxVal = avg;
+      }
+    }
+    if (
+      !Number.isFinite(minVal) ||
+      !Number.isFinite(maxVal) ||
+      minVal === maxVal
+    ) {
+      minVal = 0;
+      maxVal = 255;
+    }
+
+    // Check if we need scaling (find min/max once for all bands)
+    let rMin = Infinity,
+      rMax = -Infinity;
+    let gMin = Infinity,
+      gMax = -Infinity;
+    let bMin = Infinity,
+      bMax = -Infinity;
+
+    for (let i = 0; i < width * height; i++) {
+      const r = rBand[i] as number;
+      const g = gBand[i] as number;
+      const b = bBand[i] as number;
+      if (Number.isFinite(r)) {
+        if (r < rMin) rMin = r;
+        if (r > rMax) rMax = r;
+      }
+      if (Number.isFinite(g)) {
+        if (g < gMin) gMin = g;
+        if (g > gMax) gMax = g;
+      }
+      if (Number.isFinite(b)) {
+        if (b < bMin) bMin = b;
+        if (b > bMax) bMax = b;
+      }
+    }
+
+    // Log RGB value ranges for debugging
+    console.log("[DEM Worker] RGB value ranges:", {
+      rMin,
+      rMax,
+      gMin,
+      gMax,
+      bMin,
+      bMax,
+      width,
+      height,
+      isPlanar: Array.isArray(raster) && raster.length > 1,
+      rasterType: Array.isArray(raster) ? "array" : typeof raster,
+    });
+
+    // Only scale if values are clearly outside 0-255 range (e.g., 16-bit)
+    const needsScaling =
+      rMax > 255 ||
+      rMin < 0 ||
+      gMax > 255 ||
+      gMin < 0 ||
+      bMax > 255 ||
+      bMin < 0;
+    const rRange = rMax - rMin || 1;
+    const gRange = gMax - gMin || 1;
+    const bRange = bMax - bMin || 1;
+
+    // Check if all values are zero or very low (might indicate reading error)
+    const sampleCount = Math.min(100, width * height);
+    let nonZeroCount = 0;
+    for (let i = 0; i < sampleCount; i++) {
+      const idx = Math.floor((i / sampleCount) * (width * height));
+      const r = rBand[idx] as number;
+      const g = gBand[idx] as number;
+      const b = bBand[idx] as number;
+      if (
+        (r > 0 || g > 0 || b > 0) &&
+        Number.isFinite(r) &&
+        Number.isFinite(g) &&
+        Number.isFinite(b)
+      ) {
+        nonZeroCount++;
+      }
+    }
+    console.log(
+      `[DEM Worker] Sample check: ${nonZeroCount}/${sampleCount} pixels have non-zero RGB values`
+    );
+
+    for (let i = 0; i < width * height; i++) {
+      let r = Number.isFinite(rBand[i] as number) ? (rBand[i] as number) : 0;
+      let g = Number.isFinite(gBand[i] as number) ? (gBand[i] as number) : 0;
+      let b = Number.isFinite(bBand[i] as number) ? (bBand[i] as number) : 0;
+
+      // Only scale if values are outside 0-255 range
+      if (needsScaling) {
+        if (rMax > rMin) r = ((r - rMin) / rRange) * 255;
+        if (gMax > gMin) g = ((g - gMin) / gRange) * 255;
+        if (bMax > bMin) b = ((b - bMin) / bRange) * 255;
+      }
+
+      // Clamp RGB values to 0-255 range
+      const rClamped = Math.max(0, Math.min(255, Math.round(r)));
+      const gClamped = Math.max(0, Math.min(255, Math.round(g)));
+      const bClamped = Math.max(0, Math.min(255, Math.round(b)));
+
+      const idx = i * 4;
+      grayscale[idx] = rClamped; // R
+      grayscale[idx + 1] = gClamped; // G
+      grayscale[idx + 2] = bClamped; // B
+      grayscale[idx + 3] = 255; // A
+
+      // Store average for elevation data
+      const avg = (rClamped + gClamped + bClamped) / 3;
+      elevationData[i] = avg;
+    }
+  } else {
+    // Grayscale: calculate min/max first
+    const singleBand = raster as any;
+    for (let i = 0; i < singleBand.length; i++) {
+      const v = singleBand[i] as number;
+      if (Number.isFinite(v)) {
+        if (v < minVal) minVal = v;
+        if (v > maxVal) maxVal = v;
+      }
+    }
+    if (
+      !Number.isFinite(minVal) ||
+      !Number.isFinite(maxVal) ||
+      minVal === maxVal
+    ) {
+      minVal = 0;
+      maxVal = 1;
+    }
+
+    // Then create grayscale image
+    for (let i = 0; i < width * height; i++) {
+      const v = singleBand[i] as number;
+      const val = Number.isFinite(v) ? v : minVal;
+      elevationData[i] = val;
+      const t = (val - minVal) / (maxVal - minVal);
+      const shade = Math.max(0, Math.min(255, Math.round(t * 255)));
+      const idx = i * 4;
+      grayscale[idx] = shade;
+      grayscale[idx + 1] = shade;
+      grayscale[idx + 2] = shade;
+      grayscale[idx + 3] = 255;
+    }
   }
 
   return {
