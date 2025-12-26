@@ -23,6 +23,9 @@
     <!-- ✅ FIX parent: inherit from your real theme, not the missing android 12 theme -->
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
+        <!-- Enable fullscreen/immersive mode like games -->
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 
 </resources>
