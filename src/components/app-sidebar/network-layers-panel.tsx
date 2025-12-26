@@ -4,7 +4,7 @@ import {
   SidebarGroupContent,
   SidebarGroupLabel,
 } from "../ui/sidebar";
-import { ChevronDown, ChevronRight, LocateFixed } from "lucide-react";
+import { ChevronDown, ChevronRight, LocateFixed, Info } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import { Button } from "../ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -76,7 +76,7 @@ const NetworkLayersPanel = ({
     [networkMembersData, targetsData]
   );
 
-  // Focus on a UDP layer by calculating bounds
+  // Smooth focus animation: zoom out first, then fly to target with parabolic motion
   const handleFocusLayer = (layerId: string) => {
     setFocusedLayerId(layerId);
     const layer = udpLayers.find((l: any) => l?.id === layerId);
@@ -111,6 +111,26 @@ const NetworkLayersPanel = ({
       minLat !== Infinity &&
       maxLat !== -Infinity
     ) {
+      const currentZoom = map.getZoom();
+      const currentBounds = map.getBounds();
+
+      // Check if current view already contains the bounds
+      const boundsContained =
+        currentBounds.getWest() <= minLng &&
+        currentBounds.getEast() >= maxLng &&
+        currentBounds.getSouth() <= minLat &&
+        currentBounds.getNorth() >= maxLat;
+      const zoomDiff = Math.abs(currentZoom - 12); // Rough check
+      const isAlreadyFocused = boundsContained && zoomDiff < 1;
+
+      if (isAlreadyFocused) {
+        // Already focused, don't animate
+        return;
+      }
+
+      // Use fitBounds with smooth animation to show the entire bounding box
+      // Stop any ongoing animations first to prevent jitter
+      map.stop();
       map.fitBounds(
         [
           [minLng, minLat],
@@ -118,7 +138,9 @@ const NetworkLayersPanel = ({
         ],
         {
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
-          duration: 1000,
+          duration: 2000, // Smooth, slower duration
+          maxZoom: 12,
+          linear: false, // Use default easing (smooth)
         }
       );
     }
@@ -128,9 +150,15 @@ const NetworkLayersPanel = ({
     if (useIgrs) {
       // calculateIgrs expects (longitude, latitude)
       const igrs = calculateIgrs(lng, lat);
-      return igrs || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      return {
+        value: igrs || `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`,
+        isIgrsAvailable: igrs !== null,
+      };
     }
-    return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    return {
+      value: `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`,
+      isIgrsAvailable: true, // Not using IGRS, so no issue
+    };
   };
 
   const renderList = () => {
@@ -194,19 +222,38 @@ const NetworkLayersPanel = ({
 
                     {sampleItems.length > 0 && (
                       <div className="mt-3 border-t border-border/40 pt-3">
-                        <dt className="text-[14px] font-semibold tracking-wide text-foreground mb-2">
-                          Coordinates
+                        <dt className="text-[14px] font-semibold tracking-wide text-foreground mb-2 flex items-center gap-1">
+                          {useIgrs ? "IGRS" : "Coordinates"}
                         </dt>
                         <div className="space-y-1">
-                          {sampleItems.map((item: any, idx: number) => (
-                            <dd
-                              key={idx}
-                              className="font-mono text-[12px] text-zinc-600"
-                            >
-                              {item.name || `Item ${idx + 1}`}:{" "}
-                              {formatCoordinate(item.latitude, item.longitude)}
-                            </dd>
-                          ))}
+                          {sampleItems.map((item: any, idx: number) => {
+                            const coord = formatCoordinate(
+                              item.latitude,
+                              item.longitude
+                            );
+                            return (
+                              <dd
+                                key={idx}
+                                className="font-mono text-[12px] text-zinc-600 flex items-center gap-1"
+                              >
+                                <span>
+                                  {item.name || `Item ${idx + 1}`}:{" "}
+                                  {coord.value}
+                                </span>
+                                {useIgrs && !coord.isIgrsAvailable && (
+                                  <div className="relative group">
+                                    <Info
+                                      size={12}
+                                      className="text-muted-foreground cursor-help"
+                                    />
+                                    <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-10 bg-black text-white text-[10px] px-2 py-1 rounded whitespace-nowrap">
+                                      IGRS not available
+                                    </div>
+                                  </div>
+                                )}
+                              </dd>
+                            );
+                          })}
                           {layer.count > 3 && (
                             <dd className="text-[12px] text-zinc-600 italic">
                               ...and {layer.count - 3} more

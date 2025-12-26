@@ -11,6 +11,7 @@ import {
   EyeOffIcon,
   LocateFixed,
   Settings2,
+  Info,
 } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import { Button } from "../ui/button";
@@ -26,6 +27,7 @@ import {
   calculateBearingDegrees,
   formatLayerMeasurements,
   normalizeAngleSigned,
+  type LayerMeasurement,
 } from "@/lib/layers";
 import { isSketchLayer } from "@/lib/sketch-layers";
 import type { LayerProps } from "@/lib/definitions";
@@ -35,7 +37,7 @@ type SketchLayerCardItemProps = {
   layer: LayerProps;
   isSelected: boolean;
   isFocused: boolean;
-  measurements: Array<{ label: string; value: string }>;
+  measurements: LayerMeasurement[];
   badgeClass: string;
   enableSelection: boolean;
   useIgrs: boolean;
@@ -164,8 +166,25 @@ const SketchLayerCardItem = ({
                   key={`${layer.id}-${measurement.label}-${index}`}
                   className="flex flex-col"
                 >
-                  <dt className="text-[13px] font-semibold tracking-wide text-foreground mb-2">
-                    {measurement.label}
+                  <dt className="text-[13px] font-semibold tracking-wide text-foreground mb-2 flex items-center gap-1">
+                    {measurement.label.includes("IGRS") &&
+                    !measurement.isIgrsUnavailable
+                      ? "IGRS"
+                      : measurement.label.includes("IGRS") &&
+                        measurement.isIgrsUnavailable
+                      ? "LAT/LONG"
+                      : measurement.label}
+                    {measurement.isIgrsUnavailable && (
+                      <div className="relative group">
+                        <Info
+                          size={12}
+                          className="text-muted-foreground cursor-help"
+                        />
+                        <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-10 bg-black text-white text-[10px] px-2 py-1 rounded whitespace-nowrap">
+                          IGRS not available
+                        </div>
+                      </div>
+                    )}
                   </dt>
                   <dd className="font-mono text-[12px] text-zinc-600">
                     {measurement.value}
@@ -361,9 +380,14 @@ const SketchLayersPanel = ({
     return (
       <div className="overflow-y-auto" style={{ height: `${dynamicHeight}px` }}>
         <Virtuoso
-          style={{ height: `${dynamicHeight - 150}px`, marginBottom: "150px" }}
+          style={{
+            height: `100%`,
+          }}
           data={sketchLayers}
           increaseViewportBy={280}
+          components={{
+            Footer: () => <div style={{ height: "180px" }} />, // Add bottom padding to ensure last item is fully visible
+          }}
           itemContent={(_, layer) => {
             const azimuthAngle =
               layer.type === "azimuth" &&

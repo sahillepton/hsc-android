@@ -234,6 +234,7 @@ export const normalizeAngleSigned = (angleDeg: number) => {
 export type LayerMeasurement = {
   label: string;
   value: string;
+  isIgrsUnavailable?: boolean; // true when IGRS was requested but not available
 };
 
 const formatCoordinate = (
@@ -251,7 +252,7 @@ const formatCoordinate = (
 
   const [lng, lat] = point;
   const degreeSymbol = addDegrees ? "°" : "";
-  return `${lat.toFixed(3)}${degreeSymbol}, ${lng.toFixed(3)}${degreeSymbol}`;
+  return `${lat.toFixed(4)}${degreeSymbol}, ${lng.toFixed(4)}${degreeSymbol}`;
 };
 
 const getPathLengthMeters = (path?: [number, number][]) => {
@@ -310,6 +311,8 @@ const formatCoordinateWithSystem = (
     if (igrsValue) {
       return igrsValue;
     }
+    // IGRS not available, fall back to lat/long with degrees
+    return formatCoordinate(point, true);
   }
   return formatCoordinate(point, addDegrees);
 };
@@ -327,33 +330,44 @@ export const formatLayerMeasurements = (
   const coordinateLabel = options?.useIgrs ? "IGRS" : "LAT/LONG";
   const addDegrees = !options?.useIgrs;
 
+  // Helper to check if IGRS is available for a point
+  const isIgrsAvailable = (point?: [number, number] | null): boolean => {
+    if (!point || point.length < 2 || !options?.useIgrs) return true;
+    return calculateIgrs(point[0], point[1]) !== null;
+  };
+
+  // Helper to push measurement with IGRS availability check
+  const pushCoordinateMeasurement = (
+    label: string,
+    point?: [number, number] | null
+  ) => {
+    if (!point || point.length < 2) return;
+    const value = formatCoordinateWithSystem(
+      point,
+      options?.useIgrs,
+      addDegrees
+    );
+    if (!value) return;
+    const isIgrsUnavailable = options?.useIgrs && !isIgrsAvailable(point);
+    measurements.push({ label, value, isIgrsUnavailable });
+  };
+
   if (layer.type === "point") {
     if (typeof layer.radius === "number") {
       pushMeasurement("Radius", `${layer.radius}px`);
     }
-    pushMeasurement(
+    pushCoordinateMeasurement(
       `Location (${coordinateLabel})`,
-      formatCoordinateWithSystem(
-        layer.position ?? null,
-        options?.useIgrs,
-        addDegrees
-      )
+      layer.position ?? null
     );
   }
 
   if (layer.type === "line" && layer.path) {
     if (layer.path.length >= 2) {
-      pushMeasurement(
-        `From (${coordinateLabel})`,
-        formatCoordinateWithSystem(layer.path[0], options?.useIgrs, addDegrees)
-      );
-      pushMeasurement(
+      pushCoordinateMeasurement(`From (${coordinateLabel})`, layer.path[0]);
+      pushCoordinateMeasurement(
         `To (${coordinateLabel})`,
-        formatCoordinateWithSystem(
-          layer.path[layer.path.length - 1],
-          options?.useIgrs,
-          addDegrees
-        )
+        layer.path[layer.path.length - 1]
       );
     }
 
@@ -417,29 +431,21 @@ export const formatLayerMeasurements = (
 
   if (layer.type === "azimuth") {
     if (typeof layer.azimuthAngleDeg === "number") {
-      pushMeasurement("Angle", `${layer.azimuthAngleDeg.toFixed(2)}°`);
+      pushMeasurement("Angle", `${layer.azimuthAngleDeg.toFixed(1)}°`);
     }
     if (typeof layer.distanceMeters === "number") {
       pushMeasurement("Distance", formatDistance(layer.distanceMeters / 1000));
     }
     if (layer.azimuthCenter) {
-      pushMeasurement(
+      pushCoordinateMeasurement(
         `Center (${coordinateLabel})`,
-        formatCoordinateWithSystem(
-          layer.azimuthCenter,
-          options?.useIgrs,
-          addDegrees
-        )
+        layer.azimuthCenter
       );
     }
     if (layer.azimuthTarget) {
-      pushMeasurement(
+      pushCoordinateMeasurement(
         `Target (${coordinateLabel})`,
-        formatCoordinateWithSystem(
-          layer.azimuthTarget,
-          options?.useIgrs,
-          addDegrees
-        )
+        layer.azimuthTarget
       );
     }
   }

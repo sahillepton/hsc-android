@@ -16,11 +16,11 @@ export const TooltipHeading = ({
 }) => {
   return (
     <div className={cn("mb-1.5 pb-1 border-b border-gray-200", className)}>
-      <div className="font-semibold text-sm text-blue-600 tracking-tight truncate">
+      <div className="font-semibold text-sm text-blue-600 tracking-tight">
         {title}
       </div>
       {subtitle && (
-        <div className="text-xs text-gray-500 mt-0.5 truncate">{subtitle}</div>
+        <div className="text-xs text-gray-500 mt-0.5">{subtitle}</div>
       )}
     </div>
   );
@@ -41,12 +41,15 @@ export const TooltipProperty = ({
 }) => {
   return (
     <div
-      className={cn("flex justify-between items-start gap-2 py-0.5", className)}
+      className={cn(
+        "flex justify-between items-center gap-2 py-0.5",
+        className
+      )}
     >
-      <span className="text-gray-700 font-medium text-xs min-w-[80px] shrink-0">
+      <span className="text-gray-700 font-medium text-xs min-w-[80px]">
         {label}:
       </span>
-      <span className="text-gray-900 text-xs text-right font-mono break-words flex-1 min-w-0">
+      <span className="text-gray-900 text-xs text-right font-mono">
         {value}
       </span>
     </div>
@@ -71,13 +74,13 @@ export const TooltipProperties = ({
   if (useGridLayout && properties.length > 6) {
     const midPoint = Math.ceil(properties.length / 2);
     return (
-      <div className={cn("flex gap-2", className)}>
-        <div className="flex-1 space-y-0.5 pr-2 border-r border-gray-200">
+      <div className={cn("flex gap-2 overflow-hidden", className)}>
+        <div className="flex-1 space-y-0.5 pr-2 border-r border-gray-200 overflow-hidden">
           {properties.slice(0, midPoint).map((prop, idx) => (
             <TooltipProperty key={idx} label={prop.label} value={prop.value} />
           ))}
         </div>
-        <div className="flex-1 space-y-0.5 pl-2">
+        <div className="flex-1 space-y-0.5 pl-2 overflow-hidden">
           {properties.slice(midPoint).map((prop, idx) => (
             <TooltipProperty key={idx} label={prop.label} value={prop.value} />
           ))}
@@ -87,7 +90,7 @@ export const TooltipProperties = ({
   }
 
   return (
-    <div className={cn("space-y-0.5", className)}>
+    <div className={cn("space-y-0.5 overflow-hidden", className)}>
       {properties.map((prop, idx) => (
         <TooltipProperty key={idx} label={prop.label} value={prop.value} />
       ))}
@@ -119,7 +122,7 @@ export const TooltipBox = ({
       )}
       style={style}
     >
-      <div className="w-full min-w-0">{children}</div>
+      {children}
     </div>
   );
 };

@@ -57,7 +57,6 @@ import {
   // generateRandomColor,
 } from "@/lib/utils";
 import type { LayerProps, Node } from "@/lib/definitions";
-import { isSketchLayer } from "@/lib/sketch-layers";
 import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
 import { ZipFolder } from "@/plugins/zip-folder";
@@ -218,11 +217,16 @@ const MapComponent = ({
   const [isCameraPopoverOpen, setIsCameraPopoverOpen] = useState(false);
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
   const [isNetworkBoxOpen, setIsNetworkBoxOpen] = useState(false);
+  const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const lastLayerCreationTimeRef = useRef<number>(0);
   // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
   // const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleUpload = async () => {
+    if (isProcessingFiles) {
+      return; // Prevent multiple uploads while processing
+    }
+    setIsProcessingFiles(true);
     console.log("[FileUpload] Upload button clicked");
     const toastId = toast.loading("Opening file picker...");
     let progressListener: { remove: () => void } | null = null;
@@ -740,6 +744,8 @@ const MapComponent = ({
           );
         }
       }
+      // Always reset processing state
+      setIsProcessingFiles(false);
     }
   };
 
@@ -803,6 +809,19 @@ const MapComponent = ({
     try {
       console.log("[SessionSave] Starting session save...");
 
+      // Early validation: Check if there's anything to save
+      const { getTempManifest } = await import("@/sessions/manifestStore");
+      const { isSketchLayer } = await import("@/lib/sketch-layers");
+
+      const tempManifest = getTempManifest();
+      const sketchLayers = layers.filter(isSketchLayer);
+
+      // If both tempManifest and sketch layers are empty, stop everything
+      if (tempManifest.length === 0 && sketchLayers.length === 0) {
+        toast.update(toastId, "Nothing to save", "error");
+        return; // Early return - stops all further flow
+      }
+
       // First, check if manifest exists and what it contains
       const { loadManifest } = await import("@/sessions/manifestStore");
       const beforeManifest = await loadManifest();
@@ -814,17 +833,6 @@ const MapComponent = ({
           `[SessionSave] Manifest entries:`,
           JSON.stringify(beforeManifest, null, 2)
         );
-      }
-
-      // Check sketch layers count BEFORE any operations
-      const { isSketchLayer } = await import("@/lib/sketch-layers");
-      const sketchLayers = layers.filter(isSketchLayer);
-
-      // Check if session is empty BEFORE doing any operations
-      if (beforeManifest.length === 0 && sketchLayers.length === 0) {
-        console.warn("[SessionSave] No files or sketch layers in session!");
-        toast.update(toastId, "Nothing to save", "error");
-        return;
       }
 
       // Step 7 & 8: Finalize manifest according to system design:
@@ -840,16 +848,8 @@ const MapComponent = ({
         `[SessionSave] Files sorted by size and staged files upgraded to saved`
       );
 
-      // Double-check after finalization (in case finalization removed everything)
-      if (finalizedEntries.length === 0 && sketchLayers.length === 0) {
-        console.warn(
-          "[SessionSave] No files or sketch layers in session after finalization!"
-        );
-        toast.update(toastId, "Nothing to save", "error");
-        return;
-      }
-
       // Save sketch layers as ZIP file in HSC-SESSIONS/FILES folder
+      // Note: sketchLayers already filtered above in early validation
       const { HSC_FILES_DIR } = await import("@/sessions/constants");
       const { Filesystem } = await import("@capacitor/filesystem");
       const sketchLayersPath = `${HSC_FILES_DIR}/sketch_layers.zip`;
@@ -881,6 +881,10 @@ const MapComponent = ({
         }
       }
 
+      if (finalizedEntries.length === 0 && sketchLayers.length === 0) {
+        console.warn("[SessionSave] No files or sketch layers in session!");
+      }
+
       toast.update(toastId, `Session saved successfully.`, "success");
     } catch (error) {
       console.error("[SessionSave] Error:", error);
@@ -901,6 +905,10 @@ const MapComponent = ({
   // - Restore "saved" files
   // - Restore sketch layers from ZIP
   const handleRestoreSession = async () => {
+    if (isProcessingFiles) {
+      return; // Prevent restore while processing
+    }
+    setIsProcessingFiles(true);
     const toastId = toast.loading("Restoring session...");
     try {
       console.log("[SessionRestore] Starting session restore...");
@@ -1286,6 +1294,8 @@ const MapComponent = ({
         }`,
         "error"
       );
+    } finally {
+      setIsProcessingFiles(false);
     }
   };
 
@@ -1639,11 +1649,32 @@ const MapComponent = ({
       setIsDrawing(false);
     }
 
+    // Clear polygon points if exiting with less than 3 points
+    if (
+      previousMode === "polygon" &&
+      drawingMode !== "polygon" &&
+      pendingPolygonPoints.length > 0 &&
+      pendingPolygonPoints.length < 3
+    ) {
+      setPendingPolygonPoints([]);
+      setCurrentPath([]);
+    }
+
     if (
       previousMode === "polygon" &&
       drawingMode !== "polygon" &&
       pendingPolygonPoints.length === 0 &&
       currentPath.length > 0
+    ) {
+      setCurrentPath([]);
+    }
+
+    // Clear polyline path if exiting with less than 2 points
+    if (
+      previousMode === "polyline" &&
+      drawingMode !== "polyline" &&
+      currentPath.length > 0 &&
+      currentPath.length < 2
     ) {
       setCurrentPath([]);
     }
@@ -1654,6 +1685,26 @@ const MapComponent = ({
       currentPath.length >= 2
     ) {
       finalizePolyline();
+    }
+
+    // Clear azimuth path if exiting with any points
+    if (
+      previousMode === "azimuthal" &&
+      drawingMode !== "azimuthal" &&
+      currentPath.length > 0
+    ) {
+      setCurrentPath([]);
+      setIsDrawing(false);
+    }
+
+    // Initialize state when entering azimuth mode (clear any leftover state)
+    if (
+      previousMode !== "azimuthal" &&
+      drawingMode === "azimuthal" &&
+      (currentPath.length > 0 || isDrawing)
+    ) {
+      setCurrentPath([]);
+      setIsDrawing(false);
     }
 
     previousDrawingModeRef.current = drawingMode;
@@ -1667,6 +1718,7 @@ const MapComponent = ({
     setIsDrawing,
     currentPath,
     finalizePolyline,
+    isDrawing,
   ]);
 
   const handleClick = (event: any) => {
@@ -1798,18 +1850,56 @@ const MapComponent = ({
     if (latSpan < 0.0001) maxLat = minLat + 0.0001;
 
     try {
+      const currentZoom = map.getZoom();
+      const currentCenter = map.getCenter();
+      const centerLng = clampLng(center[0]);
+      const centerLat = clampLat(center[1]);
+
+      // Check if we're already focused on this location (within small threshold)
+      const centerDistance = Math.sqrt(
+        Math.pow(currentCenter.lng - centerLng, 2) +
+          Math.pow(currentCenter.lat - centerLat, 2)
+      );
+
       if (isSinglePoint) {
-        const currentZoom = map.getZoom();
-        // Zoom to at least 12 (but not more than map's maxZoom of 12)
-        const targetZoom = Math.max(currentZoom, 12);
-        map.easeTo({
-          center: [clampLng(center[0]), clampLat(center[1])],
-          zoom: Math.min(targetZoom, 12), // Respect map's maxZoom
-          duration: 800,
+        // For single point, check if already focused
+        const targetZoom = Math.min(Math.max(currentZoom, 12), 12);
+        const zoomDiff = Math.abs(currentZoom - targetZoom);
+        const isAlreadyFocused = centerDistance < 0.001 && zoomDiff < 0.5;
+
+        if (isAlreadyFocused) {
+          setFocusLayerRequest(null);
+          return;
+        }
+
+        // Use flyTo for single point
+        map.flyTo({
+          center: [centerLng, centerLat],
+          zoom: targetZoom,
+          duration: 2000,
+          curve: 1.2,
+          speed: 1.2,
+          essential: true,
         });
       } else {
-        // Use map's actual maxZoom instead of 20
-        const mapMaxZoom = 12; // Match the map's maxZoom prop
+        // For bounds, check if current view already contains the bounds
+        const currentBounds = map.getBounds();
+        const boundsContained =
+          currentBounds.getWest() <= minLng &&
+          currentBounds.getEast() >= maxLng &&
+          currentBounds.getSouth() <= minLat &&
+          currentBounds.getNorth() >= maxLat;
+        const zoomDiff = Math.abs(currentZoom - 12); // Rough check
+        const isAlreadyFocused = boundsContained && zoomDiff < 1;
+
+        if (isAlreadyFocused) {
+          setFocusLayerRequest(null);
+          return;
+        }
+
+        // Use fitBounds with smooth animation to show the entire bounding box
+        // Stop any ongoing animations first to prevent jitter
+        map.stop();
         map.fitBounds(
           [
             [minLng, minLat],
@@ -1817,8 +1907,9 @@ const MapComponent = ({
           ],
           {
             padding: { top: 120, bottom: 120, left: 160, right: 160 },
-            duration: 800,
-            maxZoom: mapMaxZoom, // Use actual map maxZoom
+            duration: 2000, // Smooth, slower duration
+            maxZoom: 12,
+            linear: false, // Use default easing (smooth)
           }
         );
       }
@@ -1906,90 +1997,20 @@ const MapComponent = ({
     setDragStart(null);
   };
 
-  // Helper to get next power-of-2 value, capped at WebGL max texture size
-  const nextPowerOf2 = (n: number, maxSize: number = 8192): number => {
-    const pow2 = Math.pow(2, Math.ceil(Math.log2(n)));
-    return Math.min(pow2, maxSize);
-  };
-
   // Ensure we always hand BitmapLayer a canvas (avoid createImageBitmap on blob)
-  // Also pad to power-of-2 dimensions for WebGL compatibility and cap at max texture size
   const ensureCanvasImage = (img: any): HTMLCanvasElement | null => {
-    if (!img) return null;
-
-    let sourceCanvas: HTMLCanvasElement | null = null;
-
-    if (img instanceof HTMLCanvasElement) {
-      sourceCanvas = img;
-    } else if (
-      typeof ImageBitmap !== "undefined" &&
-      img instanceof ImageBitmap
-    ) {
+    if (img instanceof HTMLCanvasElement) return img;
+    if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) {
       const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
       if (ctx) {
         ctx.drawImage(img, 0, 0);
-        sourceCanvas = canvas;
+        return canvas;
       }
     }
-
-    if (!sourceCanvas) return null;
-
-    // WebGL max texture size (most devices support 8192, some support 16384)
-    // Use 8192 to be safe across all devices
-    const MAX_TEXTURE_SIZE = 8192;
-
-    // If image is too large, scale it down first
-    let workingCanvas = sourceCanvas;
-    if (
-      sourceCanvas.width > MAX_TEXTURE_SIZE ||
-      sourceCanvas.height > MAX_TEXTURE_SIZE
-    ) {
-      const scale = Math.min(
-        MAX_TEXTURE_SIZE / sourceCanvas.width,
-        MAX_TEXTURE_SIZE / sourceCanvas.height
-      );
-      const scaledWidth = Math.floor(sourceCanvas.width * scale);
-      const scaledHeight = Math.floor(sourceCanvas.height * scale);
-
-      const scaledCanvas = document.createElement("canvas");
-      scaledCanvas.width = scaledWidth;
-      scaledCanvas.height = scaledHeight;
-      const scaledCtx = scaledCanvas.getContext("2d");
-      if (scaledCtx) {
-        scaledCtx.drawImage(sourceCanvas, 0, 0, scaledWidth, scaledHeight);
-        workingCanvas = scaledCanvas;
-      }
-    }
-
-    // Check if dimensions are power-of-2
-    const isPowerOf2 = (n: number): boolean => {
-      return n > 0 && (n & (n - 1)) === 0;
-    };
-
-    if (isPowerOf2(workingCanvas.width) && isPowerOf2(workingCanvas.height)) {
-      // Already power-of-2, return as-is
-      return workingCanvas;
-    }
-
-    // Pad to power-of-2 dimensions for WebGL compatibility
-    const paddedWidth = nextPowerOf2(workingCanvas.width, MAX_TEXTURE_SIZE);
-    const paddedHeight = nextPowerOf2(workingCanvas.height, MAX_TEXTURE_SIZE);
-
-    const paddedCanvas = document.createElement("canvas");
-    paddedCanvas.width = paddedWidth;
-    paddedCanvas.height = paddedHeight;
-    const paddedCtx = paddedCanvas.getContext("2d");
-
-    if (paddedCtx) {
-      // Draw original image at top-left, rest will be transparent
-      paddedCtx.drawImage(workingCanvas, 0, 0);
-      return paddedCanvas;
-    }
-
-    return workingCanvas;
+    return null;
   };
 
   const handleLayerHover = useCallback(
@@ -2060,30 +2081,6 @@ const MapComponent = ({
   );
 
   const deckGlLayers = useMemo(() => {
-    // Track pickable layers separately for normal and sketch layers
-    let normalPickableCount = 0;
-    let sketchPickableCount = 0;
-    const MAX_NORMAL_PICKABLE = 85; // 255 - 170 = 85
-    const MAX_SKETCH_PICKABLE = 170; // Rest for sketch layers
-
-    const shouldBePickable = (layer: LayerProps): boolean => {
-      if (isSketchLayer(layer)) {
-        // Sketch layers: allow up to 75 pickable
-        if (sketchPickableCount >= MAX_SKETCH_PICKABLE) {
-          return false;
-        }
-        sketchPickableCount++;
-        return true;
-      } else {
-        // Normal layers: allow up to 180 pickable
-        if (normalPickableCount >= MAX_NORMAL_PICKABLE) {
-          return false;
-        }
-        normalPickableCount++;
-        return true;
-      }
-    };
-
     const isLayerVisible = (layer: LayerProps) => {
       if (layer.visible === false) return false;
       const name = layer.name || "";
@@ -2267,7 +2264,7 @@ const MapComponent = ({
           id: `${layer.id}-bitmap`,
           image,
           bounds: [minLng, minLat, maxLng, maxLat],
-          pickable: shouldBePickable(layer),
+          pickable: true,
           visible: layer.visible !== false,
           minZoom: layer.minzoom,
           onHover: handleLayerHover,
@@ -2280,19 +2277,6 @@ const MapComponent = ({
       const radiusKey = pointLayers
         .map((l) => `${l.id}:${l.radius ?? 5}`)
         .join("|");
-
-      // Check if any point layer is a sketch layer
-      const hasSketchPoints = pointLayers.some((l) => isSketchLayer(l));
-      const pointLayerPickable = hasSketchPoints
-        ? sketchPickableCount < MAX_SKETCH_PICKABLE
-        : normalPickableCount < MAX_NORMAL_PICKABLE;
-      if (pointLayerPickable) {
-        if (hasSketchPoints) {
-          sketchPickableCount++;
-        } else {
-          normalPickableCount++;
-        }
-      }
 
       deckLayers.push(
         new ScatterplotLayer({
@@ -2320,7 +2304,7 @@ const MapComponent = ({
           },
           getLineWidth: 1,
           stroked: true,
-          pickable: pointLayerPickable,
+          pickable: true,
           pickingRadius: 300, // Larger picking radius for touch devices
           radiusMinPixels: 1,
           radiusMaxPixels: 50,
@@ -2377,19 +2361,6 @@ const MapComponent = ({
       });
 
       if (pathData.length > 0) {
-        // Check if any line layer is a sketch layer
-        const hasSketchLines = lineLayers.some((l) => isSketchLayer(l));
-        const lineLayerPickable = hasSketchLines
-          ? sketchPickableCount < MAX_SKETCH_PICKABLE
-          : normalPickableCount < MAX_NORMAL_PICKABLE;
-        if (lineLayerPickable) {
-          if (hasSketchLines) {
-            sketchPickableCount++;
-          } else {
-            normalPickableCount++;
-          }
-        }
-
         deckLayers.push(
           new LineLayer({
             id: "line-layer",
@@ -2404,7 +2375,7 @@ const MapComponent = ({
             widthUnits: "pixels", // Use pixels instead of meters
             widthMinPixels: 1, // Minimum width of 1 pixel
             widthMaxPixels: 50, // Maximum width of 50 pixels
-            pickable: lineLayerPickable,
+            pickable: true,
             pickingRadius: 300, // Larger picking radius for touch devices
             onHover: handleLayerHover,
           })
@@ -2449,13 +2420,6 @@ const MapComponent = ({
       });
 
       if (connectionPathData.length > 0) {
-        // Connection layers are always normal (not sketch)
-        const connectionLayerPickable =
-          normalPickableCount < MAX_NORMAL_PICKABLE;
-        if (connectionLayerPickable) {
-          normalPickableCount++;
-        }
-
         deckLayers.push(
           new LineLayer({
             id: "connection-line-layer",
@@ -2467,7 +2431,7 @@ const MapComponent = ({
             widthUnits: "pixels", // Use pixels instead of meters
             widthMinPixels: 1, // Minimum width of 1 pixel
             widthMaxPixels: 50, // Maximum width of 50 pixels
-            pickable: connectionLayerPickable,
+            pickable: true,
             pickingRadius: 300, // Larger picking radius for touch devices
             onHover: handleLayerHover,
           })
@@ -2476,19 +2440,6 @@ const MapComponent = ({
     }
 
     if (polygonLayers.length) {
-      // Check if any polygon layer is a sketch layer
-      const hasSketchPolygons = polygonLayers.some((l) => isSketchLayer(l));
-      const polygonLayerPickable = hasSketchPolygons
-        ? sketchPickableCount < MAX_SKETCH_PICKABLE
-        : normalPickableCount < MAX_NORMAL_PICKABLE;
-      if (polygonLayerPickable) {
-        if (hasSketchPolygons) {
-          sketchPickableCount++;
-        } else {
-          normalPickableCount++;
-        }
-      }
-
       deckLayers.push(
         new PolygonLayer({
           id: "polygon-layer",
@@ -2503,7 +2454,7 @@ const MapComponent = ({
               ? ([...d.color.slice(0, 3)] as [number, number, number])
               : [32, 32, 32], // Create a copy
           getLineWidth: 2,
-          pickable: polygonLayerPickable,
+          pickable: true,
           pickingRadius: 300, // Larger picking radius for touch devices
           onHover: handleLayerHover,
         })
@@ -2554,19 +2505,6 @@ const MapComponent = ({
       });
 
       if (pathData.length > 0) {
-        // Check if any line layer is a sketch layer (same as line-layer above)
-        const hasSketchLines = lineLayers.some((l) => isSketchLayer(l));
-        const lineVerticesLayerPickable = hasSketchLines
-          ? sketchPickableCount < MAX_SKETCH_PICKABLE
-          : normalPickableCount < MAX_NORMAL_PICKABLE;
-        if (lineVerticesLayerPickable) {
-          if (hasSketchLines) {
-            sketchPickableCount++;
-          } else {
-            normalPickableCount++;
-          }
-        }
-
         deckLayers.push(
           new LineLayer({
             id: "line-layer-vertices",
@@ -2581,7 +2519,7 @@ const MapComponent = ({
             widthUnits: "pixels",
             widthMinPixels: 1,
             widthMaxPixels: 50,
-            pickable: lineVerticesLayerPickable,
+            pickable: true,
             pickingRadius: 300,
             onHover: handleLayerHover,
             capRounded: true,
@@ -2742,7 +2680,7 @@ const MapComponent = ({
         new GeoJsonLayer({
           id: layer.id,
           data: layer.geojson,
-          pickable: shouldBePickable(layer), // GeoJSON layers are always normal
+          pickable: true,
           pickingRadius: 300, // Larger picking radius for touch devices
           stroked: true,
           filled: true,
@@ -2785,7 +2723,7 @@ const MapComponent = ({
           getAngle: 0,
           getTextAnchor: "middle",
           getAlignmentBaseline: "center",
-          pickable: shouldBePickable(layer), // Annotation layers are always normal
+          pickable: true,
           pickingRadius: 300, // Larger picking radius for touch devices
           sizeScale: 1,
           fontFamily: "Arial, sans-serif",
@@ -2799,21 +2737,11 @@ const MapComponent = ({
       if (!layer.nodes?.length) return;
       const nodes = [...layer.nodes];
 
-      // Node layers are always normal (not sketch)
-      const nodeIconLayerPickable = normalPickableCount < MAX_NORMAL_PICKABLE;
-      if (nodeIconLayerPickable) {
-        normalPickableCount++;
-      }
-      const nodeSignalLayerPickable = normalPickableCount < MAX_NORMAL_PICKABLE;
-      if (nodeSignalLayerPickable) {
-        normalPickableCount++;
-      }
-
       deckLayers.push(
         new IconLayer({
           id: `${layer.id}-icon-layer`,
           data: nodes,
-          pickable: nodeIconLayerPickable,
+          pickable: true,
           pickingRadius: 300, // Larger picking radius for touch devices
           getIcon: (node: Node) => getNodeIcon(node, nodes),
           getPosition: (node: Node) => [node.longitude, node.latitude],
@@ -2844,7 +2772,7 @@ const MapComponent = ({
           getLineWidth: 2,
           radiusMinPixels: 8,
           radiusMaxPixels: 32,
-          pickable: nodeSignalLayerPickable,
+          pickable: true,
           pickingRadius: 300, // Larger picking radius for touch devices
           onHover: handleLayerHover,
           onClick: handleNodeIconClick,
@@ -2855,27 +2783,9 @@ const MapComponent = ({
     // --- Preview layers ---
     const previewLayers: any[] = [];
 
-    // Add UDP layers to the deck layers (UDP layers are always normal, not sketch)
+    // Add UDP layers to the deck layers
     if (udpLayers && udpLayers.length > 0) {
-      udpLayers.forEach((layer: any) => {
-        if (layer.props?.pickable) {
-          const udpLayerPickable = normalPickableCount < MAX_NORMAL_PICKABLE;
-          if (udpLayerPickable) {
-            normalPickableCount++;
-            // Create new layer with pickable set correctly
-            const LayerClass = layer.constructor;
-            const newProps = { ...layer.props, pickable: true };
-            deckLayers.push(new LayerClass(newProps));
-          } else {
-            // Create new layer with pickable: false
-            const LayerClass = layer.constructor;
-            const newProps = { ...layer.props, pickable: false };
-            deckLayers.push(new LayerClass(newProps));
-          }
-        } else {
-          deckLayers.push(layer);
-        }
-      });
+      deckLayers.push(...udpLayers);
     }
     if (
       isDrawing &&
@@ -3493,6 +3403,7 @@ const MapComponent = ({
         onResetHome={handleResetHome}
         showUserLocation={showUserLocation}
         onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
+        isProcessingFiles={isProcessingFiles}
         cameraPopoverProps={{
           isOpen: isCameraPopoverOpen,
           onOpenChange: setIsCameraPopoverOpen,

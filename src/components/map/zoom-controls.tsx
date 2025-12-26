@@ -62,6 +62,7 @@ const ZoomControls = ({
   isLayersBoxOpen,
   isMeasurementBoxOpen,
   isNetworkBoxOpen,
+  isProcessingFiles = false,
   alertButtonProps,
   igrsToggleProps,
 }: {
@@ -82,6 +83,7 @@ const ZoomControls = ({
   isLayersBoxOpen?: boolean;
   isMeasurementBoxOpen?: boolean;
   isNetworkBoxOpen?: boolean;
+  isProcessingFiles?: boolean;
   cameraPopoverProps?: CameraPopoverProps;
   alertButtonProps?: AlertButtonProps;
   igrsToggleProps?: IgrsToggleProps;
@@ -208,8 +210,11 @@ const ZoomControls = ({
                 size="icon"
                 variant="ghost"
                 className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
-                title="Upload File"
+                title={
+                  isProcessingFiles ? "Processing files..." : "Upload File"
+                }
                 onClick={onUpload}
+                disabled={isProcessingFiles}
               >
                 <Plus className="h-4 w-4" />
               </Button>
@@ -221,8 +226,11 @@ const ZoomControls = ({
                 size="icon"
                 variant="ghost"
                 className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
-                title="Export Layers"
+                title={
+                  isProcessingFiles ? "Processing files..." : "Export Layers"
+                }
                 onClick={onExportLayers}
+                disabled={isProcessingFiles}
               >
                 <Download className="h-4 w-4" />
               </Button>
@@ -233,8 +241,11 @@ const ZoomControls = ({
               size="icon"
               variant="ghost"
               className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
-              title="Restore Session"
+              title={
+                isProcessingFiles ? "Processing files..." : "Restore Session"
+              }
               onClick={onRestoreSession}
+              disabled={isProcessingFiles}
             >
               <RotateCcw className="h-4 w-4" />
             </Button>

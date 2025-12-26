@@ -36,7 +36,7 @@ const NetworkControls = ({
   const networkMembersCount = networkMembersLayer?.props?.data?.length || 0;
   const targetsCount = targetsLayer?.props?.data?.length || 0;
 
-  // Focus on a UDP layer by calculating bounds
+  // Smooth focus animation with check to prevent bouncing when already focused
   const handleFocusLayer = (layerId: string) => {
     const layer = udpLayers.find((l: any) => l?.id === layerId);
     if (!layer || !layer.props?.data || layer.props.data.length === 0) {
@@ -70,6 +70,26 @@ const NetworkControls = ({
       minLat !== Infinity &&
       maxLat !== -Infinity
     ) {
+      const currentZoom = map.getZoom();
+      const currentBounds = map.getBounds();
+
+      // Check if current view already contains the bounds
+      const boundsContained =
+        currentBounds.getWest() <= minLng &&
+        currentBounds.getEast() >= maxLng &&
+        currentBounds.getSouth() <= minLat &&
+        currentBounds.getNorth() >= maxLat;
+      const zoomDiff = Math.abs(currentZoom - 12); // Rough check
+      const isAlreadyFocused = boundsContained && zoomDiff < 1;
+
+      if (isAlreadyFocused) {
+        // Already focused, don't animate
+        return;
+      }
+
+      // Use fitBounds with smooth animation to show the entire bounding box
+      // Stop any ongoing animations first to prevent jitter
+      map.stop();
       map.fitBounds(
         [
           [minLng, minLat],
@@ -77,7 +97,9 @@ const NetworkControls = ({
         ],
         {
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
-          duration: 1000,
+          duration: 2000, // Smooth, slower duration
+          maxZoom: 12,
+          linear: false, // Use default easing (smooth)
         }
       );
     }

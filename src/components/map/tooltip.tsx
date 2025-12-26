@@ -553,7 +553,7 @@ const Tooltip = () => {
           label: "Bearing angle",
           value: isNorthSegment
             ? "0° (reference axis)"
-            : `${angleDeg.toFixed(2)}°`,
+            : `${angleDeg.toFixed(1)}°`,
         },
       ];
 
