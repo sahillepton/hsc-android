@@ -2473,7 +2473,25 @@ const MapComponent = ({
     if (polygonLayers.length) {
       const polygonData = polygonLayers.flatMap((layer) => {
         const rings = getUnkinkedRings(layer.polygon);
-        return rings.map((ring) => ({ layer, ring }));
+        const areaMeters = computePolygonAreaMeters(layer.polygon);
+        const perimeterMeters = computePolygonPerimeterMeters(layer.polygon);
+        const vertexCount = (() => {
+          const outer = layer.polygon?.[0] ?? [];
+          const closed =
+            outer.length > 1 &&
+            outer[0] &&
+            outer[outer.length - 1] &&
+            Math.abs(outer[0][0] - outer[outer.length - 1][0]) < 1e-10 &&
+            Math.abs(outer[0][1] - outer[outer.length - 1][1]) < 1e-10;
+          return Math.max(0, outer.length - (closed ? 1 : 0));
+        })();
+        return rings.map((ring) => ({
+          layer,
+          ring,
+          areaMeters,
+          perimeterMeters,
+          vertexCount,
+        }));
       });
 
       deckLayers.push(

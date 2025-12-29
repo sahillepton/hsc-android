@@ -919,20 +919,29 @@ const Tooltip = () => {
       object.layer?.type === "polygon"
     ) {
       const ring = object.ring as [number, number][];
-      const polygonRings = [ring];
-      const areaMeters = computePolygonAreaMeters(polygonRings);
-      const perimeterMeters = computePolygonPerimeterMeters(polygonRings);
-
-      let vertexCount = ring.length;
-      if (
-        vertexCount > 0 &&
-        ring[0] &&
-        ring[vertexCount - 1] &&
-        Math.abs(ring[0][0] - ring[vertexCount - 1][0]) < 1e-10 &&
-        Math.abs(ring[0][1] - ring[vertexCount - 1][1]) < 1e-10
-      ) {
-        vertexCount -= 1; // closed ring duplicates first point
-      }
+      // Prefer measurements computed on the full layer polygon to keep
+      // consistency with the side panel and avoid per-ring variance.
+      const areaMeters =
+        (object as any).areaMeters ??
+        computePolygonAreaMeters(layerInfo?.polygon ?? [ring]);
+      const perimeterMeters =
+        (object as any).perimeterMeters ??
+        computePolygonPerimeterMeters(layerInfo?.polygon ?? [ring]);
+      const vertexCount =
+        (object as any).vertexCount ??
+        (() => {
+          let count = ring.length;
+          if (
+            count > 0 &&
+            ring[0] &&
+            ring[count - 1] &&
+            Math.abs(ring[0][0] - ring[count - 1][0]) < 1e-10 &&
+            Math.abs(ring[0][1] - ring[count - 1][1]) < 1e-10
+          ) {
+            count -= 1;
+          }
+          return count;
+        })();
 
       const properties = [
         { label: "Area", value: formatArea(areaMeters) },
