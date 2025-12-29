@@ -2,10 +2,9 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
-  LineChart,
+  Route,
   Hexagon,
   Compass,
-  XCircle,
   LogOut,
 } from "lucide-react";
 import {
@@ -16,8 +15,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "../ui/sidebar";
-import { useAzimuthalAngle, useDrawingMode } from "@/store/layers-store";
-import { Input } from "../ui/input";
+import { useDrawingMode } from "@/store/layers-store";
 
 const ToolsGroup = ({
   setIsDrawingToolsOpen,
@@ -27,11 +25,10 @@ const ToolsGroup = ({
   isDrawingToolsOpen: boolean;
 }) => {
   const { drawingMode, setDrawingMode } = useDrawingMode();
-  const { azimuthalAngle, setAzimuthalAngle } = useAzimuthalAngle();
 
   const tools = [
     { key: "point", label: "Point", icon: <Circle size={8} /> },
-    { key: "line", label: "Line", icon: <LineChart size={8} /> },
+    { key: "polyline", label: "Path", icon: <Route size={8} /> },
     { key: "polygon", label: "Polygon", icon: <Hexagon size={8} /> },
     { key: "azimuthal", label: "Azimuthal", icon: <Compass size={8} /> },
   ];
@@ -72,42 +69,6 @@ const ToolsGroup = ({
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
-
-          {/* Azimuthal Controls */}
-          {drawingMode === "azimuthal" && (
-            <div className="px-3 pb-3 space-y-2 pt-3">
-              <label className="text-xs font-medium text-muted-foreground block">
-                Sector Angle (degrees)
-              </label>
-
-              <Input
-                type="range"
-                min={10}
-                max={360}
-                step={5}
-                value={azimuthalAngle}
-                onChange={(e) => setAzimuthalAngle(Number(e.target.value))}
-              />
-
-              <div className="flex items-center gap-2">
-                <Input
-                  type="number"
-                  min={1}
-                  max={360}
-                  value={azimuthalAngle}
-                  onChange={(e) =>
-                    setAzimuthalAngle(
-                      Number.isNaN(Number(e.target.value))
-                        ? 60
-                        : Number(e.target.value)
-                    )
-                  }
-                  className="w-20 h-8"
-                />
-                <span className="text-sm text-muted-foreground">°</span>
-              </div>
-            </div>
-          )}
 
           {/* Exit Drawing Mode */}
           {drawingMode && (

@@ -1,42 +1,147 @@
-import {
-  ChevronDown,
-  ChevronRight,
-  EyeIcon,
-  EyeOffIcon,
-  LocateFixed,
-  X,
-  Settings2,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   SidebarGroup,
   SidebarGroupLabel,
   SidebarGroupContent,
-  SidebarMenu,
-  SidebarMenuItem,
 } from "../ui/sidebar";
-import { Button } from "../ui/button";
-import { useLayers, useFocusLayerRequest } from "@/store/layers-store";
-import LayerPopover from "./layer-popover";
+import {
+  useLayers,
+  useFocusLayerRequest,
+  useHoverInfo,
+} from "@/store/layers-store";
+import { isSketchLayer } from "@/lib/sketch-layers";
+import LayersList from "./layers-list";
+
+type LayersPanelProps = {
+  isOpen: boolean;
+  setIsOpen: (value: boolean) => void;
+  variant?: "accordion" | "plain";
+  enableSelection?: boolean;
+};
 
 const LayersPanel = ({
-  setIsLayersOpen,
-  isLayersOpen,
-}: {
-  setIsLayersOpen: (isOpen: boolean) => void;
-  isLayersOpen: boolean;
-}) => {
-  const { layers } = useLayers();
+  isOpen,
+  setIsOpen,
+  variant = "accordion",
+  enableSelection = false,
+}: LayersPanelProps) => {
+  const { layers, bringLayerToTop } = useLayers();
   const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
+  const { hoverInfo, setHoverInfo } = useHoverInfo();
+  const nonSketchLayers = layers.filter((layer) => !isSketchLayer(layer));
+
+  const layerIds = nonSketchLayers.map((layer) => layer.id);
+  const layerIdSignature = layerIds.join("|");
+  const layerIdSet = new Set(layerIds);
+
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = prev.filter((id) => layerIdSet.has(id));
+      if (next.length === prev.length) {
+        return prev;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layerIdSignature]);
+
+  const toggleSelect = (layerId: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(layerId)
+        ? prev.filter((id) => id !== layerId)
+        : [...prev, layerId]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === layerIds.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(layerIds);
+    }
+  };
+
+  const handleBulkDelete = () => {
+    if (!selectedIds.length) return;
+    if (
+      confirm(
+        `Delete ${selectedIds.length} selected layer${
+          selectedIds.length > 1 ? "s" : ""
+        }?`
+      )
+    ) {
+      selectedIds.forEach((id) => deleteLayer(id));
+      setSelectedIds([]);
+    }
+  };
+
+  const handleToggleVisibility = (layerId: string, visible: boolean) => {
+    const layer = layers.find((l) => l.id === layerId);
+    if (!layer) return;
+
+    updateLayer(layerId, {
+      ...layer,
+      visible,
+    });
+
+    // Close tooltip if the layer being hidden is currently being hovered
+    if (!visible && hoverInfo) {
+      // Check if the hovered object belongs to this layer
+      const hoveredObject = hoverInfo.object;
+      let hoveredLayerId: string | undefined;
+
+      if ((hoveredObject as any)?.layerId) {
+        hoveredLayerId = (hoveredObject as any).layerId;
+      } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+        hoveredLayerId = (hoveredObject as any).id;
+      } else if (hoverInfo.layer?.id) {
+        const deckLayerId = hoverInfo.layer.id;
+        hoveredLayerId = nonSketchLayers.find((l) => l.id === deckLayerId)?.id;
+        if (!hoveredLayerId) {
+          const baseId = deckLayerId
+            .replace(/-icon-layer$/, "")
+            .replace(/-signal-overlay$/, "")
+            .replace(/-bitmap$/, "");
+          hoveredLayerId = nonSketchLayers.find((l) => l.id === baseId)?.id;
+        }
+      }
+
+      if (hoveredLayerId === layerId) {
+        setHoverInfo(undefined);
+      }
+    }
+  };
+
+  if (variant === "plain") {
+    return (
+      <LayersList
+        layers={nonSketchLayers}
+        enableSelection={enableSelection}
+        selectedIds={selectedIds}
+        onToggleSelect={toggleSelect}
+        onToggleSelectAll={toggleSelectAll}
+        onBulkDelete={handleBulkDelete}
+        onToggleVisibility={handleToggleVisibility}
+        onFocusLayer={focusLayer}
+        onBringToTop={bringLayerToTop}
+        onUpdateLayer={updateLayer}
+      />
+    );
+  }
 
   return (
     <SidebarGroup>
       {/* Collapsible Header */}
       <SidebarGroupLabel
-        className="flex items-center justify-between cursor-pointer select-none font-semibold px-2 py-2.5 rounded-lg hover:bg-accent transition-colors"
-        onClick={() => setIsLayersOpen(!isLayersOpen)}
+        className="flex items-center justify-between cursor-pointer select-none font-semibold py-2.5 rounded-lg hover:bg-accent transition-colors"
+        style={{ paddingLeft: "2%", paddingRight: "2%" }}
+        onClick={() => setIsOpen(!isOpen)}
       >
         <span className="text-sm">Layers Panel</span>
-        {isLayersOpen ? (
+        {isOpen ? (
           <ChevronDown size={16} className="text-muted-foreground" />
         ) : (
           <ChevronRight size={16} className="text-muted-foreground" />
@@ -45,102 +150,26 @@ const LayersPanel = ({
 
       {/* Collapsible Content */}
       <SidebarGroupContent
-        className={`${isLayersOpen ? "block" : "hidden"} transition-all`}
+        className={`${
+          isOpen ? "block" : "hidden"
+        } transition-all overflow-hidden relative`}
       >
-        {layers.length === 0 ? (
-          <div className="px-3 py-4 text-center text-sm text-muted-foreground">
-            No Layer Present
-          </div>
-        ) : (
-          <SidebarMenu className="space-y-2 mt-2">
-            {layers.map((layer) => {
-              const isProgressiveLayer = (layer.name || "").startsWith(
-                "Progressive Network"
-              );
-
-              return (
-                <SidebarMenuItem
-                  key={layer.id}
-                  className="flex items-center justify-between px-3 py-2 rounded-lg border border-border/50 hover:bg-accent/40 transition-colors"
-                >
-                  {/* Layer Info */}
-                  <div className="flex flex-col flex-1 truncate">
-                    <span className="text-sm font-medium truncate">
-                      {layer.name}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {layer.type}
-                    </span>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 hover:bg-accent"
-                      title="Focus layer"
-                      onClick={() => focusLayer(layer.id)}
-                    >
-                      <LocateFixed size={14} />
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 hover:bg-accent"
-                      onClick={() =>
-                        updateLayer(layer.id, {
-                          ...layer,
-                          visible: layer.visible !== false ? false : true,
-                        })
-                      }
-                      title={layer.visible ? "Hide layer" : "Show layer"}
-                    >
-                      {layer.visible ? (
-                        <EyeIcon size={14} />
-                      ) : (
-                        <EyeOffIcon size={14} />
-                      )}
-                    </Button>
-
-                    {/* Settings (popover) */}
-                    <LayerPopover layer={layer} updateLayer={updateLayer}>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 hover:bg-accent"
-                        title="Layer settings"
-                      >
-                        <Settings2 size={14} />
-                      </Button>
-                    </LayerPopover>
-
-                    {!isProgressiveLayer && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
-                        title="Delete layer"
-                        onClick={() => {
-                          if (
-                            confirm(
-                              `Are you sure you want to delete "${layer.name}"?`
-                            )
-                          ) {
-                            deleteLayer(layer.id);
-                          }
-                        }}
-                      >
-                        <X size={14} />
-                      </Button>
-                    )}
-                  </div>
-                </SidebarMenuItem>
-              );
-            })}
-          </SidebarMenu>
-        )}
+        {/* Top fade gradient */}
+        <div className="sticky top-0 h-6 bg-gradient-to-b from-background to-transparent pointer-events-none z-20 -mt-1" />
+        <LayersList
+          layers={nonSketchLayers}
+          enableSelection={enableSelection}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
+          onBulkDelete={handleBulkDelete}
+          onToggleVisibility={handleToggleVisibility}
+          onFocusLayer={focusLayer}
+          onBringToTop={bringLayerToTop}
+          onUpdateLayer={updateLayer}
+        />
+        {/* Bottom fade gradient */}
+        <div className="sticky bottom-0 h-6 bg-gradient-to-t from-background to-transparent pointer-events-none z-20 -mb-1" />
       </SidebarGroupContent>
     </SidebarGroup>
   );

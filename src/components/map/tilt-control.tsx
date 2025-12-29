@@ -1,203 +1,153 @@
 import { CameraIcon } from "lucide-react";
 import { useState } from "react";
+import { Slider } from "@/components/ui/slider";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 const TiltControl = ({
   mapRef,
   pitch,
   setPitch,
+  onCreatePoint,
 }: {
   mapRef: React.RefObject<any>;
   pitch: number;
   setPitch: (pitch: number) => void;
+  onCreatePoint?: (position: [number, number]) => void;
 }) => {
-  const angles = [0, 15, 30, 45, 60, 75, 85];
-  const [is3DTerrainMode, setIs3DTerrainMode] = useState(false);
-  const [isOfflineMode, setIsOfflineMode] = useState(true);
+  const [latitude, setLatitude] = useState("");
+  const [longitude, setLongitude] = useState("");
+
+  const handleGoToLocation = () => {
+    if (!mapRef.current) return;
+
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+
+    // Validate coordinates
+    if (isNaN(lat) || isNaN(lng)) {
+      return;
+    }
+
+    // Validate latitude range (-90 to 90)
+    if (lat < -90 || lat > 90) {
+      return;
+    }
+
+    // Validate longitude range (-180 to 180)
+    if (lng < -180 || lng > 180) {
+      return;
+    }
+
+    const map = mapRef.current.getMap();
+    map.flyTo({
+      center: [lng, lat],
+      zoom: Math.max(map.getZoom(), 10),
+      duration: 1500,
+      essential: true,
+    });
+
+    // Create a point layer at this location (normal point layer flow)
+    if (onCreatePoint) {
+      onCreatePoint([lng, lat]);
+    }
+  };
 
   return (
-    <div
-      className="absolute top-4 left-2 z-50 bg-white rounded-lg shadow-lg p-5"
-      style={{ width: "25rem" }}
-    >
-      <div className="font-medium text-gray-700 mb-2 flex flex-row items-center justify-start text-base gap-2">
-        <CameraIcon className="size-5 mr-1" /> Camera Controls
+    <div className="w-full">
+      <div className="font-medium text-gray-700 mb-2 flex flex-row items-center justify-start text-xs gap-1.5">
+        <CameraIcon className="size-3.5" /> Camera Controls
       </div>
-
-      {/* Reset to North Button */}
-      <div className="mb-4"></div>
 
       {/* Tilt Angle Controls */}
-      <div className="mb-4">
-        <div className="text-sm font-medium mb-2 text-sidebar-foreground/70">
-          Tilt Angle
-        </div>
-        <div className="space-y-1 flex flex-row w-full justify-between">
-          {angles.map((angle) => (
-            <button
-              key={angle}
-              onClick={() => {
-                setPitch(angle);
+      <div className="mb-2" style={{ zoom: 0.9 }}>
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-xs font-medium text-sidebar-foreground/70">
+            Tilt Angle
+          </label>
+          <div className="flex items-center gap-1.5">
+            <Input
+              type="number"
+              tabIndex={-1}
+              min={0}
+              max={85}
+              step={1}
+              value={pitch}
+              onChange={(e) => {
+                const value = Math.max(
+                  0,
+                  Math.min(85, Number(e.target.value) || 0)
+                );
+                setPitch(value);
                 if (mapRef.current) {
-                  mapRef.current.getMap().easeTo({ pitch: angle });
+                  mapRef.current.getMap().easeTo({ pitch: value });
                 }
               }}
-              className={`px-3 py-1 flex-1 text-xs rounded transition-colors h-6 ${
-                pitch === angle
-                  ? "bg-blue-500 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              {angle}°
-            </button>
-          ))}
+              className="w-14 h-6 text-xs text-center px-1"
+            />
+            <span className="text-xs text-muted-foreground">°</span>
+          </div>
+        </div>
+        <Slider
+          value={[pitch]}
+          min={0}
+          max={85}
+          step={1}
+          onValueChange={(values) => {
+            const newPitch = values[0];
+            setPitch(newPitch);
+            if (mapRef.current) {
+              mapRef.current.getMap().easeTo({ pitch: newPitch });
+            }
+          }}
+          className="w-full"
+        />
+        <div className="flex justify-between text-xs text-muted-foreground mt-1.5">
+          <span>0°</span>
+          <span>85°</span>
         </div>
       </div>
 
-      {/* Offline Mode Toggle */}
-      <div className="pt-1 flex flex-row gap-2">
-        <button
-          onClick={() => {
-            setIsOfflineMode(!isOfflineMode);
-            if (mapRef.current) {
-              const map = mapRef.current.getMap();
-              const offlineLayer = map.getLayer("offline-tiles-layer");
-
-              if (isOfflineMode) {
-                // Switch to online mode - hide offline tiles
-                if (offlineLayer) {
-                  map.setLayoutProperty(
-                    "offline-tiles-layer",
-                    "visibility",
-                    "none"
-                  );
-                }
-                map.setMaxBounds(null); // Remove bounds restriction
-              } else {
-                // Switch to offline mode - show offline tiles
-                if (offlineLayer) {
-                  map.setLayoutProperty(
-                    "offline-tiles-layer",
-                    "visibility",
-                    "visible"
-                  );
-                }
-                map.setMaxBounds([76.9, 27.8, 77.2, 28.8]); // Restore bounds
-              }
-            }
-          }}
-          className={`w-full px-3 py-1 text-xs rounded transition-colors ${
-            isOfflineMode
-              ? "bg-blue-500 text-white hover:bg-blue-600"
-              : "bg-blue-100 text-blue-700 hover:bg-blue-200"
-          }`}
-        >
-          📱 {isOfflineMode ? "Offline Mode" : "Online Mode"}
-        </button>
-        <button
-          onClick={() => {
-            if (mapRef.current) {
-              mapRef.current.getMap().easeTo({ bearing: 0, duration: 500 });
-            }
-          }}
-          className="w-full px-3 py-2 text-xs rounded transition-colors bg-indigo-500 text-white hover:bg-indigo-600 flex items-center justify-center gap-2"
-          title="Reset map rotation to north"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 2v20M2 12h20" />
-            <path d="M12 2l3 3-3 3M12 2L9 5l3 3" />
-          </svg>
-          Reset to North
-        </button>
-      </div>
-
-      {/* 3D Terrain Mode */}
-      <div className="border-t pt-3">
-        <div className="text-sm text-sidebar-foreground/70 font-medium mb-2">
-          3D Terrain Mode
-        </div>
-        <div className="space-x-1 flex flex-row w-full justify-between">
-          <button
-            onClick={() => {
-              setIs3DTerrainMode(!is3DTerrainMode);
-              if (mapRef.current) {
-                const map = mapRef.current.getMap();
-                if (!is3DTerrainMode) {
-                  // Enable enhanced 3D terrain
-                  map.setTerrain({
-                    source: "mapbox-dem",
-                    exaggeration: 5.0,
-                  });
-                  map.easeTo({
-                    pitch: 60,
-                    zoom: Math.max(map.getZoom(), 10),
-                    duration: 1000,
-                  });
-                  setPitch(60);
-                } else {
-                  // Return to normal terrain
-                  map.setTerrain({
-                    source: "mapbox-dem",
-                    exaggeration: 4.0,
-                  });
-                  map.easeTo({
-                    pitch: 0,
-                    duration: 1000,
-                  });
-                  setPitch(0);
-                }
-              }
-            }}
-            className={`w-full px-3 py-1 text-xs rounded transition-colors h-8 ${
-              is3DTerrainMode
-                ? "bg-emerald-500 text-white hover:bg-emerald-600"
-                : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-            }`}
-          >
-            🌍 {is3DTerrainMode ? "Disable 3D" : "Enable 3D"}
-          </button>
-
-          {is3DTerrainMode && (
-            <button
-              onClick={() => {
-                if (mapRef.current) {
-                  mapRef.current.getMap().easeTo({
-                    pitch: 75,
-                    zoom: Math.max(mapRef.current.getMap().getZoom(), 12),
-                    duration: 1000,
-                  });
-                  setPitch(75);
-                }
-              }}
-              className="w-full px-3 py-1 text-xs rounded bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors"
-            >
-              🏔️ Extreme View
-            </button>
-          )}
-
-          {is3DTerrainMode && (
-            <button
-              onClick={() => {
-                if (mapRef.current) {
-                  mapRef.current.getMap().setTerrain({
-                    source: "mapbox-dem",
-                    exaggeration: 6.0,
-                  });
-                }
-              }}
-              className="w-full px-3 py-1 text-xs rounded bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors"
-            >
-              ⛰️ Boost Height
-            </button>
-          )}
+      {/* Go to Location */}
+      <div className="mb-2 pt-2 border-gray-200">
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-1.5" style={{ zoom: 0.85 }}>
+            <div className="flex-1">
+              <Input
+                type="number"
+                step="any"
+                placeholder="Lat"
+                value={latitude}
+                onChange={(e) => setLatitude(e.target.value)}
+                className="h-7 text-[10px]"
+              />
+            </div>
+            <div className="flex-1">
+              <Input
+                type="number"
+                step="any"
+                placeholder="Long"
+                value={longitude}
+                onChange={(e) => setLongitude(e.target.value)}
+                className="h-7 text-[10px]"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleGoToLocation();
+                  }
+                }}
+              />
+            </div>
+            <div className="flex-1">
+              <Button
+                onClick={handleGoToLocation}
+                className="h-7 text-xs bg-blue-500 rounded-sm hover:bg-blue-600 text-white w-full"
+                disabled={!latitude || !longitude}
+              >
+                Go
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
