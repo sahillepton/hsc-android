@@ -268,6 +268,13 @@ const Tooltip = () => {
   const coordinateLabel = useIgrs ? "IGRS" : "lat, lng";
 
   const getTooltipContent = () => {
+    // Skip basic tooltip on polygon outline helper layers
+    if (
+      layer?.id === "polygon-outline-layer" ||
+      layer?.id === "preview-polygon-outline-layer"
+    ) {
+      return null;
+    }
     // Handle user location layer - show "Your Location" heading
     if (layer?.id === "user-location-layer") {
       if (!showUserLocation) return null;
@@ -900,6 +907,45 @@ const Tooltip = () => {
           {layerInfo?.name && (
             <TooltipHeading title={layerInfo.name} subtitle="Point" />
           )}
+          <TooltipProperties properties={properties} />
+        </TooltipBox>
+      );
+    }
+
+    // Deck.gl PolygonLayer (custom data shape with `ring` from unkinked polygons)
+    if (
+      object.ring &&
+      Array.isArray(object.ring) &&
+      object.layer?.type === "polygon"
+    ) {
+      const ring = object.ring as [number, number][];
+      const polygonRings = [ring];
+      const areaMeters = computePolygonAreaMeters(polygonRings);
+      const perimeterMeters = computePolygonPerimeterMeters(polygonRings);
+
+      let vertexCount = ring.length;
+      if (
+        vertexCount > 0 &&
+        ring[0] &&
+        ring[vertexCount - 1] &&
+        Math.abs(ring[0][0] - ring[vertexCount - 1][0]) < 1e-10 &&
+        Math.abs(ring[0][1] - ring[vertexCount - 1][1]) < 1e-10
+      ) {
+        vertexCount -= 1; // closed ring duplicates first point
+      }
+
+      const properties = [
+        { label: "Area", value: formatArea(areaMeters) },
+        { label: "Perimeter", value: formatDistance(perimeterMeters / 1000) },
+        { label: "Vertices", value: String(vertexCount) },
+      ];
+
+      return (
+        <TooltipBox>
+          <TooltipHeading
+            title={layerInfo?.name ?? "Polygon"}
+            subtitle="Polygon"
+          />
           <TooltipProperties properties={properties} />
         </TooltipBox>
       );

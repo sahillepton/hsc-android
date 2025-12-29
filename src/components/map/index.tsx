@@ -6,10 +6,12 @@ import {
   GeoJsonLayer,
   IconLayer,
   LineLayer,
+  PathLayer,
   PolygonLayer,
   ScatterplotLayer,
   TextLayer,
 } from "@deck.gl/layers";
+import unkinkPolygon from "@turf/unkink-polygon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import IconSelection from "./icon-selection";
@@ -1468,6 +1470,35 @@ const MapComponent = ({
     setHoverInfo(undefined); // Clear tooltip when creating a layer
   };
 
+  const closeRing = (path: [number, number][]) => {
+    if (!path.length) return path;
+    const first = path[0];
+    const last = path[path.length - 1];
+    if (first[0] === last[0] && first[1] === last[1]) return path;
+    return [...path, first];
+  };
+
+  const getUnkinkedRings = (polygon?: [number, number][][]) => {
+    const ring = closeRing(polygon?.[0] ?? []);
+    if (!ring.length) return [];
+    try {
+      const feature = unkinkPolygon({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "Polygon", coordinates: [ring] },
+      });
+      return feature.features
+        .filter((f) => f.geometry && f.geometry.type === "Polygon")
+        .flatMap((f) =>
+          (f.geometry as any).coordinates.map((coords: [number, number][]) =>
+            closeRing(coords)
+          )
+        );
+    } catch {
+      return [ring];
+    }
+  };
+
   const handlePolygonDrawing = (point: [number, number]) => {
     //
 
@@ -2440,25 +2471,59 @@ const MapComponent = ({
     }
 
     if (polygonLayers.length) {
+      const polygonData = polygonLayers.flatMap((layer) => {
+        const rings = getUnkinkedRings(layer.polygon);
+        return rings.map((ring) => ({ layer, ring }));
+      });
+
       deckLayers.push(
         new PolygonLayer({
           id: "polygon-layer",
-          data: polygonLayers,
-          getPolygon: (d: LayerProps) => d.polygon?.[0] ?? [],
-          getFillColor: (d: LayerProps) =>
-            d.color && d.color.length === 4
-              ? [...d.color] // Create a copy to avoid reference sharing
-              : [...(d.color ?? [32, 32, 32]), 100],
-          getLineColor: (d: LayerProps) =>
-            d.color
-              ? ([...d.color.slice(0, 3)] as [number, number, number])
-              : [32, 32, 32], // Create a copy
-          getLineWidth: 2,
+          data: polygonData,
+          getPolygon: (d: any) => d.ring,
+          getFillColor: (d: any) => {
+            const color = d.layer.color ?? [32, 32, 32, 120];
+            const rgba =
+              color.length === 4 ? [...color] : [...color.slice(0, 3), 120];
+            return rgba as [number, number, number, number];
+          },
+          getLineColor: (d: any) =>
+            d.layer.color
+              ? ([...d.layer.color.slice(0, 3)] as [number, number, number])
+              : [32, 32, 32],
+          getLineWidth: 1,
+          stroked: false,
           pickable: true,
           pickingRadius: 300, // Larger picking radius for touch devices
           onHover: handleLayerHover,
         })
       );
+
+      const polygonOutlines = polygonData.map((item) => ({
+        path: item.ring,
+        color: item.layer.color
+          ? ([...item.layer.color.slice(0, 3)] as [number, number, number])
+          : [32, 32, 32],
+        width: item.layer.lineWidth ?? 2,
+      }));
+
+      if (polygonOutlines.length) {
+        deckLayers.push(
+          new PathLayer({
+            id: "polygon-outline-layer",
+            data: polygonOutlines,
+            getPath: (d: any) => d.path,
+            getColor: (d: any) => d.color,
+            getWidth: (d: any) => d.width,
+            widthUnits: "pixels",
+            widthMinPixels: 1,
+            widthMaxPixels: 50,
+            pickable: true,
+            pickingRadius: 300,
+            onHover: handleLayerHover,
+          })
+        );
+      }
 
       // Polygon labels now shown only in side panel while drawing.
       // No on-map labels for finalized polygons per latest request.
@@ -2814,15 +2879,28 @@ const MapComponent = ({
           })
         );
       } else {
-        const previewPath = [...currentPath, mousePosition];
+        const previewPath = closeRing([...currentPath, mousePosition]);
         previewLayers.push(
           new PolygonLayer({
             id: "preview-polygon-layer",
             data: [previewPath],
             getPolygon: (d: [number, number][]) => d,
-            getFillColor: [32, 32, 32, 100],
+            getFillColor: [32, 32, 32, 60],
             getLineColor: [32, 32, 32],
-            getLineWidth: 2,
+            getLineWidth: 1,
+            stroked: false,
+            pickable: false,
+          })
+        );
+        previewLayers.push(
+          new PathLayer({
+            id: "preview-polygon-outline-layer",
+            data: [previewPath],
+            getPath: (d: [number, number][]) => d,
+            getColor: [32, 32, 32],
+            getWidth: 2,
+            widthUnits: "pixels",
+            widthMinPixels: 1,
             pickable: false,
           })
         );

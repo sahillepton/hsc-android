@@ -304,7 +304,11 @@ const SketchLayersPanel = ({
         }?`
       )
     ) {
-      selectedIds.forEach((id) => deleteLayer(id));
+      // Clear any active tooltip; selection implies intent to remove hovered layer
+      setHoverInfo(undefined);
+      selectedIds.forEach((id) => {
+        deleteLayer(id);
+      });
       setSelectedIds([]);
     }
   };
@@ -335,31 +339,35 @@ const SketchLayersPanel = ({
       visible,
     });
 
-    if (!visible && hoverInfo) {
-      const hoveredObject = hoverInfo.object;
-      let hoveredLayerId: string | undefined;
-
-      if ((hoveredObject as any)?.layerId) {
-        hoveredLayerId = (hoveredObject as any).layerId;
-      } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
-        hoveredLayerId = (hoveredObject as any).id;
-      } else if (hoverInfo.layer?.id) {
-        const deckLayerId = hoverInfo.layer.id;
-        hoveredLayerId =
-          layers.find((l) => l.id === deckLayerId)?.id ??
-          layers.find(
-            (l) =>
-              deckLayerId.startsWith(l.id) ||
-              deckLayerId.startsWith(`${l.id}-icon-layer`) ||
-              deckLayerId.startsWith(`${l.id}-signal-overlay`) ||
-              deckLayerId.startsWith(`${l.id}-bitmap`)
-          )?.id;
-      }
-
-      if (hoveredLayerId === layerId) {
-        setHoverInfo(undefined);
-      }
+    if (!visible && isHoveringLayer(layerId)) {
+      setHoverInfo(undefined);
     }
+  };
+
+  const isHoveringLayer = (layerId: string) => {
+    if (!hoverInfo) return false;
+    const hoveredObject = hoverInfo.object;
+    let hoveredLayerId: string | undefined;
+
+    if ((hoveredObject as any)?.layerId) {
+      hoveredLayerId = (hoveredObject as any).layerId;
+    } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+      hoveredLayerId = (hoveredObject as any).id;
+    } else if (hoverInfo.layer?.id) {
+      const deckLayerId = hoverInfo.layer.id;
+      hoveredLayerId =
+        layers.find((l) => l.id === deckLayerId)?.id ??
+        layers.find(
+          (l) =>
+            deckLayerId.startsWith(l.id) ||
+            deckLayerId.startsWith(`${l.id}-icon-layer`) ||
+            deckLayerId.startsWith(`${l.id}-signal-overlay`) ||
+            deckLayerId.startsWith(`${l.id}-bitmap`) ||
+            deckLayerId.startsWith("polygon-outline-layer")
+        )?.id;
+    }
+
+    return hoveredLayerId === layerId;
   };
 
   const renderList = () => {
