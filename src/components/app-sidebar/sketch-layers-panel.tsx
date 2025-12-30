@@ -346,26 +346,26 @@ const SketchLayersPanel = ({
 
   const isHoveringLayer = (layerId: string) => {
     if (!hoverInfo) return false;
-    const hoveredObject = hoverInfo.object;
-    let hoveredLayerId: string | undefined;
+      const hoveredObject = hoverInfo.object;
+      let hoveredLayerId: string | undefined;
 
-    if ((hoveredObject as any)?.layerId) {
-      hoveredLayerId = (hoveredObject as any).layerId;
-    } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
-      hoveredLayerId = (hoveredObject as any).id;
-    } else if (hoverInfo.layer?.id) {
-      const deckLayerId = hoverInfo.layer.id;
-      hoveredLayerId =
-        layers.find((l) => l.id === deckLayerId)?.id ??
-        layers.find(
-          (l) =>
-            deckLayerId.startsWith(l.id) ||
-            deckLayerId.startsWith(`${l.id}-icon-layer`) ||
-            deckLayerId.startsWith(`${l.id}-signal-overlay`) ||
+      if ((hoveredObject as any)?.layerId) {
+        hoveredLayerId = (hoveredObject as any).layerId;
+      } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+        hoveredLayerId = (hoveredObject as any).id;
+      } else if (hoverInfo.layer?.id) {
+        const deckLayerId = hoverInfo.layer.id;
+        hoveredLayerId =
+          layers.find((l) => l.id === deckLayerId)?.id ??
+          layers.find(
+            (l) =>
+              deckLayerId.startsWith(l.id) ||
+              deckLayerId.startsWith(`${l.id}-icon-layer`) ||
+              deckLayerId.startsWith(`${l.id}-signal-overlay`) ||
             deckLayerId.startsWith(`${l.id}-bitmap`) ||
             deckLayerId.startsWith("polygon-outline-layer")
-        )?.id;
-    }
+          )?.id;
+      }
 
     return hoveredLayerId === layerId;
   };
