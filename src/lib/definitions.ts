@@ -1,3 +1,5 @@
+// TODO: File to be named types.ts
+// TODO: Why not work with auto save?
 export interface Node {
   snr: number;
   rssi: number;
@@ -10,22 +12,58 @@ export interface Node {
 }
 
 export interface LayerProps {
-    type: "point" | "polygon" | "line" | "geojson" | "nodes" | "connections";
-    visible: boolean; // Default to true
-    id: string;
-    name: string;
-    position?: [number, number]; // Optional for multi-point shapes
-    color: [number, number, number] | [number, number, number, number]; // RGB or RGBA
-    radius?: number;
-    pointRadius?: number; // For GeoJSON point features
-    // For lines
-    path?: [number, number][];
-    lineWidth?: number;
-    // For polygons
-    polygon?: [number, number][][];
-    // For rectangles
-    bounds?: [[number, number], [number, number]];
-    geojson?: GeoJSON.FeatureCollection;
-    // For nodes
-    nodes?: Node[];
-  }
+  type:
+    | "point"
+    | "polygon"
+    | "line"
+    | "azimuth"
+    | "geojson"
+    | "nodes"
+    | "connections"
+    | "dem"
+    | "annotation"
+    | "udp";
+  visible: boolean;
+  id: string;
+  name: string;
+  position?: [number, number];
+  color: [number, number, number] | [number, number, number, number];
+  radius?: number;
+  pointRadius?: number;
+  path?: [number, number][];
+  lineWidth?: number;
+  polygon?: [number, number][][];
+  segmentDistancesKm?: number[];
+  totalDistanceKm?: number;
+  bounds?: [[number, number], [number, number]];
+  bitmap?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
+  texture?: HTMLCanvasElement | ImageBitmap | HTMLImageElement | string;
+  elevationData?: {
+    data: Float32Array;
+    width: number;
+    height: number;
+    min: number;
+    max: number;
+  };
+  geojson?: GeoJSON.FeatureCollection;
+  nodes?: Node[];
+  annotations?: Array<{
+    position: [number, number];
+    text: string;
+    color?: [number, number, number];
+    fontSize?: number;
+  }>;
+  sectorAngleDeg?: number;
+  radiusMeters?: number;
+  bearing?: number;
+  symbol?: string; // Symbol for UDP layers
+  azimuthCenter?: [number, number];
+  azimuthTarget?: [number, number];
+  azimuthNorth?: [number, number];
+  azimuthAngleDeg?: number;
+  distanceMeters?: number;
+  minzoom?: number;
+  maxzoom?: number;
+}
+
+export type DrawingMode = "point" | "polygon" | "polyline" | "azimuthal" | null;

@@ -117,4 +117,39 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Hide map watermark/attribution/logos from MapTiler/Mapbox/MapLibre */
+  .mapboxgl-ctrl-logo,
+  .mapboxgl-ctrl-attrib,
+  .mapbox-logo,
+  .maplibregl-ctrl-logo,
+  .maptiler-logo,
+  .map-credits,
+  .mapboxgl-ctrl-bottom-left,
+  .mapboxgl-ctrl-bottom-right {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+  background: linear-gradient(
+    to right,
+    rgb(244 244 245) 0%,
+    rgb(228 228 231) 20%,
+    rgb(244 244 245) 40%,
+    rgb(244 244 245) 100%
+  );
+  background-size: 1000px 100%;
 }
