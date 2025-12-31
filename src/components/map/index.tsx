@@ -3344,36 +3344,42 @@ const MapComponent = ({
             }
           );
 
-          if (!mapInstance.getSource("offline-tiles")) {
-            mapInstance.addSource("offline-tiles", {
-              type: "raster",
-              tiles: ["/tiles-map/{z}/{x}/{y}.png"],
-              minzoom: 0,
-              maxzoom: 20,
-            });
-          }
+          // Load the offline style JSON
+          try {
+            const response = await fetch("/offline-styles.json");
+            let styleJson = await response.json();
 
-          mapInstance.on("sourcedata", (e: any) => {
-            if (e.sourceId === "offline-tiles" && e.isSourceLoaded) {
-            }
-          });
+            // Replace {ORIGIN} placeholder with actual origin
+            const origin = window.location.origin;
+            const styleString = JSON.stringify(styleJson);
+            const replacedString = styleString.replace(/\{ORIGIN\}/g, origin);
+            styleJson = JSON.parse(replacedString);
+
+            // Apply the style to the map
+            mapInstance.setStyle(styleJson);
+
+            mapInstance.on("style.load", () => {
+              // Fit bounds again after style is loaded
+              mapInstance.fitBounds(
+                [
+                  [63.5, 2.5],
+                  [99.5, 38.5],
+                ],
+                {
+                  padding: { top: 50, bottom: 50, left: 50, right: 50 },
+                  duration: 0,
+                }
+              );
+            });
+          } catch (error) {
+            console.error("Failed to load offline style:", error);
+          }
 
           mapInstance.on("error", (e: any) => {
             if (e.sourceId === "offline-tiles") {
               console.warn("Failed to load offline tiles:", e.error);
             }
           });
-
-          if (!mapInstance.getLayer("offline-tiles-layer")) {
-            mapInstance.addLayer({
-              id: "offline-tiles-layer",
-              type: "raster",
-              source: "offline-tiles",
-              paint: {
-                "raster-opacity": 0.9,
-              },
-            });
-          }
 
           mapInstance.setMaxBounds(null);
         }}

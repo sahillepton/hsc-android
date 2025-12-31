@@ -21,7 +21,9 @@ export default defineConfig({
     watch: {
       ignored: [
         "**/public/tiles/**", // ✅ ignore offline tile folder
-        "**/*.pbf", // ✅ ignore all vector tile files (optional but recommended)
+        "**/*.pbf",
+        "**/*.png",
+        "**/public/tiles_png/**" // ✅ ignore all vector tile files (optional but recommended)
       ],
     },
   },
