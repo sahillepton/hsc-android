@@ -3,6 +3,7 @@ import { Button } from "../ui/button";
 import { Settings2 } from "lucide-react";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
 import { useUdpLayers } from "@/components/map/udp-layers";
+import { useState } from "react";
 
 const availableIcons = [
   "alert",
@@ -28,6 +29,7 @@ const UdpLayerConfigPopover = ({
 }: UdpLayerConfigPopoverProps) => {
   const { getLayerSymbol, setLayerSymbol } = useUdpSymbolsStore();
   const { udpLayers } = useUdpLayers();
+  const [open, setOpen] = useState(false);
 
   const layer = udpLayers.find((l: any) => l?.id === layerId);
   const layerData = layer?.props?.data || [];
@@ -37,8 +39,26 @@ const UdpLayerConfigPopover = ({
   const currentSymbol = getLayerSymbol(layerId);
   const displaySymbol = currentSymbol || defaultSymbol;
 
+  const handleIconClick = (iconName: string) => {
+    // Close popover first
+    setOpen(false);
+    // Then update the symbol after a small delay to ensure popover closes first
+    setTimeout(() => {
+      setLayerSymbol(layerId, iconName);
+    }, 150);
+  };
+
+  const handleResetClick = () => {
+    // Close popover first
+    setOpen(false);
+    // Then reset the symbol after a small delay
+    setTimeout(() => {
+      setLayerSymbol(layerId, "");
+    }, 150);
+  };
+
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
@@ -70,7 +90,7 @@ const UdpLayerConfigPopover = ({
                   return (
                     <button
                       key={iconName}
-                      onClick={() => setLayerSymbol(layerId, iconName)}
+                      onClick={() => handleIconClick(iconName)}
                       className={`flex flex-col items-center justify-center p-1.5 rounded border transition-all ${
                         isSelected
                           ? "border-blue-500 bg-blue-100 ring-2 ring-blue-400"
@@ -96,7 +116,7 @@ const UdpLayerConfigPopover = ({
                     variant="ghost"
                     size="sm"
                     className="h-6 text-xs"
-                    onClick={() => setLayerSymbol(layerId, "")}
+                    onClick={handleResetClick}
                   >
                     Reset to Default
                   </Button>

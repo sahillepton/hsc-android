@@ -413,7 +413,7 @@ export const formatLayerMeasurements = (
     }
 
     if (layer.polygon[0]?.length) {
-      pushMeasurement("Vertices", `${layer.polygon[0].length - 1}`);
+      pushMeasurement("Vertices Drawn", `${layer.polygon[0].length - 1}`);
     }
 
     if (typeof layer.sectorAngleDeg === "number") {

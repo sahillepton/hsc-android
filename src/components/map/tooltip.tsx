@@ -24,6 +24,7 @@ import {
   TooltipProperties,
   TooltipDivider,
 } from "@/lib/tooltip-components";
+import MemberAction from "@/plugins/member-action";
 
 const Tooltip = () => {
   const { hoverInfo } = useHoverInfo();
@@ -487,9 +488,25 @@ const Tooltip = () => {
           <TooltipDivider />
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                alert("Video call initiated");
+                const memberId =
+                  (object as any)?.globalId ||
+                  (object as any)?.displayId ||
+                  "Unknown";
+                const memberName = (object as any)?.callsign || memberId;
+                try {
+                  await MemberAction.notifyAction({
+                    memberId: String(memberId),
+                    action: "call",
+                    memberName: String(memberName),
+                    metadata: JSON.stringify({ type: "video" }),
+                  });
+                  console.log(`[MemberAction] Video call: ${memberId}`);
+                } catch (err) {
+                  console.warn("[MemberAction] Plugin not available:", err);
+                  alert("Video call initiated");
+                }
               }}
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
               style={{ backgroundColor: "#7F1D1D" }}
@@ -499,9 +516,25 @@ const Tooltip = () => {
               <span>Video</span>
             </button>
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                alert("FTP connection initiated");
+                const memberId =
+                  (object as any)?.globalId ||
+                  (object as any)?.displayId ||
+                  "Unknown";
+                const memberName = (object as any)?.callsign || memberId;
+                try {
+                  await MemberAction.notifyAction({
+                    memberId: String(memberId),
+                    action: "info",
+                    memberName: String(memberName),
+                    metadata: JSON.stringify({ type: "ftp" }),
+                  });
+                  console.log(`[MemberAction] FTP: ${memberId}`);
+                } catch (err) {
+                  console.warn("[MemberAction] Plugin not available:", err);
+                  alert("FTP connection initiated");
+                }
               }}
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
               style={{ backgroundColor: "#3F6212" }}
@@ -511,9 +544,25 @@ const Tooltip = () => {
               <span>FTP</span>
             </button>
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                alert("Phone call initiated");
+                const memberId =
+                  (object as any)?.globalId ||
+                  (object as any)?.displayId ||
+                  "Unknown";
+                const memberName = (object as any)?.callsign || memberId;
+                try {
+                  await MemberAction.notifyAction({
+                    memberId: String(memberId),
+                    action: "call",
+                    memberName: String(memberName),
+                    metadata: JSON.stringify({ type: "voice" }),
+                  });
+                  console.log(`[MemberAction] Voice call: ${memberId}`);
+                } catch (err) {
+                  console.warn("[MemberAction] Plugin not available:", err);
+                  alert("Phone call initiated");
+                }
               }}
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
               style={{ backgroundColor: "#1E3A8A" }}
@@ -523,9 +572,24 @@ const Tooltip = () => {
               <span>Call</span>
             </button>
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                alert("Message sent");
+                const memberId =
+                  (object as any)?.globalId ||
+                  (object as any)?.displayId ||
+                  "Unknown";
+                const memberName = (object as any)?.callsign || memberId;
+                try {
+                  await MemberAction.notifyAction({
+                    memberId: String(memberId),
+                    action: "message",
+                    memberName: String(memberName),
+                  });
+                  console.log(`[MemberAction] Message: ${memberId}`);
+                } catch (err) {
+                  console.warn("[MemberAction] Plugin not available:", err);
+                  alert("Message sent");
+                }
               }}
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
               style={{ backgroundColor: "#A16207" }}
@@ -946,7 +1010,7 @@ const Tooltip = () => {
       const properties = [
         { label: "Area", value: formatArea(areaMeters) },
         { label: "Perimeter", value: formatDistance(perimeterMeters / 1000) },
-        { label: "Vertices", value: String(vertexCount) },
+        { label: "Vertices Drawn", value: String(vertexCount) },
       ];
 
       return (
@@ -990,7 +1054,7 @@ const Tooltip = () => {
           label: "Perimeter",
           value: formatDistance(perimeterMeters / 1000),
         },
-        { label: "Vertices", value: String(vertexCount) },
+        { label: "Drawn Points", value: String(vertexCount) },
       ];
 
       return (
