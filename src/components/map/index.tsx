@@ -11,6 +11,7 @@ import {
   ScatterplotLayer,
   TextLayer,
 } from "@deck.gl/layers";
+import { MVTLayer } from "@deck.gl/geo-layers";
 import unkinkPolygon from "@turf/unkink-polygon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -22,6 +23,7 @@ import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
 import OfflineLocationTracker from "./offline-location-tracker";
+import { TileFolderDialog, initializeTileServer } from "./tile-folder-dialog";
 import { useUdpConfigStore } from "@/store/udp-config-store";
 // import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
@@ -220,7 +222,60 @@ const MapComponent = ({
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
   const [isNetworkBoxOpen, setIsNetworkBoxOpen] = useState(false);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
+  const [isTileFolderDialogOpen, setIsTileFolderDialogOpen] = useState(false);
+  const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
   const lastLayerCreationTimeRef = useRef<number>(0);
+
+  // Initialize tile server on mount and set up fetch interceptor for tile logging
+  useEffect(() => {
+    initializeTileServer().then((url) => {
+      if (url) {
+        setTileServerUrl(url);
+
+        // Intercept fetch requests to log tile requests with x, y, z values
+        const originalFetch = window.fetch;
+        window.fetch = async function (...args) {
+          const url = args[0]?.toString() || "";
+          const tileMatch = url.match(/\/tiles\/(\d+)\/(\d+)\/(\d+)\.pbf/);
+
+          if (tileMatch) {
+            const [, z, x, y] = tileMatch;
+            console.log(
+              `CAPACITOR_HAHA [Tile Request] Fetching tile: z=${z}, x=${x}, y=${y}`
+            );
+
+            try {
+              const response = await originalFetch.apply(this, args);
+              if (!response.ok) {
+                console.error(
+                  `CAPACITOR_HAHA [Tile Request] FAILED: z=${z}, x=${x}, y=${y} - Status: ${response.status} ${response.statusText}`
+                );
+              } else {
+                console.log(
+                  `CAPACITOR_HAHA [Tile Request] SUCCESS: z=${z}, x=${x}, y=${y}`
+                );
+              }
+              return response;
+            } catch (error) {
+              console.error(
+                `CAPACITOR_HAHA [Tile Request] ERROR: z=${z}, x=${x}, y=${y} -`,
+                error
+              );
+              throw error;
+            }
+          }
+
+          return originalFetch.apply(this, args);
+        };
+      }
+    });
+
+    // Cleanup: restore original fetch on unmount
+    return () => {
+      // Note: We can't easily restore fetch without storing the original,
+      // but this is fine as it only runs once on mount
+    };
+  }, []);
   // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
   // const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -2863,6 +2918,58 @@ const MapComponent = ({
       );
     });
 
+    // Add offline vector tiles layer if server is running
+    if (tileServerUrl) {
+      try {
+        const tileUrl = `${tileServerUrl}/{z}/{x}/{y}.pbf`;
+        console.log(
+          "CAPACITOR_HAHA [MVTLayer] Adding layer with URL template:",
+          tileUrl
+        );
+
+        deckLayers.push(
+          new MVTLayer({
+            id: "offline-vector-tiles",
+            data: tileUrl,
+            minZoom: 0,
+            maxZoom: 20,
+            getFillColor: [128, 128, 128, 180],
+            getLineColor: [0, 0, 0, 255],
+            getPointRadius: 3,
+            lineWidthMinPixels: 1,
+            pickable: true,
+            onHover: handleLayerHover,
+            onError: (error) => {
+              // Extract tile info from error if available
+              const errorMsg = error?.message || String(error);
+              const tileMatch = errorMsg.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf/);
+              if (tileMatch) {
+                const [, z, x, y] = tileMatch;
+                console.error(
+                  `CAPACITOR_HAHA [MVTLayer] Error loading tile: z=${z}, x=${x}, y=${y}`,
+                  error
+                );
+              } else {
+                console.error(
+                  "CAPACITOR_HAHA [MVTLayer] Error loading tiles:",
+                  error
+                );
+              }
+            },
+            // Auto-detect layers from tiles
+            // layers: ['water', 'landcover', 'boundary'],
+          })
+        );
+
+        console.log("CAPACITOR_HAHA [MVTLayer] Layer added successfully");
+      } catch (error) {
+        console.error(
+          "CAPACITOR_HAHA [MVTLayer] Error adding MVTLayer:",
+          error
+        );
+      }
+    }
+
     // --- Preview layers ---
     const previewLayers: any[] = [];
 
@@ -3103,6 +3210,7 @@ const MapComponent = ({
     userLocation,
     showUserLocation,
     mapZoom,
+    tileServerUrl,
   ]);
 
   return (
@@ -3321,9 +3429,9 @@ const MapComponent = ({
         touchZoomRotate={true}
         pitchWithRotate={true}
         initialViewState={{
-          longitude: 81.5, // Center of India (between 63.5°E and 99.5°E)
-          latitude: 20.5, // Center of India (between 2.5°N and 38.5°N)
-          zoom: 6, // Zoom level to show India's bounding box
+          longitude: tileServerUrl ? 0 : 81.5, // World center (0) when using tile server, India center otherwise
+          latitude: tileServerUrl ? 0 : 20.5, // Equator (0) when using tile server, India center otherwise
+          zoom: tileServerUrl ? 2 : 6, // World view (zoom 2) when using tile server, India view (zoom 6) otherwise
           pitch: pitch,
           bearing: 0,
         }}
@@ -3331,48 +3439,25 @@ const MapComponent = ({
         maxZoom={15}
         maxPitch={85}
         onLoad={async (map: any) => {
-          // Fit map to India's bounding box
           const mapInstance = map.target;
-          mapInstance.fitBounds(
-            [
-              [63.5, 2.5], // Southwest corner (West, South)
-              [99.5, 38.5], // Northeast corner (East, North)
-            ],
-            {
-              padding: { top: 50, bottom: 50, left: 50, right: 50 },
-              duration: 0, // Instant fit
-            }
-          );
 
-          if (!mapInstance.getSource("offline-tiles")) {
-            mapInstance.addSource("offline-tiles", {
-              type: "raster",
-              tiles: ["/tiles-map/{z}/{x}/{y}.png"],
-              minzoom: 0,
-              maxzoom: 20,
-            });
+          // Remove any old raster tile sources/layers if they exist (we only use tile server)
+          try {
+            if (mapInstance.getLayer("offline-tiles-layer")) {
+              mapInstance.removeLayer("offline-tiles-layer");
+            }
+            if (mapInstance.getSource("offline-tiles")) {
+              mapInstance.removeSource("offline-tiles");
+            }
+          } catch (e) {
+            // Ignore errors if source/layer doesn't exist
           }
 
-          mapInstance.on("sourcedata", (e: any) => {
-            if (e.sourceId === "offline-tiles" && e.isSourceLoaded) {
-            }
-          });
-
-          mapInstance.on("error", (e: any) => {
-            if (e.sourceId === "offline-tiles") {
-              console.warn("Failed to load offline tiles:", e.error);
-            }
-          });
-
-          if (!mapInstance.getLayer("offline-tiles-layer")) {
-            mapInstance.addLayer({
-              id: "offline-tiles-layer",
-              type: "raster",
-              source: "offline-tiles",
-              paint: {
-                "raster-opacity": 0.9,
-              },
-            });
+          if (tileServerUrl) {
+            console.log(
+              "[Map] Tile server active, using MVTLayer from:",
+              tileServerUrl
+            );
           }
 
           mapInstance.setMaxBounds(null);
@@ -3499,6 +3584,7 @@ const MapComponent = ({
         onResetHome={handleResetHome}
         showUserLocation={showUserLocation}
         onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
+        onOpenTileFolder={() => setIsTileFolderDialogOpen(true)}
         isProcessingFiles={isProcessingFiles}
         cameraPopoverProps={{
           isOpen: isCameraPopoverOpen,
@@ -3531,6 +3617,16 @@ const MapComponent = ({
         onConfigSet={() => {
           // Trigger reconnection by updating key
           setConfigKey((prev) => prev + 1);
+        }}
+      />
+
+      {/* Tile Folder Dialog */}
+      <TileFolderDialog
+        isOpen={isTileFolderDialogOpen}
+        onOpenChange={setIsTileFolderDialogOpen}
+        onFolderSelected={async (_uri, serverUrl) => {
+          setTileServerUrl(serverUrl);
+          toast.success("Offline tiles loaded successfully!");
         }}
       />
     </div>

@@ -13,6 +13,7 @@ import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.PluginHandle;
+import android.webkit.WebView;
 
 public class MainActivity extends BridgeActivity {
 
@@ -25,6 +26,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeUploaderPlugin.class);
         registerPlugin(ZipFolderPlugin.class);
         registerPlugin(MemberActionPlugin.class);
+        registerPlugin(OfflineTileServerPlugin.class);
 
         super.onCreate(savedInstanceState);
         
@@ -138,6 +140,9 @@ public class MainActivity extends BridgeActivity {
         
         // Re-enable immersive mode when app resumes
         enableImmersiveMode();
+        
+        // Configure WebView to allow localhost access (after bridge is ready)
+        configureWebViewForLocalhost();
 
         // Optional: test event (your existing code)
         PluginHandle handle = getBridge().getPlugin("Udp");
@@ -155,6 +160,40 @@ public class MainActivity extends BridgeActivity {
         if (hasFocus) {
             // Re-enable immersive mode when window gains focus
             enableImmersiveMode();
+        }
+    }
+    
+    private void configureWebViewForLocalhost() {
+        // Enable WebView debugging
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            WebView.setWebContentsDebuggingEnabled(true);
+        }
+        
+        // Get the bridge's WebView and configure it
+        try {
+            com.getcapacitor.Bridge bridge = getBridge();
+            if (bridge != null) {
+                android.webkit.WebView webView = bridge.getWebView();
+                if (webView != null) {
+                    android.webkit.WebSettings settings = webView.getSettings();
+                    // Allow mixed content (HTTP on HTTPS page) - needed for localhost
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                    }
+                    // Enable JavaScript (should already be enabled, but ensure it)
+                    settings.setJavaScriptEnabled(true);
+                    // Allow file access from file URLs
+                    settings.setAllowFileAccess(true);
+                    settings.setAllowContentAccess(true);
+                    android.util.Log.d("CAPACITOR_MainActivity", "WebView configured for localhost access");
+                } else {
+                    android.util.Log.w("CAPACITOR_MainActivity", "WebView is null, cannot configure");
+                }
+            } else {
+                android.util.Log.w("CAPACITOR_MainActivity", "Bridge is null, cannot configure WebView");
+            }
+        } catch (Exception e) {
+            android.util.Log.e("CAPACITOR_MainActivity", "Error configuring WebView for localhost", e);
         }
     }
 }
