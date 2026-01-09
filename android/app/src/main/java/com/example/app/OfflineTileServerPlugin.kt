@@ -3,7 +3,6 @@ package com.example.app
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.util.Log
 import androidx.activity.result.ActivityResult
 import androidx.documentfile.provider.DocumentFile
 import com.getcapacitor.JSObject
@@ -18,7 +17,6 @@ import java.io.ByteArrayInputStream
 @CapacitorPlugin(name = "OfflineTileServer")
 class OfflineTileServerPlugin : Plugin() {
 
-    private val TAG = "CAPACITOR_OfflineTileServer"
     private var tileServer: TileServer? = null
 
     @PluginMethod
@@ -58,7 +56,6 @@ class OfflineTileServerPlugin : Plugin() {
             ret.put("uri", treeUri.toString())
             call.resolve(ret)
         } catch (e: Exception) {
-            Log.e(TAG, "CAPACITOR_HAHA Error selecting folder", e)
             call.reject("Failed to select folder: ${e.message}")
         }
     }
@@ -75,24 +72,18 @@ class OfflineTileServerPlugin : Plugin() {
 
     @PluginMethod
     fun startTileServer(call: PluginCall) {
-        Log.d(TAG, "CAPACITOR_HAHA startTileServer called")
         val uriString = call.getString("uri")
         if (uriString.isNullOrBlank()) {
-            Log.e(TAG, "CAPACITOR_HAHA URI is null or blank")
             call.reject("URI is required")
             return
         }
 
-        Log.d(TAG, "CAPACITOR_HAHA Parsing URI: $uriString")
         val uri = Uri.parse(uriString)
         val useTms = call.getBoolean("useTms") ?: false
-        Log.d(TAG, "CAPACITOR_HAHA TMS format: $useTms")
 
         try {
-            Log.d(TAG, "CAPACITOR_HAHA Stopping existing server if running...")
             stopServerInternal()
 
-            Log.d(TAG, "CAPACITOR_HAHA Creating TileServer instance...")
             val server = TileServer(
                 context = context,
                 folderUri = uri,
@@ -100,50 +91,15 @@ class OfflineTileServerPlugin : Plugin() {
                 useTms = useTms
             )
 
-            Log.d(TAG, "CAPACITOR_HAHA Starting server on port 8080...")
             try {
                 // Start server in daemon mode (runs in background thread)
                 server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-                Log.d(TAG, "CAPACITOR_HAHA server.start() completed without exception")
             } catch (e: Exception) {
-                Log.e(TAG, "CAPACITOR_HAHA ❌ Exception during server.start():", e)
-                Log.e(TAG, "CAPACITOR_HAHA Exception type: ${e.javaClass.name}")
-                Log.e(TAG, "CAPACITOR_HAHA Exception message: ${e.message}")
-                e.printStackTrace()
                 throw e
             }
             
             // Give server a moment to initialize
             Thread.sleep(200)
-            
-            // Verify server is actually running
-            val isAlive = try {
-                val alive = server.isAlive
-                Log.d(TAG, "CAPACITOR_HAHA Server isAlive check: $alive")
-                alive
-            } catch (e: Exception) {
-                Log.e(TAG, "CAPACITOR_HAHA Error checking isAlive:", e)
-                false
-            }
-            
-            // Check if server is listening on the port
-            val listeningPort = try {
-                server.listeningPort
-            } catch (e: Exception) {
-                -1
-            }
-            
-            if (isAlive && listeningPort > 0) {
-                Log.d(TAG, "CAPACITOR_HAHA ✅ Tile server started successfully!")
-                Log.d(TAG, "CAPACITOR_HAHA    - Port: $listeningPort")
-                Log.d(TAG, "CAPACITOR_HAHA    - isAlive: $isAlive")
-                Log.d(TAG, "CAPACITOR_HAHA    - Server should be accessible at: http://127.0.0.1:$listeningPort")
-            } else {
-                Log.w(TAG, "CAPACITOR_HAHA ⚠️ Server start() completed but verification failed")
-                Log.w(TAG, "CAPACITOR_HAHA    - isAlive: $isAlive")
-                Log.w(TAG, "CAPACITOR_HAHA    - listeningPort: $listeningPort")
-                Log.w(TAG, "CAPACITOR_HAHA    - Continuing anyway, but server might not be accessible...")
-            }
             
             tileServer = server
 
@@ -152,13 +108,8 @@ class OfflineTileServerPlugin : Plugin() {
             val baseUrl = "http://localhost:8080"
             ret.put("baseUrl", baseUrl)
             ret.put("port", 8080)
-            Log.d(TAG, "CAPACITOR_HAHA Resolving call with baseUrl: $baseUrl")
             call.resolve(ret)
         } catch (e: Exception) {
-            Log.e(TAG, "CAPACITOR_HAHA ❌ Error starting tile server", e)
-            Log.e(TAG, "CAPACITOR_HAHA Exception type: ${e.javaClass.simpleName}")
-            Log.e(TAG, "CAPACITOR_HAHA Exception message: ${e.message}")
-            e.printStackTrace()
             call.reject("Failed to start tile server: ${e.message}")
         }
     }
@@ -186,38 +137,41 @@ class TileServer(
     private val useTms: Boolean = false
 ) : NanoHTTPD("127.0.0.1", port) {
 
-    private val TAG = "CAPACITOR_TileServer"
-
-    init {
-        Log.d(TAG, "CAPACITOR_HAHA TileServer constructor called")
-        Log.d(TAG, "CAPACITOR_HAHA   - Port: $port")
-        Log.d(TAG, "CAPACITOR_HAHA   - Folder URI: $folderUri")
-        Log.d(TAG, "CAPACITOR_HAHA   - TMS format: $useTms")
-    }
-
-    private val root: DocumentFile? = DocumentFile.fromTreeUri(context, folderUri).also {
-        if (it == null) {
-            Log.e(TAG, "CAPACITOR_HAHA ⚠️ Failed to create DocumentFile from URI: $folderUri")
-            Log.e(TAG, "CAPACITOR_HAHA    This usually means the URI permission was not granted or is invalid")
-        } else {
-            Log.d(TAG, "CAPACITOR_HAHA ✅ DocumentFile created successfully from URI")
-            Log.d(TAG, "CAPACITOR_HAHA    Root exists: ${it.exists()}")
-            Log.d(TAG, "CAPACITOR_HAHA    Root is directory: ${it.isDirectory}")
-            Log.d(TAG, "CAPACITOR_HAHA    Root name: ${it.name}")
-        }
-    }
+    private val root: DocumentFile? = DocumentFile.fromTreeUri(context, folderUri)
 
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         return try {
             val uri = session.uri
-            val method = session.method?.name ?: "UNKNOWN"
-            Log.d(TAG, "CAPACITOR_HAHA Incoming request: $method $uri")
-            // Expect: /{z}/{x}/{y}.pbf (no /tiles/ prefix)
+            
+            // Handle style.json request
+            if (uri == "/style.json" || uri == "/style.json/") {
+                return serveStyleJson()
+            }
+            
+            // Handle fonts/glyphs request: /fonts/{fontstack}/{range}.pbf
+            val fontPattern = Regex("^/fonts/([^/]+)/(\\d+)-(\\d+)\\.pbf$")
+            val fontMatch = fontPattern.find(uri)
+            if (fontMatch != null) {
+                val fontstack = fontMatch.groupValues[1]
+                val rangeStart = fontMatch.groupValues[2]
+                val rangeEnd = fontMatch.groupValues[3]
+                return serveFontGlyphs(fontstack, rangeStart, rangeEnd)
+            }
+            
+            // Handle sprite requests: /sprite.{ext} or /sprite@2x.{ext}
+            val spritePattern = Regex("^/sprite(@2x)?\\.(json|png)$")
+            val spriteMatch = spritePattern.find(uri)
+            if (spriteMatch != null) {
+                val scale = if (spriteMatch.groupValues[1].isNotEmpty()) "2x" else "1x"
+                val ext = spriteMatch.groupValues[2]
+                return serveSprite(scale, ext)
+            }
+            
+            // Handle tile requests: /{z}/{x}/{y}.pbf (no /tiles/ prefix)
             val tilePattern = Regex("^/(\\d+)/(\\d+)/(\\d+)\\.pbf$")
             val match = tilePattern.find(uri)
 
             if (match == null) {
-                Log.w(TAG, "CAPACITOR_HAHA Invalid tile request pattern: $uri (expected: /{z}/{x}/{y}.pbf)")
                 return NanoHTTPD.newFixedLengthResponse(
                     NanoHTTPD.Response.Status.NOT_FOUND,
                     NanoHTTPD.MIME_PLAINTEXT,
@@ -236,16 +190,12 @@ class TileServer(
                 val maxY = (1 shl z) - 1
                 val y = yStr.toInt()
                 yStr = (maxY - y).toString()
-                Log.d(TAG, "CAPACITOR_HAHA Requested tile: z=$originalZ, x=$originalX, y=$originalY (TMS) -> z=$zStr, x=$xStr, y=$yStr (XYZ)")
-            } else {
-                Log.d(TAG, "CAPACITOR_HAHA Requested tile: z=$zStr, x=$xStr, y=$yStr")
             }
 
             // Always read directly from filesystem - no caching
             // Try requested zoom level first, then fallback to lower zoom levels
             val bytes = readTileBytesWithFallback(zStr, xStr, yStr)
                 ?: run {
-                    Log.e(TAG, "CAPACITOR_HAHA ❌ Tile NOT FOUND: z=$originalZ, x=$originalX, y=$originalY (checked down to zoom 0)")
                     return NanoHTTPD.newFixedLengthResponse(
                         NanoHTTPD.Response.Status.NOT_FOUND,
                         NanoHTTPD.MIME_PLAINTEXT,
@@ -255,8 +205,6 @@ class TileServer(
 
             okTileResponse(bytes)
         } catch (e: Exception) {
-            Log.e(TAG, "CAPACITOR_HAHA ❌ Exception in serve() method", e)
-            e.printStackTrace()
             NanoHTTPD.newFixedLengthResponse(
                 NanoHTTPD.Response.Status.INTERNAL_ERROR,
                 NanoHTTPD.MIME_PLAINTEXT,
@@ -266,7 +214,6 @@ class TileServer(
     }
 
     private fun okTileResponse(bytes: ByteArray): NanoHTTPD.Response {
-        Log.d(TAG, "CAPACITOR_HAHA Served tile (${bytes.size} bytes)")
         val res = NanoHTTPD.newFixedLengthResponse(
             NanoHTTPD.Response.Status.OK,
             "application/x-protobuf",
@@ -293,18 +240,10 @@ class TileServer(
         
         // Try requested zoom level first, then go down one zoom level at a time
         while (currentZ >= 0) {
-            Log.d(TAG, "CAPACITOR_HAHA Checking tile: z=$currentZ, x=$currentX, y=$currentY")
             val bytes = readTileBytes(currentZ.toString(), currentX.toString(), currentY.toString())
             if (bytes != null) {
-                if (currentZ < originalZ) {
-                    Log.d(TAG, "CAPACITOR_HAHA ✅ Using fallback tile: z=$currentZ, x=$currentX, y=$currentY (requested: z=$originalZ, x=$originalX, y=$originalY)")
-                } else {
-                    Log.d(TAG, "CAPACITOR_HAHA ✅ Found requested tile: z=$currentZ, x=$currentX, y=$currentY")
-                }
                 return bytes
             }
-            
-            Log.d(TAG, "CAPACITOR_HAHA ❌ Tile not found: z=$currentZ, x=$currentX, y=$currentY")
             
             // Move to lower zoom level: divide x and y by 2
             if (currentZ > 0) {
@@ -326,91 +265,363 @@ class TileServer(
      * Always reads directly from filesystem - no caching.
      */
     private fun readTileBytes(z: String, x: String, y: String): ByteArray? {
-        val rootDir = root ?: run {
-            Log.e(TAG, "CAPACITOR_HAHA ❌ Root DocumentFile is null. Check folderUri permission.")
-            return null
-        }
+        val rootDir = root ?: return null
 
         try {
-            Log.d(TAG, "CAPACITOR_HAHA Reading tile: z=$z, x=$x, y=$y")
-            Log.d(TAG, "CAPACITOR_HAHA   Root directory exists: ${rootDir.exists()}, isDirectory: ${rootDir.isDirectory}, name: ${rootDir.name}")
-            
             // Get /{z} directory - always query filesystem directly
             val zDir = rootDir.findFile(z)
-            if (zDir == null) {
-                Log.w(TAG, "CAPACITOR_HAHA   ❌ Zoom directory not found: $z")
-                // List available directories for debugging
-                val children = rootDir.listFiles()
-                if (children != null && children.isNotEmpty()) {
-                    Log.d(TAG, "CAPACITOR_HAHA   Available directories in root: ${children.map { it.name }.take(10).joinToString()}")
-                }
-                return null
-            }
-            Log.d(TAG, "CAPACITOR_HAHA   ✅ Found z directory: ${zDir.name}, exists: ${zDir.exists()}, isDir: ${zDir.isDirectory}")
-            if (!zDir.exists() || !zDir.isDirectory) {
-                Log.w(TAG, "CAPACITOR_HAHA   ❌ z directory invalid: exists=${zDir.exists()}, isDirectory=${zDir.isDirectory}")
+            if (zDir == null || !zDir.exists() || !zDir.isDirectory) {
                 return null
             }
             
             // Get /{z}/{x} directory - always query filesystem directly
             val xDir = zDir.findFile(x)
-            if (xDir == null) {
-                Log.w(TAG, "CAPACITOR_HAHA   ❌ X directory not found: $z/$x")
-                // List available directories for debugging
-                val children = zDir.listFiles()
-                if (children != null && children.isNotEmpty()) {
-                    Log.d(TAG, "CAPACITOR_HAHA   Available directories in z=$z: ${children.map { it.name }.take(10).joinToString()}")
-                }
-                return null
-            }
-            Log.d(TAG, "CAPACITOR_HAHA   ✅ Found x directory: ${xDir.name}, exists: ${xDir.exists()}, isDir: ${xDir.isDirectory}")
-            if (!xDir.exists() || !xDir.isDirectory) {
-                Log.w(TAG, "CAPACITOR_HAHA   ❌ x directory invalid: exists=${xDir.exists()}, isDirectory=${xDir.isDirectory}")
+            if (xDir == null || !xDir.exists() || !xDir.isDirectory) {
                 return null
             }
             
             // Get /{z}/{x}/{y}.pbf file - always query filesystem directly
             val fileName = "$y.pbf"
-            Log.d(TAG, "CAPACITOR_HAHA   Looking for file: $fileName in directory $z/$x")
             val tileFile = xDir.findFile(fileName)
-            if (tileFile == null) {
-                Log.w(TAG, "CAPACITOR_HAHA   ❌ Tile file not found: $z/$x/$fileName")
-                // List ALL available files for debugging
-                val children = xDir.listFiles()
-                if (children != null) {
-                    if (children.isEmpty()) {
-                        Log.w(TAG, "CAPACITOR_HAHA   Directory $z/$x is EMPTY - no files found!")
-                    } else {
-                        Log.d(TAG, "CAPACITOR_HAHA   Total files in $z/$x: ${children.size}")
-                        Log.d(TAG, "CAPACITOR_HAHA   ALL files in $z/$x: ${children.map { it.name }.joinToString(", ")}")
-                        // Check if there's a file with similar name (case sensitivity issue?)
-                        val similar = children.filter { it.name.equals(fileName, ignoreCase = true) }
-                        if (similar.isNotEmpty()) {
-                            Log.w(TAG, "CAPACITOR_HAHA   ⚠️ Found similar filename (case mismatch?): ${similar.map { it.name }.joinToString()}")
-                        }
-                    }
-                } else {
-                    Log.w(TAG, "CAPACITOR_HAHA   Could not list files in directory $z/$x - listFiles() returned null")
-                }
-                return null
-            }
-            Log.d(TAG, "CAPACITOR_HAHA   ✅ Found tile file: ${tileFile.name}, exists: ${tileFile.exists()}, isFile: ${tileFile.isFile}")
-            if (!tileFile.exists() || !tileFile.isFile) {
-                Log.w(TAG, "CAPACITOR_HAHA   ❌ Tile file invalid: exists=${tileFile.exists()}, isFile=${tileFile.isFile}")
+            if (tileFile == null || !tileFile.exists() || !tileFile.isFile) {
                 return null
             }
 
             val bytes = context.contentResolver.openInputStream(tileFile.uri)?.use { it.readBytes() }
-            if (bytes != null) {
-                Log.d(TAG, "CAPACITOR_HAHA ✅ Successfully read tile $z/$x/$y.pbf (${bytes.size} bytes)")
-            } else {
-                Log.e(TAG, "CAPACITOR_HAHA ❌ Failed to read bytes from tile file: $z/$x/$y.pbf")
-            }
             return bytes
         } catch (e: Exception) {
-            Log.e(TAG, "CAPACITOR_HAHA ❌ Exception reading tile $z/$x/$y", e)
-            e.printStackTrace()
             return null
         }
+    }
+
+    /**
+     * Serve style.json from root folder, or generate default if not found
+     */
+    private fun serveStyleJson(): NanoHTTPD.Response {
+        val rootDir = root ?: return errorResponse("Root directory not available")
+        
+        // Try to read style.json from root folder first
+        try {
+            val styleFile = rootDir.findFile("style.json")
+            if (styleFile != null && styleFile.exists() && styleFile.isFile) {
+                val bytes = context.contentResolver.openInputStream(styleFile.uri)?.use { it.readBytes() }
+                if (bytes != null) {
+                    val res = NanoHTTPD.newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.OK,
+                        "application/json",
+                        ByteArrayInputStream(bytes),
+                        bytes.size.toLong()
+                    )
+                    res.addHeader("Cache-Control", "public, max-age=3600")
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore and generate default
+        }
+        
+        // Fallback: generate default style.json
+        return serveDefaultStyleJson()
+    }
+
+    /**
+     * Generate default style.json for offline tiles
+     */
+    private fun serveDefaultStyleJson(): NanoHTTPD.Response {
+        val styleJson = """
+        {
+          "version": 8,
+          "id": "86575a9a-670f-4772-be37-2c0c00fe1f68",
+          "name": "Offline Map Style",
+          "sources": {
+            "openmaptiles": {
+              "type": "vector",
+              "tiles": ["http://localhost:8080/{z}/{x}/{y}.pbf"],
+              "minzoom": 0,
+              "maxzoom": 14
+            }
+          },
+          "layers": [
+            {
+              "id": "background",
+              "type": "background",
+              "layout": {"visibility": "visible"},
+              "paint": {
+                "background-color": {
+                  "stops": [[6, "hsl(47,79%,94%)"], [14, "hsl(42,49%,93%)"]]
+                }
+              }
+            },
+            {
+              "id": "water",
+              "type": "fill",
+              "source": "openmaptiles",
+              "source-layer": "water",
+              "layout": {"visibility": "visible"},
+              "paint": {
+                "fill-color": [
+                  "match",
+                  ["get", "intermittent"],
+                  1, "hsl(205,91%,83%)",
+                  "hsl(204,92%,75%)"
+                ],
+                "fill-opacity": ["match", ["get", "intermittent"], 1, 0.85, 1],
+                "fill-antialias": true
+              },
+              "filter": ["all"]
+            },
+            {
+              "id": "road_network",
+              "type": "line",
+              "source": "openmaptiles",
+              "source-layer": "transportation",
+              "minzoom": 4,
+              "layout": {"line-cap": "butt", "line-join": "round", "visibility": "visible"},
+              "paint": {
+                "line-color": [
+                  "match",
+                  ["get", "class"],
+                  "motorway", "hsl(35,100%,76%)",
+                  ["trunk", "primary"], "hsl(48,100%,83%)",
+                  "hsl(0,0%,100%)"
+                ],
+                "line-width": [
+                  "interpolate",
+                  ["linear", 2],
+                  ["zoom"],
+                  5, 0.5,
+                  10, 1.5,
+                  12, 2.5,
+                  14, 4,
+                  16, 8,
+                  20, 24
+                ]
+              },
+              "filter": ["all", ["!=", "brunnel", "tunnel"], ["!in", "class", "ferry", "rail", "transit", "pier", "bridge", "path", "aerialway"]]
+            },
+            {
+              "id": "building",
+              "type": "fill",
+              "source": "openmaptiles",
+              "source-layer": "building",
+              "minzoom": 13,
+              "layout": {"visibility": "visible"},
+              "paint": {
+                "fill-color": "hsl(30,6%,73%)",
+                "fill-opacity": 0.3,
+                "fill-outline-color": {
+                  "base": 1,
+                  "stops": [[13, "hsla(35, 6%, 79%, 0.3)"], [14, "hsl(35, 6%, 79%)"]]
+                }
+              }
+            },
+            {
+              "id": "place",
+              "type": "symbol",
+              "source": "openmaptiles",
+              "source-layer": "place",
+              "minzoom": 4,
+              "layout": {
+                "text-font": ["Noto Sans Regular"],
+                "text-size": {"stops": [[4, 11], [8, 13], [12, 16], [16, 20]]},
+                "text-field": "{name}",
+                "visibility": "visible",
+                "text-anchor": "bottom",
+                "text-max-width": 8
+              },
+              "paint": {
+                "text-color": "hsl(0,0%,20%)",
+                "text-halo-color": "hsl(0,0%,100%)",
+                "text-halo-width": 1.2
+              },
+              "filter": ["all", ["!in", "class", "continent", "country", "state", "region", "province", "city", "town"]]
+            },
+            {
+              "id": "city",
+              "type": "symbol",
+              "source": "openmaptiles",
+              "source-layer": "place",
+              "minzoom": 4,
+              "maxzoom": 16,
+              "layout": {
+                "text-font": ["Noto Sans Regular"],
+                "text-size": {"stops": [[4, 12], [8, 16], [12, 20], [16, 28]]},
+                "text-field": "{name}",
+                "visibility": "visible",
+                "text-anchor": "bottom",
+                "text-max-width": 8
+              },
+              "paint": {
+                "text-color": "hsl(0,0%,20%)",
+                "text-halo-color": "hsl(0,0%,100%)",
+                "text-halo-width": 0.8
+              },
+              "filter": ["all", ["==", "class", "city"]]
+            },
+            {
+              "id": "country",
+              "type": "symbol",
+              "source": "openmaptiles",
+              "source-layer": "place",
+              "minzoom": 1,
+              "maxzoom": 12,
+              "layout": {
+                "text-font": ["Noto Sans Regular"],
+                "text-size": {"stops": [[0, 8], [1, 10], [4, 16], [8, 22]]},
+                "text-field": "{name}",
+                "visibility": "visible",
+                "text-max-width": 8
+              },
+              "paint": {
+                "text-color": "hsl(0, 0%, 20%)",
+                "text-halo-color": "hsl(0,0%,100%)",
+                "text-halo-width": 1
+              },
+              "filter": ["all", ["==", "class", "country"], ["has", "iso_a2"]]
+            }
+          ],
+          "glyphs": "http://localhost:8080/fonts/{fontstack}/{range}.pbf",
+          "sprite": "http://localhost:8080/sprite"
+        }
+        """.trimIndent()
+        
+        val res = NanoHTTPD.newFixedLengthResponse(
+            NanoHTTPD.Response.Status.OK,
+            "application/json",
+            styleJson
+        )
+        res.addHeader("Cache-Control", "public, max-age=3600")
+        res.addHeader("Access-Control-Allow-Origin", "*")
+        return res
+    }
+
+    /**
+     * Serve font glyphs from fonts/{fontstack}/{rangeStart}-{rangeEnd}.pbf
+     */
+    private fun serveFontGlyphs(fontstack: String, rangeStart: String, rangeEnd: String): NanoHTTPD.Response {
+        val rootDir = root ?: return errorResponse("Root directory not available")
+        
+        try {
+            // Look for fonts/{fontstack}/{rangeStart}-{rangeEnd}.pbf
+            val fontsDir = rootDir.findFile("fonts")
+            if (fontsDir == null || !fontsDir.exists() || !fontsDir.isDirectory) {
+                return emptyFontResponse()
+            }
+            
+            val fontstackDir = fontsDir.findFile(fontstack)
+            if (fontstackDir == null || !fontstackDir.exists() || !fontstackDir.isDirectory) {
+                return emptyFontResponse()
+            }
+            
+            val fontFileName = "$rangeStart-$rangeEnd.pbf"
+            val fontFile = fontstackDir.findFile(fontFileName)
+            if (fontFile == null || !fontFile.exists() || !fontFile.isFile) {
+                return emptyFontResponse()
+            }
+            
+            val bytes = context.contentResolver.openInputStream(fontFile.uri)?.use { it.readBytes() }
+            if (bytes != null && bytes.isNotEmpty()) {
+                val res = NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    "application/x-protobuf",
+                    ByteArrayInputStream(bytes),
+                    bytes.size.toLong()
+                )
+                res.addHeader("Cache-Control", "public, max-age=86400")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
+            }
+        } catch (e: Exception) {
+            // Ignore and return empty font
+        }
+        
+        // Return empty font if not found (Mapbox will fallback to system fonts)
+        return emptyFontResponse()
+    }
+
+    /**
+     * Return empty font response (fallback to system fonts)
+     */
+    private fun emptyFontResponse(): NanoHTTPD.Response {
+        val emptyPbf = ByteArray(0)
+        val res = NanoHTTPD.newFixedLengthResponse(
+            NanoHTTPD.Response.Status.OK,
+            "application/x-protobuf",
+            ByteArrayInputStream(emptyPbf),
+            emptyPbf.size.toLong()
+        )
+        res.addHeader("Cache-Control", "public, max-age=86400")
+        res.addHeader("Access-Control-Allow-Origin", "*")
+        return res
+    }
+
+    /**
+     * Serve sprite files: sprite.json, sprite.png, sprite@2x.png
+     */
+    private fun serveSprite(scale: String, ext: String): NanoHTTPD.Response {
+        val rootDir = root ?: return errorResponse("Root directory not available")
+        
+        try {
+            val fileName = if (scale == "2x") "sprite@2x.$ext" else "sprite.$ext"
+            val spriteFile = rootDir.findFile(fileName)
+            
+            if (spriteFile == null || !spriteFile.exists() || !spriteFile.isFile) {
+                return emptySpriteResponse(ext)
+            }
+            
+            val bytes = context.contentResolver.openInputStream(spriteFile.uri)?.use { it.readBytes() }
+            if (bytes != null && bytes.isNotEmpty()) {
+                val contentType = if (ext == "json") "application/json" else "image/png"
+                val res = NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    contentType,
+                    ByteArrayInputStream(bytes),
+                    bytes.size.toLong()
+                )
+                res.addHeader("Cache-Control", "public, max-age=86400")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
+            }
+        } catch (e: Exception) {
+            // Ignore and return empty sprite
+        }
+        
+        return emptySpriteResponse(ext)
+    }
+
+    /**
+     * Return empty sprite response
+     */
+    private fun emptySpriteResponse(ext: String): NanoHTTPD.Response {
+        if (ext == "json") {
+            val emptySprite = "{}"
+            val res = NanoHTTPD.newFixedLengthResponse(
+                NanoHTTPD.Response.Status.OK,
+                "application/json",
+                emptySprite
+            )
+            res.addHeader("Cache-Control", "public, max-age=86400")
+            res.addHeader("Access-Control-Allow-Origin", "*")
+            return res
+        } else {
+            // Return 204 No Content for PNG if not available
+            return NanoHTTPD.newFixedLengthResponse(
+                NanoHTTPD.Response.Status.NO_CONTENT,
+                "image/png",
+                ""
+            )
+        }
+    }
+
+    /**
+     * Helper to return error response
+     */
+    private fun errorResponse(message: String): NanoHTTPD.Response {
+        return NanoHTTPD.newFixedLengthResponse(
+            NanoHTTPD.Response.Status.NOT_FOUND,
+            NanoHTTPD.MIME_PLAINTEXT,
+            message
+        )
     }
 }
