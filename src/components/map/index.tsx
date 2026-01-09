@@ -11,7 +11,6 @@ import {
   ScatterplotLayer,
   TextLayer,
 } from "@deck.gl/layers";
-import { MVTLayer } from "@deck.gl/geo-layers";
 import unkinkPolygon from "@turf/unkink-polygon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -126,7 +125,7 @@ const MapComponent = ({
     };
   }, []);
 
-  // Reset view to India when app resumes from background (fixes layer rendering issue)
+  // Reset view and restart tile server when app resumes from background
   useEffect(() => {
     let appStateListener: any;
     let visibilityListener: any;
@@ -139,23 +138,63 @@ const MapComponent = ({
         // Listen for app state changes (foreground/background)
         appStateListener = await App.addListener(
           "appStateChange",
-          ({ isActive }) => {
-            if (isActive && mapRef.current) {
-              // App came to foreground - reset view to India to force re-render
-              setTimeout(() => {
-                handleResetHome();
-              }, 100);
+          async ({ isActive }) => {
+            if (isActive) {
+              // App came to foreground - restart tile server fresh
+              console.log(
+                "[App] App came to foreground, restarting tile server"
+              );
+
+              const { initializeTileServer } = await import(
+                "./tile-folder-dialog"
+              );
+              const url = await initializeTileServer();
+
+              if (url) {
+                setTileServerUrl(url);
+                console.log("[App] Tile server restarted:", url);
+              } else {
+                // No folder selected - show dialog
+                console.log("[App] No folder selected, showing dialog");
+                setIsTileFolderDialogOpen(true);
+              }
+
+              // Reset view to India to force re-render
+              if (mapRef.current) {
+                setTimeout(() => {
+                  handleResetHome();
+                }, 100);
+              }
             }
           }
         );
       } catch (error) {
         // Capacitor App plugin not available, use browser visibility API as fallback
-        const handleVisibilityChange = () => {
-          if (!document.hidden && mapRef.current) {
-            // App came to foreground - reset view to India to force re-render
-            setTimeout(() => {
-              handleResetHome();
-            }, 100);
+        const handleVisibilityChange = async () => {
+          if (!document.hidden) {
+            // App came to foreground - restart tile server fresh
+            console.log("[App] App came to foreground, restarting tile server");
+
+            const { initializeTileServer } = await import(
+              "./tile-folder-dialog"
+            );
+            const url = await initializeTileServer();
+
+            if (url) {
+              setTileServerUrl(url);
+              console.log("[App] Tile server restarted:", url);
+            } else {
+              // No folder selected - show dialog
+              console.log("[App] No folder selected, showing dialog");
+              setIsTileFolderDialogOpen(true);
+            }
+
+            // Reset view to India to force re-render
+            if (mapRef.current) {
+              setTimeout(() => {
+                handleResetHome();
+              }, 100);
+            }
           }
         };
 
@@ -228,7 +267,8 @@ const MapComponent = ({
 
   // Initialize tile server on mount and set up fetch interceptor for tile logging
   useEffect(() => {
-    initializeTileServer().then((url) => {
+    const initServer = async () => {
+      const url = await initializeTileServer();
       if (url) {
         setTileServerUrl(url);
 
@@ -236,7 +276,7 @@ const MapComponent = ({
         const originalFetch = window.fetch;
         window.fetch = async function (...args) {
           const url = args[0]?.toString() || "";
-          const tileMatch = url.match(/\/tiles\/(\d+)\/(\d+)\/(\d+)\.pbf/);
+          const tileMatch = url.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf/);
 
           if (tileMatch) {
             const [, z, x, y] = tileMatch;
@@ -267,8 +307,14 @@ const MapComponent = ({
 
           return originalFetch.apply(this, args);
         };
+      } else {
+        // No folder selected - show dialog to prompt user
+        console.log("[TileServer] No folder selected, showing dialog");
+        setIsTileFolderDialogOpen(true);
       }
-    });
+    };
+
+    initServer();
 
     // Cleanup: restore original fetch on unmount
     return () => {
@@ -276,6 +322,84 @@ const MapComponent = ({
       // but this is fine as it only runs once on mount
     };
   }, []);
+
+  // Reload style when tileServerUrl changes (after map is loaded)
+  useEffect(() => {
+    if (!tileServerUrl || !mapRef.current) return;
+
+    const map = mapRef.current.getMap();
+    if (!map || !map.loaded()) return;
+
+    // Load style from URL
+    const styleUrl = `${tileServerUrl}/style.json`;
+    console.log("[Map] Reloading style from tile server:", styleUrl);
+
+    try {
+      // Fetch style.json to modify it
+      fetch(styleUrl)
+        .then((response) => response.json())
+        .then((styleJson) => {
+          // Convert relative tile URLs to absolute URLs
+          if (styleJson.sources) {
+            Object.keys(styleJson.sources).forEach((sourceKey) => {
+              const source = styleJson.sources[sourceKey];
+              if (source.type === "vector" && source.tiles) {
+                source.tiles = source.tiles.map((tileUrl: string) => {
+                  // If it's a relative URL (starts with /), make it absolute
+                  if (tileUrl.startsWith("/")) {
+                    return `${tileServerUrl}${tileUrl}`;
+                  }
+                  // If it's already absolute, return as is
+                  return tileUrl;
+                });
+                console.log(
+                  `[Map] Updated source ${sourceKey} tiles:`,
+                  source.tiles
+                );
+              }
+            });
+          }
+
+          // Apply the modified style
+          map.setStyle(styleJson);
+        })
+        .catch((error) => {
+          console.error(
+            "[Map] Failed to fetch style, trying URL directly:",
+            error
+          );
+          // Fallback: try loading from URL directly
+          map.setStyle(styleUrl);
+        });
+    } catch (error) {
+      console.error("[Map] Error reloading style:", error);
+    }
+
+    map.once("style.load", () => {
+      console.log("[Map] Style reloaded successfully");
+
+      // Verify sources
+      const currentStyle = map.getStyle();
+      if (currentStyle && currentStyle.sources) {
+        Object.keys(currentStyle.sources).forEach((sourceKey) => {
+          const source = map.getSource(sourceKey);
+          if (source) {
+            const sourceData = source as any;
+            console.log(`[Map] Source ${sourceKey} verified:`, {
+              type: sourceData.type,
+              tiles: sourceData.tiles,
+              url: sourceData.url,
+            });
+          }
+        });
+      }
+    });
+
+    map.once("style.error", (e: any) => {
+      console.error("[Map] Failed to reload style:", e);
+    });
+  }, [tileServerUrl]);
+
   // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
   // const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -2918,58 +3042,6 @@ const MapComponent = ({
       );
     });
 
-    // Add offline vector tiles layer if server is running
-    if (tileServerUrl) {
-      try {
-        const tileUrl = `${tileServerUrl}/{z}/{x}/{y}.pbf`;
-        console.log(
-          "CAPACITOR_HAHA [MVTLayer] Adding layer with URL template:",
-          tileUrl
-        );
-
-        deckLayers.push(
-          new MVTLayer({
-            id: "offline-vector-tiles",
-            data: tileUrl,
-            minZoom: 0,
-            maxZoom: 20,
-            getFillColor: [128, 128, 128, 180],
-            getLineColor: [0, 0, 0, 255],
-            getPointRadius: 3,
-            lineWidthMinPixels: 1,
-            pickable: true,
-            onHover: handleLayerHover,
-            onError: (error) => {
-              // Extract tile info from error if available
-              const errorMsg = error?.message || String(error);
-              const tileMatch = errorMsg.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf/);
-              if (tileMatch) {
-                const [, z, x, y] = tileMatch;
-                console.error(
-                  `CAPACITOR_HAHA [MVTLayer] Error loading tile: z=${z}, x=${x}, y=${y}`,
-                  error
-                );
-              } else {
-                console.error(
-                  "CAPACITOR_HAHA [MVTLayer] Error loading tiles:",
-                  error
-                );
-              }
-            },
-            // Auto-detect layers from tiles
-            // layers: ['water', 'landcover', 'boundary'],
-          })
-        );
-
-        console.log("CAPACITOR_HAHA [MVTLayer] Layer added successfully");
-      } catch (error) {
-        console.error(
-          "CAPACITOR_HAHA [MVTLayer] Error adding MVTLayer:",
-          error
-        );
-      }
-    }
-
     // --- Preview layers ---
     const previewLayers: any[] = [];
 
@@ -3422,7 +3494,7 @@ const MapComponent = ({
         ref={mapRef}
         style={{ width: "100%", height: "100%" }}
         mapboxAccessToken="pk.eyJ1IjoibmlraGlsc2FyYWYiLCJhIjoiY2xlc296YjRjMDA5dDNzcXphZjlzamFmeSJ9.7ZDaMZKecY3-70p9pX9-GQ"
-        mapStyle={`${tileServerUrl}/style.json`}
+        mapStyle={tileServerUrl ? `${tileServerUrl}/style.json` : undefined}
         renderWorldCopies={false}
         reuseMaps={true}
         attributionControl={false}
@@ -3454,11 +3526,98 @@ const MapComponent = ({
             // Ignore errors if source/layer doesn't exist
           }
 
-          if (tileServerUrl) {
-            console.log(
-              "[Map] Tile server active, using MVTLayer from:",
-              tileServerUrl
-            );
+          // Get tile server URL directly (don't rely on state which might not be set yet)
+          const { getTileServerUrl, initializeTileServer } = await import(
+            "./tile-folder-dialog"
+          );
+          const currentTileServerUrl = await getTileServerUrl();
+          let serverUrl =
+            tileServerUrl ||
+            currentTileServerUrl ||
+            (await initializeTileServer());
+
+          // Ensure serverUrl doesn't have trailing slash
+          if (serverUrl && serverUrl.endsWith("/")) {
+            serverUrl = serverUrl.slice(0, -1);
+          }
+
+          if (serverUrl) {
+            // Update state if needed
+            if (serverUrl !== tileServerUrl) {
+              setTileServerUrl(serverUrl);
+            }
+
+            // Load style from tile server
+            const styleUrl = `${serverUrl}/style.json`;
+            console.log("[Map] Loading style from tile server:", styleUrl);
+
+            try {
+              // Fetch style.json to modify it
+              const response = await fetch(styleUrl);
+              let styleJson = await response.json();
+
+              // Convert relative tile URLs to absolute URLs
+              if (styleJson.sources) {
+                Object.keys(styleJson.sources).forEach((sourceKey) => {
+                  const source = styleJson.sources[sourceKey];
+                  if (source.type === "vector" && source.tiles) {
+                    source.tiles = source.tiles.map((tileUrl: string) => {
+                      // If it's a relative URL (starts with /), make it absolute
+                      if (tileUrl.startsWith("/")) {
+                        return `${serverUrl}${tileUrl}`;
+                      }
+                      // If it's already absolute, return as is
+                      return tileUrl;
+                    });
+                    console.log(
+                      `[Map] Updated source ${sourceKey} tiles:`,
+                      source.tiles
+                    );
+                  }
+                });
+              }
+
+              // Apply the modified style
+              mapInstance.setStyle(styleJson);
+            } catch (error) {
+              console.error(
+                "[Map] Failed to fetch style, trying URL directly:",
+                error
+              );
+              // Fallback: try loading from URL directly
+              mapInstance.setStyle(styleUrl);
+            }
+
+            // Wait for style to load and verify
+            mapInstance.once("style.load", () => {
+              console.log("[Map] Style loaded successfully");
+
+              // Verify sources are available
+              const currentStyle = mapInstance.getStyle();
+              if (currentStyle && currentStyle.sources) {
+                Object.keys(currentStyle.sources).forEach((sourceKey) => {
+                  const source = mapInstance.getSource(sourceKey);
+                  if (source) {
+                    const sourceData = source as any;
+                    console.log(`[Map] Source ${sourceKey} loaded:`, {
+                      type: sourceData.type,
+                      tiles: sourceData.tiles,
+                      url: sourceData.url,
+                    });
+                  } else {
+                    console.warn(
+                      `[Map] Source ${sourceKey} not found after style load`
+                    );
+                  }
+                });
+              }
+            });
+
+            mapInstance.once("style.error", (e: any) => {
+              console.error("[Map] Style loading error:", e);
+            });
+          } else {
+            console.warn("[Map] No tile server URL available");
           }
 
           mapInstance.setMaxBounds(null);

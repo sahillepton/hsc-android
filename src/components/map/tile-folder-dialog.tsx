@@ -161,28 +161,36 @@ export const getTileServerUrl = async (): Promise<string | null> => {
 
 export const initializeTileServer = async (): Promise<string | null> => {
   try {
+    // Always stop any existing server first to start fresh
+    try {
+      await OfflineTileServer.stopTileServer();
+      console.log("[TileServer] Stopped existing server");
+    } catch (error) {
+      // Ignore errors if server wasn't running
+      console.log("[TileServer] No existing server to stop");
+    }
+
     // Get saved folder URI
     const { uri } = await OfflineTileServer.getSavedFolderUri();
     if (!uri) {
+      console.log("[TileServer] No folder selected, returning null");
       return null;
     }
 
-    // Get saved server URL
-    const serverUrl = await getTileServerUrl();
-    if (serverUrl) {
-      // Server might already be running, try to verify
-      return serverUrl;
-    }
-
-    // Start server with saved URI (useTms: false for XYZ format)
+    // Start fresh server with saved URI (useTms: false for XYZ format)
+    console.log("[TileServer] Starting fresh server with URI:", uri);
     const result = await OfflineTileServer.startTileServer({
       uri,
       useTms: false, // Change to true if your tiles use TMS format
     });
+
+    // Save server URL
     await Preferences.set({
       key: TILE_SERVER_URL_KEY,
       value: result.baseUrl,
     });
+
+    console.log("[TileServer] Server started successfully:", result.baseUrl);
     return result.baseUrl;
   } catch (error) {
     console.error("Error initializing tile server:", error);

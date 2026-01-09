@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.result.ActivityResult
-import androidx.documentfile.provider.DocumentFile
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -13,6 +12,7 @@ import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
+import java.io.File
 
 @CapacitorPlugin(name = "OfflineTileServer")
 class OfflineTileServerPlugin : Plugin() {
@@ -137,7 +137,38 @@ class TileServer(
     private val useTms: Boolean = false
 ) : NanoHTTPD("127.0.0.1", port) {
 
-    private val root: DocumentFile? = DocumentFile.fromTreeUri(context, folderUri)
+    // Get base directory path for File API access
+    private val baseDir: File = when {
+        folderUri.scheme == "file" -> {
+            // Direct file:// URI
+            File(folderUri.path ?: throw IllegalArgumentException("Invalid file URI path"))
+        }
+        folderUri.scheme == "content" -> {
+            // Extract file path from content URI using DocumentsContract
+            val docId = android.provider.DocumentsContract.getTreeDocumentId(folderUri)
+            val split = docId.split(":")
+            if (split.size == 2) {
+                val type = split[0]
+                val relPath = split[1]
+                if (type == "primary") {
+                    // Primary external storage
+                    val externalStorage = android.os.Environment.getExternalStorageDirectory()
+                    File(externalStorage, relPath)
+                } else {
+                    // Other storage volumes
+                    val storageManager = context.getSystemService(android.os.storage.StorageManager::class.java)
+                    val storageVolumes = storageManager?.storageVolumes
+                    val volume = storageVolumes?.find { it.uuid == type }
+                    volume?.directory?.let { volumeDir ->
+                        File(volumeDir, relPath)
+                    } ?: throw IllegalArgumentException("Cannot resolve storage volume: $type")
+                }
+            } else {
+                throw IllegalArgumentException("Invalid document ID format: $docId")
+            }
+        }
+        else -> throw IllegalArgumentException("Unsupported URI scheme: ${folderUri.scheme}")
+    }
 
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         return try {
@@ -146,25 +177,6 @@ class TileServer(
             // Handle style.json request
             if (uri == "/style.json" || uri == "/style.json/") {
                 return serveStyleJson()
-            }
-            
-            // Handle fonts/glyphs request: /fonts/{fontstack}/{range}.pbf
-            val fontPattern = Regex("^/fonts/([^/]+)/(\\d+)-(\\d+)\\.pbf$")
-            val fontMatch = fontPattern.find(uri)
-            if (fontMatch != null) {
-                val fontstack = fontMatch.groupValues[1]
-                val rangeStart = fontMatch.groupValues[2]
-                val rangeEnd = fontMatch.groupValues[3]
-                return serveFontGlyphs(fontstack, rangeStart, rangeEnd)
-            }
-            
-            // Handle sprite requests: /sprite.{ext} or /sprite@2x.{ext}
-            val spritePattern = Regex("^/sprite(@2x)?\\.(json|png)$")
-            val spriteMatch = spritePattern.find(uri)
-            if (spriteMatch != null) {
-                val scale = if (spriteMatch.groupValues[1].isNotEmpty()) "2x" else "1x"
-                val ext = spriteMatch.groupValues[2]
-                return serveSprite(scale, ext)
             }
             
             // Handle tile requests: /{z}/{x}/{y}.pbf (no /tiles/ prefix)
@@ -193,8 +205,8 @@ class TileServer(
             }
 
             // Always read directly from filesystem - no caching
-            // Try requested zoom level first, then fallback to lower zoom levels
-            val bytes = readTileBytesWithFallback(zStr, xStr, yStr)
+            // No fallback - if tile doesn't exist, return 404
+            val bytes = readTileBytes(zStr, xStr, yStr)
                 ?: run {
                     return NanoHTTPD.newFixedLengthResponse(
                         NanoHTTPD.Response.Status.NOT_FOUND,
@@ -226,96 +238,42 @@ class TileServer(
     }
 
     /**
-     * Reads tile with fallback to lower zoom levels.
-     * If requested tile z/x/y doesn't exist, tries z-1/x/2/y/2, z-2/x/4/y/4, etc.
-     * Always reads directly from filesystem - no caching.
-     */
-    private fun readTileBytesWithFallback(z: String, x: String, y: String): ByteArray? {
-        var currentZ = z.toIntOrNull() ?: return null
-        var currentX = x.toLongOrNull() ?: return null
-        var currentY = y.toLongOrNull() ?: return null
-        val originalZ = currentZ
-        val originalX = currentX
-        val originalY = currentY
-        
-        // Try requested zoom level first, then go down one zoom level at a time
-        while (currentZ >= 0) {
-            val bytes = readTileBytes(currentZ.toString(), currentX.toString(), currentY.toString())
-            if (bytes != null) {
-                return bytes
-            }
-            
-            // Move to lower zoom level: divide x and y by 2
-            if (currentZ > 0) {
-                currentZ--
-                currentX /= 2
-                currentY /= 2
-            } else {
-                break
-            }
-        }
-        
-        return null
-    }
-
-    /**
      * Reads tile from:
      * <selectedFolder>/{z}/{x}/{y}.pbf
      *
-     * Always reads directly from filesystem - no caching.
+     * Uses direct File API for fast access.
+     * Returns null if tile doesn't exist (no fallback to lower zoom levels).
      */
     private fun readTileBytes(z: String, x: String, y: String): ByteArray? {
-        val rootDir = root ?: return null
-
         try {
-            // Get /{z} directory - always query filesystem directly
-            val zDir = rootDir.findFile(z)
-            if (zDir == null || !zDir.exists() || !zDir.isDirectory) {
-                return null
+            val tileFile = File(baseDir, "$z/$x/$y.pbf")
+            if (tileFile.exists() && tileFile.isFile) {
+                return tileFile.readBytes()
             }
-            
-            // Get /{z}/{x} directory - always query filesystem directly
-            val xDir = zDir.findFile(x)
-            if (xDir == null || !xDir.exists() || !xDir.isDirectory) {
-                return null
-            }
-            
-            // Get /{z}/{x}/{y}.pbf file - always query filesystem directly
-            val fileName = "$y.pbf"
-            val tileFile = xDir.findFile(fileName)
-            if (tileFile == null || !tileFile.exists() || !tileFile.isFile) {
-                return null
-            }
-
-            val bytes = context.contentResolver.openInputStream(tileFile.uri)?.use { it.readBytes() }
-            return bytes
         } catch (e: Exception) {
-            return null
+            // Return null on any error
         }
+        return null
     }
 
     /**
      * Serve style.json from root folder, or generate default if not found
      */
     private fun serveStyleJson(): NanoHTTPD.Response {
-        val rootDir = root ?: return errorResponse("Root directory not available")
-        
-        // Try to read style.json from root folder first
+        // Try to read style.json using File API
         try {
-            val styleFile = rootDir.findFile("style.json")
-            if (styleFile != null && styleFile.exists() && styleFile.isFile) {
-                val bytes = context.contentResolver.openInputStream(styleFile.uri)?.use { it.readBytes() }
-                if (bytes != null) {
-                    val res = NanoHTTPD.newFixedLengthResponse(
-                        NanoHTTPD.Response.Status.OK,
-                        "application/json",
-                        ByteArrayInputStream(bytes),
-                        bytes.size.toLong()
-                    )
-                    res.addHeader("Cache-Control", "public, max-age=3600")
-                    res.addHeader("Access-Control-Allow-Origin", "*")
-                    return res
-                }
+            val styleFile = File(baseDir, "style.json")
+            if (styleFile.exists() && styleFile.isFile) {
+                val bytes = styleFile.readBytes()
+                val res = NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    "application/json",
+                    ByteArrayInputStream(bytes),
+                    bytes.size.toLong()
+                )
+                res.addHeader("Cache-Control", "public, max-age=3600")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
             }
         } catch (e: Exception) {
             // Ignore and generate default
@@ -480,9 +438,7 @@ class TileServer(
               },
               "filter": ["all", ["==", "class", "country"], ["has", "iso_a2"]]
             }
-          ],
-          "glyphs": "http://localhost:8080/fonts/{fontstack}/{range}.pbf",
-          "sprite": "http://localhost:8080/sprite"
+          ]
         }
         """.trimIndent()
         
@@ -494,124 +450,6 @@ class TileServer(
         res.addHeader("Cache-Control", "public, max-age=3600")
         res.addHeader("Access-Control-Allow-Origin", "*")
         return res
-    }
-
-    /**
-     * Serve font glyphs from fonts/{fontstack}/{rangeStart}-{rangeEnd}.pbf
-     */
-    private fun serveFontGlyphs(fontstack: String, rangeStart: String, rangeEnd: String): NanoHTTPD.Response {
-        val rootDir = root ?: return errorResponse("Root directory not available")
-        
-        try {
-            // Look for fonts/{fontstack}/{rangeStart}-{rangeEnd}.pbf
-            val fontsDir = rootDir.findFile("fonts")
-            if (fontsDir == null || !fontsDir.exists() || !fontsDir.isDirectory) {
-                return emptyFontResponse()
-            }
-            
-            val fontstackDir = fontsDir.findFile(fontstack)
-            if (fontstackDir == null || !fontstackDir.exists() || !fontstackDir.isDirectory) {
-                return emptyFontResponse()
-            }
-            
-            val fontFileName = "$rangeStart-$rangeEnd.pbf"
-            val fontFile = fontstackDir.findFile(fontFileName)
-            if (fontFile == null || !fontFile.exists() || !fontFile.isFile) {
-                return emptyFontResponse()
-            }
-            
-            val bytes = context.contentResolver.openInputStream(fontFile.uri)?.use { it.readBytes() }
-            if (bytes != null && bytes.isNotEmpty()) {
-                val res = NanoHTTPD.newFixedLengthResponse(
-                    NanoHTTPD.Response.Status.OK,
-                    "application/x-protobuf",
-                    ByteArrayInputStream(bytes),
-                    bytes.size.toLong()
-                )
-                res.addHeader("Cache-Control", "public, max-age=86400")
-                res.addHeader("Access-Control-Allow-Origin", "*")
-                return res
-            }
-        } catch (e: Exception) {
-            // Ignore and return empty font
-        }
-        
-        // Return empty font if not found (Mapbox will fallback to system fonts)
-        return emptyFontResponse()
-    }
-
-    /**
-     * Return empty font response (fallback to system fonts)
-     */
-    private fun emptyFontResponse(): NanoHTTPD.Response {
-        val emptyPbf = ByteArray(0)
-        val res = NanoHTTPD.newFixedLengthResponse(
-            NanoHTTPD.Response.Status.OK,
-            "application/x-protobuf",
-            ByteArrayInputStream(emptyPbf),
-            emptyPbf.size.toLong()
-        )
-        res.addHeader("Cache-Control", "public, max-age=86400")
-        res.addHeader("Access-Control-Allow-Origin", "*")
-        return res
-    }
-
-    /**
-     * Serve sprite files: sprite.json, sprite.png, sprite@2x.png
-     */
-    private fun serveSprite(scale: String, ext: String): NanoHTTPD.Response {
-        val rootDir = root ?: return errorResponse("Root directory not available")
-        
-        try {
-            val fileName = if (scale == "2x") "sprite@2x.$ext" else "sprite.$ext"
-            val spriteFile = rootDir.findFile(fileName)
-            
-            if (spriteFile == null || !spriteFile.exists() || !spriteFile.isFile) {
-                return emptySpriteResponse(ext)
-            }
-            
-            val bytes = context.contentResolver.openInputStream(spriteFile.uri)?.use { it.readBytes() }
-            if (bytes != null && bytes.isNotEmpty()) {
-                val contentType = if (ext == "json") "application/json" else "image/png"
-                val res = NanoHTTPD.newFixedLengthResponse(
-                    NanoHTTPD.Response.Status.OK,
-                    contentType,
-                    ByteArrayInputStream(bytes),
-                    bytes.size.toLong()
-                )
-                res.addHeader("Cache-Control", "public, max-age=86400")
-                res.addHeader("Access-Control-Allow-Origin", "*")
-                return res
-            }
-        } catch (e: Exception) {
-            // Ignore and return empty sprite
-        }
-        
-        return emptySpriteResponse(ext)
-    }
-
-    /**
-     * Return empty sprite response
-     */
-    private fun emptySpriteResponse(ext: String): NanoHTTPD.Response {
-        if (ext == "json") {
-            val emptySprite = "{}"
-            val res = NanoHTTPD.newFixedLengthResponse(
-                NanoHTTPD.Response.Status.OK,
-                "application/json",
-                emptySprite
-            )
-            res.addHeader("Cache-Control", "public, max-age=86400")
-            res.addHeader("Access-Control-Allow-Origin", "*")
-            return res
-        } else {
-            // Return 204 No Content for PNG if not available
-            return NanoHTTPD.newFixedLengthResponse(
-                NanoHTTPD.Response.Status.NO_CONTENT,
-                "image/png",
-                ""
-            )
-        }
     }
 
     /**
