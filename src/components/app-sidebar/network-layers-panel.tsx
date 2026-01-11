@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useState } from "react";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -34,53 +34,18 @@ const NetworkLayersPanel = ({
   const { udpLayers } = useUdpLayers();
   const useIgrs = useIgrsPreference();
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
-  const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
 
-  useEffect(() => {
-    const handleResize = () => {
-      setWindowHeight(window.innerHeight);
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  // Get UDP layer data
+  // Get UDP layer data - only network members
   const networkMembersLayer = udpLayers.find(
     (layer: any) => layer?.id === "udp-network-members-layer"
   );
-  const targetsLayer = udpLayers.find(
-    (layer: any) => layer?.id === "udp-targets-layer"
-  );
 
   const networkMembersData = networkMembersLayer?.props?.data || [];
-  const targetsData = targetsLayer?.props?.data || [];
-
-  const udpLayerItems = useMemo(
-    () =>
-      [
-        {
-          id: "udp-network-members-layer",
-          name: "Network Members",
-          type: "network-members",
-          count: networkMembersData.length,
-          data: networkMembersData,
-        },
-        {
-          id: "udp-targets-layer",
-          name: "Targets",
-          type: "targets",
-          count: targetsData.length,
-          data: targetsData,
-        },
-      ].filter((item) => item.count > 0),
-    [networkMembersData, targetsData]
-  );
 
   // Smooth focus animation: zoom out first, then fly to target with parabolic motion
-  const handleFocusLayer = (layerId: string) => {
-    setFocusedLayerId(layerId);
-    const layer = udpLayers.find((l: any) => l?.id === layerId);
-    if (!layer || !layer.props?.data || layer.props.data.length === 0) {
+  const handleFocusLayer = () => {
+    setFocusedLayerId("udp-network-members-layer");
+    if (!networkMembersData || networkMembersData.length === 0) {
       return;
     }
 
@@ -88,7 +53,7 @@ const NetworkLayersPanel = ({
     if (!mapRef?.current) return;
 
     const map = mapRef.current.getMap();
-    const data = layer.props.data;
+    const data = networkMembersData;
 
     // Calculate bounds from data
     let minLng = Infinity;
@@ -151,18 +116,18 @@ const NetworkLayersPanel = ({
       // calculateIgrs expects (longitude, latitude)
       const igrs = calculateIgrs(lng, lat);
       return {
-        value: igrs || `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`,
+        value: igrs || `${lat.toFixed(4)}° , ${lng.toFixed(4)}°`,
         isIgrsAvailable: igrs !== null,
       };
     }
     return {
-      value: `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`,
+      value: `${lat.toFixed(4)}° , ${lng.toFixed(4)}°`,
       isIgrsAvailable: true, // Not using IGRS, so no issue
     };
   };
 
   const renderList = () => {
-    if (udpLayerItems.length === 0) {
+    if (networkMembersData.length === 0) {
       return (
         <div className="text-center text-sm text-muted-foreground py-3">
           No network data yet
@@ -170,104 +135,98 @@ const NetworkLayersPanel = ({
       );
     }
 
-    // Calculate height based on number of layers, capped at 90% of screen height
-    const estimatedItemHeight = 200; // Estimated height per item in pixels
-    const calculatedHeight = udpLayerItems.length * estimatedItemHeight + 24; // 24px for padding
-    const maxHeight = windowHeight * 0.9;
-    const dynamicHeight = Math.min(calculatedHeight, maxHeight);
+    const isFocused = focusedLayerId === "udp-network-members-layer";
 
     return (
-      <div className="overflow-y-auto" style={{ height: `${dynamicHeight}px` }}>
-        <Virtuoso
-          style={{ height: "100%" }}
-          data={udpLayerItems}
-          increaseViewportBy={280}
-          itemContent={(_, layer) => {
-            // Get sample items for display (max 3)
-            const sampleItems = layer.data.slice(0, 3);
-            const isFocused = focusedLayerId === layer.id;
+      <div className="mb-3">
+        <div
+          className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
+            isFocused ? "border-l-4 border-l-sky-300" : ""
+          }`}
+        >
+          <div className="absolute right-3 top-3 flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              title="Focus Network Members"
+              onClick={() => handleFocusLayer()}
+            >
+              <LocateFixed size={10} />
+            </Button>
+            <UdpLayerConfigPopover
+              layerId="udp-network-members-layer"
+              layerName="Network Members"
+            />
+          </div>
 
-            return (
-              <div className="mb-3">
-                <div
-                  key={layer.id}
-                  className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
-                    isFocused ? "border-l-4 border-l-sky-300" : ""
-                  }`}
-                >
-                  <div className="absolute right-3 top-3 flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      title={`Focus layer: ${layer.name}`}
-                      onClick={() => handleFocusLayer(layer.id)}
-                    >
-                      <LocateFixed size={10} />
-                    </Button>
-                    <UdpLayerConfigPopover
-                      layerId={layer.id}
-                      layerName={layer.name}
-                    />
-                  </div>
+          <div className="min-w-0 pr-14">
+            <div className="flex items-start gap-2">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+                <span className="truncate text-[16px]">Network Members</span>
+              </div>
+            </div>
 
-                  <div className="min-w-0 pr-14">
-                    <div className="flex items-start gap-2">
-                      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
-                        <span className="truncate text-[16px]">
-                          {layer.name}
-                        </span>
-                      </div>
-                    </div>
+            {networkMembersData.length > 0 && (
+              <div className="mt-3 border-t border-border/40 pt-3 w-full">
+                <div className="border border-border/20 rounded-lg overflow-hidden w-full">
+                  <Virtuoso
+                    style={{
+                      height: `${Math.min(
+                        networkMembersData.length * 48 + 2,
+                        384
+                      )}px`,
+                      width: "100% !important",
+                    }}
+                    data={networkMembersData}
+                    increaseViewportBy={200}
+                    itemContent={(idx, item: any) => {
+                      const globalId = item.globalId ?? item.id ?? idx;
+                      const coord = formatCoordinate(
+                        item.latitude,
+                        item.longitude
+                      );
 
-                    {sampleItems.length > 0 && (
-                      <div className="mt-3 border-t border-border/40 pt-3">
-                        <dt className="text-[14px] font-semibold tracking-wide text-foreground mb-2 flex items-center gap-1">
-                          {useIgrs ? "IGRS" : "Coordinates"}
-                        </dt>
-                        <div className="space-y-1">
-                          {sampleItems.map((item: any, idx: number) => {
-                            const coord = formatCoordinate(
-                              item.latitude,
-                              item.longitude
-                            );
-                            return (
-                              <dd
-                                key={idx}
-                                className="font-mono text-[12px] text-zinc-600 flex items-center gap-1"
-                              >
-                                <span>
-                                  {item.name || `Item ${idx + 1}`}:{" "}
-                                  {coord.value}
-                                </span>
+                      return (
+                        <div className="py-3 px-3 border-b border-border/20 last:border-b-0 bg-white hover:bg-zinc-50/50 transition-colors">
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-[12px] text-black">
+                                Global ID:
+                              </span>
+                              <span className="font-mono text-[12px] text-zinc-500">
+                                {globalId}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-semibold text-[12px] text-black">
+                                Location:
+                              </span>
+                              <span className="font-mono text-[12px] text-zinc-500 flex items-center gap-1">
+                                {coord.value}
                                 {useIgrs && !coord.isIgrsAvailable && (
                                   <div className="relative group">
                                     <Info
                                       size={12}
                                       className="text-muted-foreground cursor-help"
                                     />
-                                    <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-10 bg-black text-white text-[10px] px-2 py-1 rounded whitespace-nowrap">
+                                    <div className="absolute -left-2 bottom-full mb-1 hidden group-hover:block z-10 bg-black text-white text-[10px] px-2 py-1 rounded whitespace-nowrap">
                                       IGRS not available
                                     </div>
                                   </div>
                                 )}
-                              </dd>
-                            );
-                          })}
-                          {layer.count > 3 && (
-                            <dd className="text-[12px] text-zinc-600 italic">
-                              ...and {layer.count - 3} more
-                            </dd>
-                          )}
+                              </span>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
+                      );
+                    }}
+                  />
                 </div>
               </div>
-            );
-          }}
-        />
+            )}
+          </div>
+        </div>
       </div>
     );
   };

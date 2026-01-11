@@ -454,16 +454,16 @@ export const formatLayerMeasurements = (
 };
 
 export const availableIcons = [
-  "alert",
-  "command_post",
-  "friendly_aircraft",
-  "ground_unit",
-  "hostile_aircraft",
-  "mother-aircraft",
-  "naval_unit",
-  "neutral_aircraft",
-  "sam_site",
-  "unknown_aircraft",
+  "fighter1",
+  "fighter2",
+  "fighter3",
+  "fighter4",
+  "fighter5",
+  "fighter6",
+  "fighter7",
+  "fighter8",
+  "fighter9",
+  "fighter10",
 ];
 
 /**

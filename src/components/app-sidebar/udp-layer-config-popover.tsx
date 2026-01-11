@@ -2,20 +2,19 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Settings2 } from "lucide-react";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
-import { useUdpLayers } from "@/components/map/udp-layers";
 import { useState } from "react";
 
 const availableIcons = [
-  "alert",
-  "command_post",
-  "friendly_aircraft",
-  "ground_unit",
-  "hostile_aircraft",
-  "mother-aircraft",
-  "naval_unit",
-  "neutral_aircraft",
-  "sam_site",
-  "unknown_aircraft",
+  "fighter1",
+  "fighter2",
+  "fighter3",
+  "fighter4",
+  "fighter5",
+  "fighter6",
+  "fighter7",
+  "fighter8",
+  "fighter9",
+  "fighter10",
 ];
 
 interface UdpLayerConfigPopoverProps {
@@ -28,13 +27,11 @@ const UdpLayerConfigPopover = ({
   layerName,
 }: UdpLayerConfigPopoverProps) => {
   const { getLayerSymbol, setLayerSymbol } = useUdpSymbolsStore();
-  const { udpLayers } = useUdpLayers();
+
   const [open, setOpen] = useState(false);
 
-  const layer = udpLayers.find((l: any) => l?.id === layerId);
-  const layerData = layer?.props?.data || [];
   const defaultSymbol =
-    layerId === "udp-network-members-layer" ? "friendly_aircraft" : "alert";
+    layerId === "udp-network-members-layer" ? "fighter1" : "fighter3";
 
   const currentSymbol = getLayerSymbol(layerId);
   const displaySymbol = currentSymbol || defaultSymbol;
@@ -45,15 +42,6 @@ const UdpLayerConfigPopover = ({
     // Then update the symbol after a small delay to ensure popover closes first
     setTimeout(() => {
       setLayerSymbol(layerId, iconName);
-    }, 150);
-  };
-
-  const handleResetClick = () => {
-    // Close popover first
-    setOpen(false);
-    // Then reset the symbol after a small delay
-    setTimeout(() => {
-      setLayerSymbol(layerId, "");
     }, 150);
   };
 
@@ -107,28 +95,7 @@ const UdpLayerConfigPopover = ({
                   );
                 })}
               </div>
-              <div className="flex items-center justify-between pt-2">
-                <div className="text-xs text-muted-foreground">
-                  Current: {displaySymbol.replace(/_/g, " ").replace(/-/g, " ")}
-                </div>
-                {currentSymbol && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs"
-                    onClick={handleResetClick}
-                  >
-                    Reset to Default
-                  </Button>
-                )}
-              </div>
             </div>
-            {layerData.length > 0 && (
-              <div className="text-xs text-muted-foreground pt-2 border-t">
-                {layerData.length} {layerData.length === 1 ? "node" : "nodes"}{" "}
-                in this layer
-              </div>
-            )}
           </div>
         </div>
       </PopoverContent>

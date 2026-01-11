@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { IconLayer, LineLayer } from "@deck.gl/layers";
 import { useNetworkLayersVisible } from "@/store/layers-store";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
 import { useUdpConfigStore } from "@/store/udp-config-store";
+import { useUdpDataStore } from "@/store/udp-data-store";
 import { Udp } from "../../plugins/udp";
 
 // Test mode configuration - set to true to use WebSocket instead of UDP
@@ -10,15 +11,18 @@ const IS_TEST = false;
 const WS_IP = "192.168.1.213";
 const WS_PORT = 8080;
 
-interface UdpLayerData {
-  targets: any[];
-  networkMembers: any[];
-  networkMemberPositions: Map<number, any>;
-  networkMemberMetadata: Map<number, any>;
-  engagingMembers: any[];
-  threats: any[];
-  geoMessages: any[];
-}
+// Shared connection state to prevent multiple instances from creating duplicate connections
+let globalConnectionState = {
+  isConnected: false,
+  isConnecting: false,
+  host: null as string | null,
+  port: null as number | null,
+  websocket: null as WebSocket | null,
+  listener: null as { remove: () => void } | null,
+  noDataTimeout: null as NodeJS.Timeout | null,
+};
+
+// UdpLayerData interface is now defined in udp-data-store.ts
 
 // Binary parsing functions (from websocket-server.js)
 const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
@@ -418,35 +422,58 @@ const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
 };
 
 export const useUdpLayers = (onHover?: (info: any) => void) => {
-  const [udpData, setUdpData] = useState<UdpLayerData>({
-    targets: [],
-    networkMembers: [],
-    networkMemberPositions: new Map(),
-    networkMemberMetadata: new Map(),
-    engagingMembers: [],
-    threats: [],
-    geoMessages: [],
-  });
-  const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [noDataWarning, setNoDataWarning] = useState<string | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
+  // Use shared store for UDP data so all components access the same data
+  // Subscribe to the entire udpData object so components re-render when any part changes
+  const udpData = useUdpDataStore((state) => state.udpData);
+  const setUdpData = useUdpDataStore((state) => state.setUdpData);
+  const connectionError = useUdpDataStore((state) => state.connectionError);
+  const setConnectionError = useUdpDataStore(
+    (state) => state.setConnectionError
+  );
+  const noDataWarning = useUdpDataStore((state) => state.noDataWarning);
+  const setNoDataWarning = useUdpDataStore((state) => state.setNoDataWarning);
+  const isConnected = useUdpDataStore((state) => state.isConnected);
+  const setIsConnected = useUdpDataStore((state) => state.setIsConnected);
+  const reset = useUdpDataStore((state) => state.reset);
+  const resetConnectionState = useUdpDataStore(
+    (state) => state.resetConnectionState
+  );
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { getNodeSymbol, getLayerSymbol, nodeSymbols } = useUdpSymbolsStore();
   const { host, port } = useUdpConfigStore();
 
   useEffect(() => {
     if (!networkLayersVisible) {
-      setUdpData({
-        targets: [],
-        networkMembers: [],
-        networkMemberPositions: new Map(),
-        networkMemberMetadata: new Map(),
-        engagingMembers: [],
-        threats: [],
-        geoMessages: [],
-      });
-      setConnectionError(null);
-      setIsConnected(false);
+      // Only cleanup if this is the last instance and connection exists
+      if (
+        globalConnectionState.isConnected &&
+        globalConnectionState.host === host &&
+        globalConnectionState.port === port
+      ) {
+        // Clear global state
+        if (globalConnectionState.noDataTimeout) {
+          clearTimeout(globalConnectionState.noDataTimeout);
+          globalConnectionState.noDataTimeout = null;
+        }
+        if (globalConnectionState.websocket) {
+          globalConnectionState.websocket.close();
+          globalConnectionState.websocket = null;
+        }
+        if (globalConnectionState.listener) {
+          globalConnectionState.listener.remove();
+          globalConnectionState.listener = null;
+        }
+        if (!IS_TEST) {
+          Udp.closeAllSockets().catch(console.error);
+        }
+        globalConnectionState.isConnected = false;
+        globalConnectionState.isConnecting = false;
+        globalConnectionState.host = null;
+        globalConnectionState.port = null;
+      }
+
+      // Only reset connection state, preserve data so it comes back when toggled on
+      resetConnectionState();
       return;
     }
 
@@ -454,36 +481,48 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     if (IS_TEST) {
       // WebSocket mode - use hardcoded WS_IP and WS_PORT
       if (!WS_IP || !WS_PORT || WS_PORT <= 0) {
-        setUdpData({
-          targets: [],
-          networkMembers: [],
-          networkMemberPositions: new Map(),
-          networkMemberMetadata: new Map(),
-          engagingMembers: [],
-          threats: [],
-          geoMessages: [],
-        });
-        setConnectionError(null);
-        setIsConnected(false);
+        reset();
         return;
       }
     } else {
       // UDP mode - check if host or port are configured
       if (!host || !host.trim() || !port || port <= 0) {
-        setUdpData({
-          targets: [],
-          networkMembers: [],
-          networkMemberPositions: new Map(),
-          networkMemberMetadata: new Map(),
-          engagingMembers: [],
-          threats: [],
-          geoMessages: [],
-        });
-        setConnectionError(null);
-        setIsConnected(false);
+        reset();
         return;
       }
     }
+
+    // Check if connection already exists for the same host/port
+    const connectionKey = `${host}:${port}`;
+    const existingConnectionKey =
+      globalConnectionState.host && globalConnectionState.port
+        ? `${globalConnectionState.host}:${globalConnectionState.port}`
+        : null;
+
+    // If connection already exists for same host/port, don't create a new one
+    if (
+      globalConnectionState.isConnected &&
+      existingConnectionKey === connectionKey
+    ) {
+      // Connection already exists, just sync local state
+      setIsConnected(true);
+      setConnectionError(null);
+      setNoDataWarning(null);
+      return;
+    }
+
+    // If already connecting, don't start another connection
+    if (
+      globalConnectionState.isConnecting &&
+      existingConnectionKey === connectionKey
+    ) {
+      return;
+    }
+
+    // Mark as connecting
+    globalConnectionState.isConnecting = true;
+    globalConnectionState.host = host;
+    globalConnectionState.port = port;
 
     let connectionEstablished = false;
     let noDataTimeout: NodeJS.Timeout | null = null;
@@ -501,6 +540,9 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
           websocket.onopen = () => {
             connectionEstablished = true;
+            globalConnectionState.isConnected = true;
+            globalConnectionState.isConnecting = false;
+            globalConnectionState.websocket = websocket;
             setIsConnected(true);
             setConnectionError(null);
 
@@ -520,7 +562,9 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
                 "Please check the WebSocket server configurations. No data is coming!"
               );
               setIsConnected(false);
+              globalConnectionState.isConnected = false;
             }, 15000);
+            globalConnectionState.noDataTimeout = noDataTimeout;
           };
 
           websocket.onmessage = (event: MessageEvent) => {
@@ -584,10 +628,16 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           websocket.onerror = (error) => {
             console.error("❌ WebSocket error:", error);
             setIsConnected(false);
+            globalConnectionState.isConnected = false;
+            globalConnectionState.isConnecting = false;
+            globalConnectionState.websocket = null;
           };
 
           websocket.onclose = (event) => {
             setIsConnected(false);
+            globalConnectionState.isConnected = false;
+            globalConnectionState.isConnecting = false;
+            globalConnectionState.websocket = null;
             if (event.code !== 1000) {
               setConnectionError(
                 `WebSocket connection closed. Code: ${event.code}${
@@ -610,16 +660,20 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         try {
           await Udp.create({ address: host, port });
           connectionEstablished = true;
+          globalConnectionState.isConnected = true;
+          globalConnectionState.isConnecting = false;
           setIsConnected(true);
           setConnectionError(null);
 
-          // Check for no data after 15 seconds
+          // Check for no data after 5 seconds
           noDataTimeout = setTimeout(() => {
             setNoDataWarning(
               "Please check the UDP server configurations. No data is coming!"
             );
             setIsConnected(false);
+            globalConnectionState.isConnected = false;
           }, 5000);
+          globalConnectionState.noDataTimeout = noDataTimeout;
 
           // Send registration message to UDP server
           try {
@@ -640,6 +694,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             error?.message || error?.toString() || "Unknown error";
           const fullErrorMessage = `Failed to connect to UDP server!\n\nHost: ${host}\nPort: ${port}\n\nError: ${errorMessage}\n\nPlease check your configuration.`;
           setIsConnected(false);
+          globalConnectionState.isConnected = false;
+          globalConnectionState.isConnecting = false;
           setConnectionError(fullErrorMessage);
           alert(fullErrorMessage);
         }
@@ -748,61 +804,90 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       await connectUdp();
 
       if (connectionEstablished && !IS_TEST) {
-        // Listen for UDP messages (only for UDP, WebSocket handles via onmessage)
-        listener = await Udp.addListener("udpMessage", (event: any) => {
-          try {
-            setNoDataWarning(null);
-            setIsConnected(true);
-            if (noDataTimeout) {
-              clearTimeout(noDataTimeout);
-              noDataTimeout = null;
-            }
+        // Only set up listener if one doesn't already exist
+        if (!globalConnectionState.listener) {
+          // Listen for UDP messages (only for UDP, WebSocket handles via onmessage)
+          listener = await Udp.addListener("udpMessage", (event: any) => {
+            try {
+              setNoDataWarning(null);
+              setIsConnected(true);
+              globalConnectionState.isConnected = true;
+              if (globalConnectionState.noDataTimeout) {
+                clearTimeout(globalConnectionState.noDataTimeout);
+                globalConnectionState.noDataTimeout = null;
+              }
 
-            if (!event.buffer) {
-              console.warn("⚠️ UDP message received with no buffer.");
-              return;
-            }
+              if (!event.buffer) {
+                console.warn("⚠️ UDP message received with no buffer.");
+                return;
+              }
 
-            handleBinaryMessage(event.buffer);
-          } catch (e) {
-            console.error("❌ Error parsing UDP message:", e);
-          }
-        });
+              handleBinaryMessage(event.buffer);
+            } catch (e) {
+              console.error("❌ Error parsing UDP message:", e);
+            }
+          });
+          globalConnectionState.listener = listener;
+        } else {
+          // Reuse existing listener
+          listener = globalConnectionState.listener;
+        }
       }
     };
 
     setupListener();
 
     return () => {
-      if (noDataTimeout) {
-        clearTimeout(noDataTimeout);
-      }
+      // Cleanup function runs when dependencies change or component unmounts
+      // When networkLayersVisible becomes false, the effect body already handles cleanup above
+      // This cleanup mainly handles component unmount or dependency changes
+      // Note: networkLayersVisible in this closure is the OLD value when deps change
 
-      // Close WebSocket if open
-      if (websocket) {
-        websocket.close();
-        websocket = null;
-      }
+      // If the old value was true and we had a connection, cleanup when unmounting or when toggling off
+      // But since the effect body already handles the toggle-off case, we mainly handle unmount here
+      // We'll let the effect body handle the networkLayersVisible = false case
 
-      // Close UDP if open
-      if (connectionEstablished && !IS_TEST) {
-        Udp.closeAllSockets().catch(console.error);
+      // Only cleanup connection if we're unmounting (not just toggling)
+      // The effect body at the top already handles the toggle-off case
+      const connectionKey = `${host}:${port}`;
+      const existingConnectionKey =
+        globalConnectionState.host && globalConnectionState.port
+          ? `${globalConnectionState.host}:${globalConnectionState.port}`
+          : null;
+
+      // Only cleanup if connection matches this instance and is still active
+      // The effect body already handled cleanup when networkLayersVisible became false
+      if (
+        existingConnectionKey === connectionKey &&
+        globalConnectionState.isConnected
+      ) {
+        if (globalConnectionState.noDataTimeout) {
+          clearTimeout(globalConnectionState.noDataTimeout);
+          globalConnectionState.noDataTimeout = null;
+        }
+
+        // Close WebSocket if open
+        if (globalConnectionState.websocket) {
+          globalConnectionState.websocket.close();
+          globalConnectionState.websocket = null;
+        }
+
+        // Close UDP if open
+        if (!IS_TEST) {
+          Udp.closeAllSockets().catch(console.error);
+        }
+        if (globalConnectionState.listener) {
+          globalConnectionState.listener.remove();
+          globalConnectionState.listener = null;
+        }
+        globalConnectionState.isConnected = false;
+        globalConnectionState.isConnecting = false;
+        globalConnectionState.host = null;
+        globalConnectionState.port = null;
+
+        // Only reset connection state (not data) - preserve data for when toggle comes back on
+        resetConnectionState();
       }
-      if (listener) {
-        listener.remove();
-      }
-      setUdpData({
-        targets: [],
-        networkMembers: [],
-        networkMemberPositions: new Map(),
-        networkMemberMetadata: new Map(),
-        engagingMembers: [],
-        threats: [],
-        geoMessages: [],
-      });
-      setConnectionError(null);
-      setNoDataWarning(null);
-      setIsConnected(false);
     };
   }, [networkLayersVisible, host, port]);
 
@@ -886,7 +971,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             onHover: onHover,
             getIcon: (_d: any) => {
               const customSymbol = getLayerSymbol(networkMembersLayerId);
-              const symbol = customSymbol || "friendly_aircraft";
+              const symbol = customSymbol || "fighter8";
               const isRectangularIcon = [
                 "ground_unit",
                 "command_post",
@@ -1018,9 +1103,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
     return layers;
   }, [
-    udpData.targets,
-    udpData.networkMembers,
-    udpData.geoMessages,
+    udpData,
     onHover,
     networkLayersVisible,
     getNodeSymbol,

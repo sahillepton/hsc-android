@@ -17,7 +17,6 @@ import {
   Home,
   MapPin,
   FolderOpen,
-  BoxSelectIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";

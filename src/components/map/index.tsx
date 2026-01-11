@@ -62,6 +62,7 @@ import {
 import type { LayerProps, Node } from "@/lib/definitions";
 import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
+import { Geolocation } from "@capacitor/geolocation";
 import { ZipFolder } from "@/plugins/zip-folder";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
 import { MAX_UPLOAD_FILES, HSC_FILES_DIR } from "@/sessions/constants";
@@ -240,8 +241,12 @@ const MapComponent = ({
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const useIgrs = useIgrsPreference();
   const setUseIgrs = useSetIgrsPreference();
-  const { userLocation, showUserLocation, setShowUserLocation } =
-    useUserLocation();
+  const {
+    userLocation,
+    showUserLocation,
+    setShowUserLocation,
+    setUserLocation,
+  } = useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
 
   // const { nodeCoordinatesData, setNodeCoordinatesData } =
@@ -1496,18 +1501,79 @@ const MapComponent = ({
   };
 
   // Toggle user location visibility and focus to location when enabling
-  const handleToggleUserLocation = () => {
+  const handleToggleUserLocation = async () => {
     const willShow = !showUserLocation;
     setShowUserLocation(willShow);
 
-    // If enabling location and we have user location, focus/pan to it
-    if (willShow && userLocation && mapRef.current) {
-      const map = mapRef.current.getMap();
-      map.easeTo({
-        center: [userLocation.lng, userLocation.lat],
-        zoom: Math.max(map.getZoom(), 14), // Zoom to at least level 14, or keep current if higher
-        duration: 1000,
-      });
+    // If disabling location, just return
+    if (!willShow) {
+      return;
+    }
+
+    let toastId: string | null = null;
+
+    try {
+      // If we don't have location yet, fetch it and show loading toast
+      if (!userLocation) {
+        toastId = toast.loading("Fetching your location");
+
+        // Request permissions first
+        const permission = await Geolocation.requestPermissions();
+        if (permission.location !== "granted") {
+          if (toastId) toast.dismiss(toastId);
+          toast.error("Location permission denied");
+          setShowUserLocation(false);
+          return;
+        }
+
+        // Get current position
+        const position = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+        });
+
+        if (position?.coords) {
+          const location = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            accuracy: position.coords.accuracy || 0,
+          };
+          // Update location in store (this will trigger OfflineLocationTracker to start watching)
+          setUserLocation(location);
+
+          // Wait a bit for the location to be set in the store
+          await new Promise((resolve) => setTimeout(resolve, 100));
+
+          // Zoom to location with smooth animation
+          if (mapRef.current) {
+            const map = mapRef.current.getMap();
+            map.easeTo({
+              center: [location.lng, location.lat],
+              zoom: 14, // Fixed zoom level for better view
+              duration: 1500, // Smooth animation over 1.5 seconds
+            });
+          }
+
+          // Dismiss loading toast and show success
+          if (toastId) {
+            toast.update(toastId, "Location found", "success");
+          }
+        }
+      } else {
+        // We already have location, just zoom to it smoothly
+        if (mapRef.current) {
+          const map = mapRef.current.getMap();
+          map.easeTo({
+            center: [userLocation.lng, userLocation.lat],
+            zoom: 14, // Fixed zoom level for better view
+            duration: 1500, // Smooth animation over 1.5 seconds
+          });
+        }
+      }
+    } catch (error: any) {
+      console.error("Location error:", error);
+      if (toastId) toast.dismiss(toastId);
+      toast.error(error.message || "Failed to get location");
+      setShowUserLocation(false);
     }
   };
 
@@ -3045,8 +3111,8 @@ const MapComponent = ({
     // --- Preview layers ---
     const previewLayers: any[] = [];
 
-    // Add UDP layers to the deck layers
-    if (udpLayers && udpLayers.length > 0) {
+    // Add UDP layers to the deck layers only when networkLayersVisible is true
+    if (networkLayersVisible && udpLayers && udpLayers.length > 0) {
       deckLayers.push(...udpLayers);
     }
     if (
@@ -3502,14 +3568,14 @@ const MapComponent = ({
         touchZoomRotate={true}
         pitchWithRotate={true}
         initialViewState={{
-          longitude: tileServerUrl ? 0 : 81.5, // World center (0) when using tile server, India center otherwise
-          latitude: tileServerUrl ? 0 : 20.5, // Equator (0) when using tile server, India center otherwise
-          zoom: tileServerUrl ? 2 : 6, // World view (zoom 2) when using tile server, India view (zoom 6) otherwise
+          longitude: tileServerUrl ? 81.5 : 81.5, // World center (0) when using tile server, India center (home view) otherwise
+          latitude: tileServerUrl ? 81.5 : 20.5, // Equator (0) when using tile server, India center (home view) otherwise
+          zoom: tileServerUrl ? 3 : 3, // World view (zoom 2) when using tile server, India view (zoom 3 - home view) otherwise
           pitch: pitch,
           bearing: 0,
         }}
         minZoom={0}
-        maxZoom={15}
+        maxZoom={18}
         maxPitch={85}
         onLoad={async (map: any) => {
           const mapInstance = map.target;

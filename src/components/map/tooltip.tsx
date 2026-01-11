@@ -264,7 +264,7 @@ const Tooltip = () => {
       const igrs = calculateIgrs(point[0], point[1]);
       if (igrs) return igrs;
     }
-    return `[${point[1]?.toFixed(4)}, ${point[0]?.toFixed(4)}]`;
+    return `[${point[1]?.toFixed(4)}°, ${point[0]?.toFixed(4)}°]`;
   };
   const coordinateLabel = useIgrs ? "IGRS" : "lat, lng";
 
@@ -458,8 +458,12 @@ const Tooltip = () => {
           label: "Location",
           value: useIgrs
             ? calculateIgrs(object.longitude, object.latitude) ||
-              `[${object.latitude.toFixed(3)}, ${object.longitude.toFixed(3)}]`
-            : `[${object.latitude.toFixed(3)}, ${object.longitude.toFixed(3)}]`,
+              `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(
+                4
+              )}°]`
+            : `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(
+                4
+              )}°]`,
         });
       }
 
