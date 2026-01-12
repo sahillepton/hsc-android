@@ -1,5 +1,5 @@
 // Simple toast notification system
-type ToastType = "loading" | "success" | "error";
+type ToastType = "loading" | "success" | "error" | "notification";
 
 let toastContainer: HTMLDivElement | null = null;
 let currentToastId: string | null = null;
@@ -48,6 +48,8 @@ const createIcon = (type: ToastType): string => {
       return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #10b981; flex-shrink: 0;" class="toast-icon"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`;
     case "error":
       return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #ef4444; flex-shrink: 0;" class="toast-icon"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg>`;
+    case "notification":
+      return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #3b82f6; flex-shrink: 0;" class="toast-icon"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>`;
   }
 };
 
@@ -227,6 +229,14 @@ export const toast = {
           () => toast.dismiss(id),
           5000
         );
+      } else if (type === "notification") {
+        toastEl.innerHTML = `
+          ${createIcon("notification")}
+          <span style="flex: 1; color: black;">${message}</span>
+        `;
+        // Clear any existing dismiss timeout (notifications don't auto-dismiss)
+        const existingTimeout = (toastEl as any).__dismissTimeout;
+        if (existingTimeout) clearTimeout(existingTimeout);
       }
     } else {
       // If toast element doesn't exist, create a new one instead
@@ -234,9 +244,40 @@ export const toast = {
         toast.success(message);
       } else if (type === "error") {
         toast.error(message);
+      } else if (type === "notification") {
+        toast.notification(message);
       } else {
         toast.loading(message);
       }
     }
+  },
+
+  notification: (message: string): string => {
+    const id = Math.random().toString(36).substring(7);
+    const container = createToastContainer();
+
+    // Remove existing toast
+    if (currentToastId) {
+      const existing = container.querySelector(
+        `[data-toast-id="${currentToastId}"]`
+      );
+      if (existing) existing.remove();
+    }
+
+    const toastEl = document.createElement("div");
+    toastEl.setAttribute("data-toast-id", id);
+    const styles = getToastStyles();
+    Object.assign(toastEl.style, styles);
+
+    toastEl.innerHTML = `
+      ${createIcon("notification")}
+      <span style="flex: 1; color: black;">${message}</span>
+    `;
+
+    container.appendChild(toastEl);
+    currentToastId = id;
+
+    // Notification toasts don't auto-dismiss - they stay until manually dismissed
+    return id;
   },
 };

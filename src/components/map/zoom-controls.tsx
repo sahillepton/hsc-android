@@ -17,6 +17,7 @@ import {
   Home,
   MapPin,
   FolderOpen,
+  Crop,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -67,6 +68,8 @@ const ZoomControls = ({
   isProcessingFiles = false,
   alertButtonProps,
   igrsToggleProps,
+  rubberBandMode,
+  onToggleRubberBand,
 }: {
   mapRef: React.RefObject<any>;
   zoom: number;
@@ -90,6 +93,8 @@ const ZoomControls = ({
   cameraPopoverProps?: CameraPopoverProps;
   alertButtonProps?: AlertButtonProps;
   igrsToggleProps?: IgrsToggleProps;
+  rubberBandMode?: boolean;
+  onToggleRubberBand?: () => void;
 }) => {
   const { drawingMode, setDrawingMode } = useDrawingMode();
   const [isSaving, setIsSaving] = useState(false);
@@ -164,6 +169,10 @@ const ZoomControls = ({
   };
 
   const toggleMode = (mode: DrawingMode) => {
+    // If enabling a drawing mode, disable rubber band mode if active
+    if (drawingMode !== mode && rubberBandMode && onToggleRubberBand) {
+      onToggleRubberBand();
+    }
     setDrawingMode(drawingMode === mode ? null : mode);
   };
 
@@ -432,6 +441,34 @@ const ZoomControls = ({
                 </div>
               );
             })}
+            {onToggleRubberBand && (
+              <div className="flex flex-col items-center gap-1 text-[11px] font-semibold text-muted-foreground">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className={cn(
+                    "h-10 w-10 p-0 rounded-none hover:text-foreground bg-transparent cursor-pointer",
+                    rubberBandMode
+                      ? "text-zinc-950 bg-blue-600/20 hover:bg-blue-600/20 rounded-sm font-bold"
+                      : "bg-white text-foreground hover:bg-white"
+                  )}
+                  title={
+                    rubberBandMode
+                      ? "Stop Rubber Band Zoom"
+                      : "Start Rubber Band Zoom"
+                  }
+                  onClick={() => {
+                    // If enabling rubber band mode, disable any active drawing mode
+                    if (!rubberBandMode && drawingMode) {
+                      setDrawingMode(null);
+                    }
+                    onToggleRubberBand();
+                  }}
+                >
+                  <Crop className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">

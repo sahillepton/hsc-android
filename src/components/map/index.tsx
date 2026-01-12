@@ -23,6 +23,11 @@ import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
 import OfflineLocationTracker from "./offline-location-tracker";
 import { TileFolderDialog, initializeTileServer } from "./tile-folder-dialog";
+import {
+  useRubberBandRectangle,
+  useRubberBandOverlay,
+  calculateRectangleBounds,
+} from "./rubber-band-overlay";
 import { useUdpConfigStore } from "@/store/udp-config-store";
 // import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
@@ -124,6 +129,22 @@ const MapComponent = ({
         clearTimeout(zoomUpdateTimeoutRef.current);
       }
     };
+  }, []);
+
+  // Detect Android tablet (or allow on any device with touch support for testing)
+  useEffect(() => {
+    const userAgent = navigator.userAgent.toLowerCase();
+    const isAndroid = /android/.test(userAgent);
+    const isMobile = /mobile/.test(userAgent);
+    const screenWidth = window.innerWidth;
+
+    // Consider it a tablet if Android and not mobile, or screen width > 600px
+    // For now, allow on any device with touch support for testing
+    const isTabletDevice =
+      (isAndroid && !isMobile) ||
+      (isAndroid && screenWidth > 600) ||
+      "ontouchstart" in window;
+    setIsAndroidTablet(isTabletDevice);
   }, []);
 
   // Reset view and restart tile server when app resumes from background
@@ -253,6 +274,19 @@ const MapComponent = ({
   //   useProgressiveNodes(networkLayersVisible);
   const [isMapEnabled] = useState(true);
   const [pitch, setPitch] = useState(0);
+  const [rubberBandMode, setRubberBandMode] = useState(false);
+  const [isRubberBandDrawing, setIsRubberBandDrawing] = useState(false);
+  const [isRubberBandZooming, setIsRubberBandZooming] = useState(false);
+  const [rubberBandStart, setRubberBandStart] = useState<
+    [number, number] | null
+  >(null);
+  const [rubberBandEnd, setRubberBandEnd] = useState<[number, number] | null>(
+    null
+  );
+  const [isAndroidTablet, setIsAndroidTablet] = useState(false);
+  const [rubberBandToastId, setRubberBandToastId] = useState<string | null>(
+    null
+  );
 
   const [selectedNodeForIcon, setSelectedNodeForIcon] = useState<string | null>(
     null
@@ -2264,6 +2298,12 @@ const MapComponent = ({
     const { lng: longitude, lat: latitude } = event.lngLat;
     const currentPoint: [number, number] = [longitude, latitude];
     setMousePosition(currentPoint);
+
+    // Update rubber band end point if drawing (for mouse/touch support)
+    if (isRubberBandDrawing && rubberBandStart) {
+      setRubberBandEnd([longitude, latitude]);
+      // Force re-render by updating state
+    }
   };
 
   const handleMouseUp = () => {
@@ -2272,6 +2312,269 @@ const MapComponent = ({
     setIsDrawing(false);
     setDragStart(null);
   };
+
+  // Handle mouse down for rubber band (for desktop testing and mouse support)
+  const handleMouseDown = useCallback(
+    (event: any) => {
+      // Only activate when rubber band mode is on and no drawing mode is active
+      if (!rubberBandMode || drawingMode || isDrawing) {
+        return;
+      }
+
+      // Check if it's a left mouse button (not right click)
+      if (
+        event.originalEvent?.button !== 0 &&
+        event.originalEvent?.button !== undefined
+      ) {
+        return;
+      }
+
+      const point = event.lngLat;
+      if (!point) return;
+
+      // Start rubber band selection
+      setIsRubberBandDrawing(true);
+      setRubberBandStart([point.lng, point.lat]);
+      setRubberBandEnd([point.lng, point.lat]);
+      setIsRubberBandZooming(false);
+
+      // Prevent default map panning
+      if (event.originalEvent) {
+        event.originalEvent.preventDefault();
+      }
+    },
+    [rubberBandMode, drawingMode, isDrawing]
+  );
+
+  // Handle mouse up for rubber band (for desktop testing)
+  const handleMouseUpForRubberBand = useCallback(() => {
+    if (!isRubberBandDrawing || !rubberBandStart || !rubberBandEnd) {
+      return;
+    }
+
+    // Calculate minimum distance threshold (e.g., 0.001 degrees)
+    const lngDiff = Math.abs(rubberBandEnd[0] - rubberBandStart[0]);
+    const latDiff = Math.abs(rubberBandEnd[1] - rubberBandStart[1]);
+
+    // Only zoom if selection is large enough (not just a click)
+    if (lngDiff < 0.001 && latDiff < 0.001) {
+      // Too small, cleanup
+      setIsRubberBandDrawing(false);
+      setRubberBandStart(null);
+      setRubberBandEnd(null);
+      return;
+    }
+
+    // Calculate bounding box
+    const bounds = calculateRectangleBounds(rubberBandStart, rubberBandEnd);
+    if (!bounds) {
+      setIsRubberBandDrawing(false);
+      setRubberBandStart(null);
+      setRubberBandEnd(null);
+      return;
+    }
+
+    // Start zoom phase
+    setIsRubberBandDrawing(false);
+    setIsRubberBandZooming(true);
+
+    // Dismiss notification toast when rectangle is drawn
+    if (rubberBandToastId) {
+      toast.dismiss(rubberBandToastId);
+      setRubberBandToastId(null);
+    }
+
+    // Zoom to selected area
+    if (mapRef.current) {
+      const map = mapRef.current.getMap();
+      map.fitBounds(
+        [
+          [bounds.minLng, bounds.minLat],
+          [bounds.maxLng, bounds.maxLat],
+        ],
+        {
+          padding: { top: 50, bottom: 50, left: 50, right: 50 },
+          duration: 500,
+          maxZoom: 18,
+        }
+      );
+    }
+  }, [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId]);
+
+  // Rubber band zoom handlers (rectangle-based)
+  const handleTouchStart = useCallback(
+    (event: any) => {
+      // Only activate on Android tablets when rubber band mode is on and no drawing mode is active
+      if (!isAndroidTablet || !rubberBandMode || drawingMode || isDrawing) {
+        return;
+      }
+
+      // Check if it's a single touch (not multi-touch)
+      const touches =
+        event.originalEvent?.touches || event.nativeEvent?.touches;
+      if (touches && touches.length !== 1) return;
+
+      const point = event.lngLat;
+      if (!point) return;
+
+      // Start rubber band selection
+      setIsRubberBandDrawing(true);
+      setRubberBandStart([point.lng, point.lat]);
+      setRubberBandEnd([point.lng, point.lat]);
+      setIsRubberBandZooming(false);
+
+      // Prevent default map panning
+      if (event.originalEvent) {
+        event.originalEvent.preventDefault();
+      } else if (event.nativeEvent) {
+        event.nativeEvent.preventDefault();
+      }
+    },
+    [isAndroidTablet, rubberBandMode, drawingMode, isDrawing]
+  );
+
+  const handleTouchMove = useCallback(
+    (event: any) => {
+      if (!isRubberBandDrawing || !rubberBandStart) return;
+
+      const point = event.lngLat;
+      if (!point) return;
+
+      // Update end point for rectangle
+      setRubberBandEnd([point.lng, point.lat]);
+
+      // Prevent default map panning
+      if (event.originalEvent) {
+        event.originalEvent.preventDefault();
+      } else if (event.nativeEvent) {
+        event.nativeEvent.preventDefault();
+      }
+    },
+    [isRubberBandDrawing, rubberBandStart]
+  );
+
+  const handleTouchEnd = useCallback(
+    (event: any) => {
+      if (!isRubberBandDrawing || !rubberBandStart || !rubberBandEnd) {
+        return;
+      }
+
+      // Calculate minimum distance threshold (e.g., 0.001 degrees)
+      const lngDiff = Math.abs(rubberBandEnd[0] - rubberBandStart[0]);
+      const latDiff = Math.abs(rubberBandEnd[1] - rubberBandStart[1]);
+
+      // Only zoom if selection is large enough (not just a tap)
+      if (lngDiff < 0.001 && latDiff < 0.001) {
+        // Too small, cleanup
+        setIsRubberBandDrawing(false);
+        setRubberBandStart(null);
+        setRubberBandEnd(null);
+        return;
+      }
+
+      // Calculate bounding box
+      const bounds = calculateRectangleBounds(rubberBandStart, rubberBandEnd);
+      if (!bounds) {
+        setIsRubberBandDrawing(false);
+        setRubberBandStart(null);
+        setRubberBandEnd(null);
+        return;
+      }
+
+      // Start zoom phase
+      setIsRubberBandDrawing(false);
+      setIsRubberBandZooming(true);
+
+      // Dismiss notification toast when rectangle is drawn
+      if (rubberBandToastId) {
+        toast.dismiss(rubberBandToastId);
+        setRubberBandToastId(null);
+      }
+
+      // Zoom to selected area
+      if (mapRef.current) {
+        const map = mapRef.current.getMap();
+        map.fitBounds(
+          [
+            [bounds.minLng, bounds.minLat],
+            [bounds.maxLng, bounds.maxLat],
+          ],
+          {
+            padding: { top: 50, bottom: 50, left: 50, right: 50 },
+            duration: 500,
+            maxZoom: 18,
+          }
+        );
+      }
+
+      // Prevent default
+      if (event.originalEvent) {
+        event.originalEvent.preventDefault();
+      } else if (event.nativeEvent) {
+        event.nativeEvent.preventDefault();
+      }
+    },
+    [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId]
+  );
+
+  // Show notification toast when rubber band mode is enabled
+  useEffect(() => {
+    if (rubberBandMode) {
+      const toastId = toast.notification("Drag to draw a rectangle");
+      setRubberBandToastId(toastId);
+    } else {
+      // Dismiss toast when mode is disabled
+      if (rubberBandToastId) {
+        toast.dismiss(rubberBandToastId);
+        setRubberBandToastId(null);
+      }
+    }
+  }, [rubberBandMode]);
+
+  // Cleanup rubber band when mode is disabled
+  useEffect(() => {
+    if (!rubberBandMode) {
+      setIsRubberBandDrawing(false);
+      setIsRubberBandZooming(false);
+      setRubberBandStart(null);
+      setRubberBandEnd(null);
+    }
+  }, [rubberBandMode]);
+
+  // Cleanup rubber band when drawing mode is activated (disable rubber band mode)
+  useEffect(() => {
+    if (drawingMode) {
+      setIsRubberBandDrawing(false);
+      setIsRubberBandZooming(false);
+      setRubberBandStart(null);
+      setRubberBandEnd(null);
+      // Disable rubber band mode when any drawing tool is activated
+      setRubberBandMode(false);
+    }
+  }, [drawingMode]);
+
+  // Listen for zoom completion to cleanup and exit mode
+  useEffect(() => {
+    if (!mapRef.current || !isRubberBandZooming) return;
+
+    const map = mapRef.current.getMap();
+    const handleMoveEnd = () => {
+      // Small delay to ensure zoom animation is complete
+      setTimeout(() => {
+        // Cleanup all state and exit rubber band mode after zoom completes
+        setIsRubberBandZooming(false);
+        setRubberBandStart(null);
+        setRubberBandEnd(null);
+        setRubberBandMode(false); // Exit mode after one zoom
+      }, 100);
+    };
+
+    map.on("moveend", handleMoveEnd);
+
+    return () => {
+      map.off("moveend", handleMoveEnd);
+    };
+  }, [isRubberBandZooming]);
 
   // Ensure we always hand BitmapLayer a canvas (avoid createImageBitmap on blob)
   const ensureCanvasImage = (img: any): HTMLCanvasElement | null => {
@@ -2335,6 +2638,37 @@ const MapComponent = ({
   // UDP layers from separate component
   const { udpLayers, connectionError, noDataWarning, isConnected } =
     useUdpLayers(handleLayerHover);
+
+  // Rubber band overlay layers
+  const rubberBandRectangle = useRubberBandRectangle({
+    isDrawing: isRubberBandDrawing,
+    isZooming: isRubberBandZooming,
+    start: rubberBandStart,
+    end: rubberBandEnd,
+  });
+
+  // Debug logging
+  useEffect(() => {
+    if (isRubberBandDrawing) {
+      console.log("[RubberBand] Drawing state:", {
+        isDrawing: isRubberBandDrawing,
+        start: rubberBandStart,
+        end: rubberBandEnd,
+        hasRectangle: !!rubberBandRectangle,
+      });
+    }
+  }, [
+    isRubberBandDrawing,
+    rubberBandStart,
+    rubberBandEnd,
+    rubberBandRectangle,
+  ]);
+
+  const rubberBandOverlay = useRubberBandOverlay({
+    isZooming: isRubberBandZooming,
+    start: rubberBandStart,
+    end: rubberBandEnd,
+  });
 
   const notificationsActive =
     networkLayersVisible && (connectionError || noDataWarning);
@@ -3565,7 +3899,6 @@ const MapComponent = ({
         reuseMaps={true}
         attributionControl={false}
         dragRotate={true}
-        touchZoomRotate={true}
         pitchWithRotate={true}
         initialViewState={{
           longitude: tileServerUrl ? 81.5 : 81.5, // World center (0) when using tile server, India center (home view) otherwise
@@ -3690,7 +4023,16 @@ const MapComponent = ({
         }}
         onClick={handleMapClick}
         onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
+        onMouseUp={() => {
+          handleMouseUp();
+          handleMouseUpForRubberBand();
+        }}
+        onMouseDown={handleMouseDown}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        dragPan={!isRubberBandDrawing}
+        touchZoomRotate={!isRubberBandDrawing}
         onMove={(e: any) => {
           if (e && e.viewState) {
             // Throttle updates to reduce re-renders during map operations
@@ -3711,6 +4053,13 @@ const MapComponent = ({
         <DeckGLOverlay
           layers={[
             ...deckGlLayers,
+            // Rubber band overlay layers (render on top)
+            ...(rubberBandRectangle
+              ? Array.isArray(rubberBandRectangle)
+                ? rubberBandRectangle
+                : [rubberBandRectangle]
+              : []),
+            ...(rubberBandOverlay ? [rubberBandOverlay] : []),
 
             // Add user location layers LAST so they render on top of everything
             ...(userLocation && showUserLocation
@@ -3833,6 +4182,8 @@ const MapComponent = ({
           value: useIgrs,
           onToggle: (checked) => setUseIgrs(checked),
         }}
+        rubberBandMode={rubberBandMode}
+        onToggleRubberBand={() => setRubberBandMode((prev) => !prev)}
       />
 
       {/* UDP Config Dialog */}
