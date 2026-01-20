@@ -25,7 +25,10 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -188,6 +191,9 @@ public class NativeUploaderPlugin extends Plugin {
                     if (originalName == null || originalName.trim().isEmpty()) {
                         originalName = "upload_" + stamp + "_" + idx;
                     }
+
+                    // Note: File extension validation is done in JavaScript to show proper error messages
+                    // All files are staged here, validation happens later in handleUpload
 
                     String safeName = originalName.replaceAll("[^a-zA-Z0-9._-]", "_");
                     String stampedName = stamp + "_" + idx + "_" + safeName;

@@ -22,7 +22,7 @@ import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
 import OfflineLocationTracker from "./offline-location-tracker";
-import { TileFolderDialog, initializeTileServer } from "./tile-folder-dialog";
+import { initializeTileServer } from "./tile-folder-dialog";
 import {
   useRubberBandRectangle,
   useRubberBandOverlay,
@@ -52,6 +52,7 @@ import {
   destinationPoint,
   generateLayerId,
   isPointNearFirstPoint,
+  getPolygonCloseThreshold,
   normalizeAngleSigned,
   computePolygonAreaMeters,
   computePolygonPerimeterMeters,
@@ -170,15 +171,16 @@ const MapComponent = ({
               const { initializeTileServer } = await import(
                 "./tile-folder-dialog"
               );
-              const url = await initializeTileServer();
+              // Wait for permissions when app comes to foreground (user might have granted them)
+              const url = await initializeTileServer(true);
 
               if (url) {
-                setTileServerUrl(url);
-                console.log("[App] Tile server restarted:", url);
-              } else {
-                // No folder selected - show dialog
-                console.log("[App] No folder selected, showing dialog");
-                setIsTileFolderDialogOpen(true);
+                // Force retry by clearing and resetting URL to trigger style reload
+                setTileServerUrl(null);
+                setTimeout(() => {
+                  setTileServerUrl(url);
+                  console.log("[App] Tile server restarted:", url);
+                }, 100);
               }
 
               // Reset view to India to force re-render
@@ -200,15 +202,16 @@ const MapComponent = ({
             const { initializeTileServer } = await import(
               "./tile-folder-dialog"
             );
-            const url = await initializeTileServer();
+            // Wait for permissions when app comes to foreground (user might have granted them)
+            const url = await initializeTileServer(true);
 
             if (url) {
-              setTileServerUrl(url);
-              console.log("[App] Tile server restarted:", url);
-            } else {
-              // No folder selected - show dialog
-              console.log("[App] No folder selected, showing dialog");
-              setIsTileFolderDialogOpen(true);
+              // Force retry by clearing and resetting URL to trigger style reload
+              setTileServerUrl(null);
+              setTimeout(() => {
+                setTileServerUrl(url);
+                console.log("[App] Tile server restarted:", url);
+              }, 100);
             }
 
             // Reset view to India to force re-render
@@ -300,14 +303,14 @@ const MapComponent = ({
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
   const [isNetworkBoxOpen, setIsNetworkBoxOpen] = useState(false);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
-  const [isTileFolderDialogOpen, setIsTileFolderDialogOpen] = useState(false);
   const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
   const lastLayerCreationTimeRef = useRef<number>(0);
 
   // Initialize tile server on mount and set up fetch interceptor for tile logging
   useEffect(() => {
     const initServer = async () => {
-      const url = await initializeTileServer();
+      // Wait for permissions on initial load (user might need to grant them)
+      const url = await initializeTileServer(true);
       if (url) {
         setTileServerUrl(url);
 
@@ -346,10 +349,6 @@ const MapComponent = ({
 
           return originalFetch.apply(this, args);
         };
-      } else {
-        // No folder selected - show dialog to prompt user
-        console.log("[TileServer] No folder selected, showing dialog");
-        setIsTileFolderDialogOpen(true);
       }
     };
 
@@ -376,20 +375,84 @@ const MapComponent = ({
     try {
       // Fetch style.json to modify it
       fetch(styleUrl)
-        .then((response) => response.json())
+        .then(async (response) => {
+          // If 404, check permissions and retry once
+          if (response.status === 404) {
+            console.warn(
+              "[Map] style.json not found (404), checking permissions..."
+            );
+            const { checkStoragePermission, waitForStoragePermission } =
+              await import("./tile-folder-dialog");
+            const hasPermission = await checkStoragePermission();
+            if (!hasPermission) {
+              console.log("[Map] No permission, waiting for user to grant...");
+              const granted = await waitForStoragePermission(5000); // Wait 5 seconds
+              if (granted) {
+                console.log("[Map] Permission granted, retrying style.json...");
+                // Retry fetch
+                const retryResponse = await fetch(styleUrl);
+                if (retryResponse.ok) {
+                  return retryResponse.json();
+                }
+              }
+            }
+            // If still 404 or no permission, throw error
+            throw new Error(
+              `style.json not found (404) - Check if file exists in Documents/tiles/ and permissions are granted`
+            );
+          }
+          if (!response.ok) {
+            throw new Error(`Failed to fetch style.json: ${response.status}`);
+          }
+          return response.json();
+        })
         .then((styleJson) => {
-          // Convert relative tile URLs to absolute URLs
+          // Force ALL tile URLs to point to tile server
           if (styleJson.sources) {
             Object.keys(styleJson.sources).forEach((sourceKey) => {
               const source = styleJson.sources[sourceKey];
               if (source.type === "vector" && source.tiles) {
+                console.log(
+                  `[Map] Original source ${sourceKey} tiles:`,
+                  source.tiles
+                );
                 source.tiles = source.tiles.map((tileUrl: string) => {
-                  // If it's a relative URL (starts with /), make it absolute
-                  if (tileUrl.startsWith("/")) {
-                    return `${tileServerUrl}${tileUrl}`;
+                  // Extract the tile path (e.g., /3/5/3.pbf from any URL format)
+                  let tilePath = tileUrl;
+
+                  // If it's an absolute URL, extract the path
+                  try {
+                    const url = new URL(tilePath);
+                    tilePath = url.pathname;
+                  } catch {
+                    // Not a valid URL, might be relative or template
                   }
-                  // If it's already absolute, return as is
-                  return tileUrl;
+
+                  // Handle Mapbox tile URL templates like {z}/{x}/{y}.pbf
+                  // If it's a template, keep it but ensure it points to our server
+                  if (
+                    tilePath.includes("{z}") ||
+                    tilePath.includes("{x}") ||
+                    tilePath.includes("{y}")
+                  ) {
+                    // Template format - ensure it starts with / and use our server
+                    if (!tilePath.startsWith("/")) {
+                      tilePath = "/" + tilePath;
+                    }
+                    return `${tileServerUrl}${tilePath}`;
+                  }
+
+                  // Regular tile path - ensure it starts with /
+                  if (!tilePath.startsWith("/")) {
+                    tilePath = "/" + tilePath;
+                  }
+
+                  // Always use tile server URL
+                  const finalUrl = `${tileServerUrl}${tilePath}`;
+                  console.log(
+                    `[Map] Converting tile URL: ${tileUrl} -> ${finalUrl}`
+                  );
+                  return finalUrl;
                 });
                 console.log(
                   `[Map] Updated source ${sourceKey} tiles:`,
@@ -399,16 +462,28 @@ const MapComponent = ({
             });
           }
 
+          // Convert relative glyphs URL to absolute URL
+          if (styleJson.glyphs && typeof styleJson.glyphs === "string") {
+            if (styleJson.glyphs.startsWith("/")) {
+              styleJson.glyphs = `${tileServerUrl}${styleJson.glyphs}`;
+              console.log("[Map] Updated glyphs URL:", styleJson.glyphs);
+            }
+          } else if (
+            styleJson.layers &&
+            styleJson.layers.some(
+              (layer: any) => layer.layout && layer.layout["text-field"]
+            )
+          ) {
+            // If glyphs is missing but text layers exist, set default glyphs path
+            styleJson.glyphs = `${tileServerUrl}/fonts/{fontstack}/{range}.pbf`;
+            console.log("[Map] Added missing glyphs URL:", styleJson.glyphs);
+          }
+
           // Apply the modified style
           map.setStyle(styleJson);
         })
         .catch((error) => {
-          console.error(
-            "[Map] Failed to fetch style, trying URL directly:",
-            error
-          );
-          // Fallback: try loading from URL directly
-          map.setStyle(styleUrl);
+          console.error("[Map] Failed to fetch and apply style:", error);
         });
     } catch (error) {
       console.error("[Map] Error reloading style:", error);
@@ -417,18 +492,76 @@ const MapComponent = ({
     map.once("style.load", () => {
       console.log("[Map] Style reloaded successfully");
 
-      // Verify sources
+      // Force update all tile source URLs to point to tile server
       const currentStyle = map.getStyle();
       if (currentStyle && currentStyle.sources) {
         Object.keys(currentStyle.sources).forEach((sourceKey) => {
           const source = map.getSource(sourceKey);
           if (source) {
             const sourceData = source as any;
-            console.log(`[Map] Source ${sourceKey} verified:`, {
-              type: sourceData.type,
-              tiles: sourceData.tiles,
-              url: sourceData.url,
-            });
+            if (sourceData.type === "vector" && sourceData.tiles) {
+              console.log(
+                `[Map] Source ${sourceKey} current tiles:`,
+                sourceData.tiles
+              );
+
+              // Update tiles to point to tile server
+              const updatedTiles = sourceData.tiles.map((tileUrl: string) => {
+                let tilePath = tileUrl;
+
+                // Extract path from absolute URL
+                try {
+                  const url = new URL(tilePath);
+                  tilePath = url.pathname;
+                } catch {
+                  // Not a valid URL
+                }
+
+                // Handle template format
+                if (
+                  tilePath.includes("{z}") ||
+                  tilePath.includes("{x}") ||
+                  tilePath.includes("{y}")
+                ) {
+                  if (!tilePath.startsWith("/")) {
+                    tilePath = "/" + tilePath;
+                  }
+                  return `${tileServerUrl}${tilePath}`;
+                }
+
+                // Regular path
+                if (!tilePath.startsWith("/")) {
+                  tilePath = "/" + tilePath;
+                }
+
+                return `${tileServerUrl}${tilePath}`;
+              });
+
+              // Update the source with new tile URLs
+              try {
+                map.removeSource(sourceKey);
+                map.addSource(sourceKey, {
+                  type: "vector",
+                  tiles: updatedTiles,
+
+                  minzoom: 0,
+                  maxzoom: 18, // camera zoom allowed
+                  maxNativeZoom: 14, // 🔥 THIS IS THE KEY
+                });
+                console.log(
+                  `[Map] Source ${sourceKey} updated with tiles:`,
+                  updatedTiles
+                );
+              } catch (e) {
+                console.error(`[Map] Failed to update source ${sourceKey}:`, e);
+              }
+            } else {
+              console.log(`[Map] Source ${sourceKey} verified:`, {
+                type: sourceData.type,
+                tiles: sourceData.tiles,
+                url: sourceData.url,
+              });
+            }
           }
         });
       }
@@ -504,6 +637,9 @@ const MapComponent = ({
         return;
       }
 
+      // Track if any files were actually valid
+      let hasValidFiles = false;
+
       // Process files sequentially
       for (let i = 0; i < result.files.length; i++) {
         const stagedFile = result.files[i];
@@ -513,12 +649,26 @@ const MapComponent = ({
         );
 
         try {
-          // Step 1: Wait a bit for file to be fully written to disk
+          // Step 1: Check if file extension is allowed
+          const { isFileExtensionAllowed, getBlockedFileMessage } =
+            await import("@/lib/allowed-file-extensions");
+          if (!isFileExtensionAllowed(stagedFile.originalName)) {
+            toast.update(
+              toastId,
+              getBlockedFileMessage(stagedFile.originalName),
+              "error"
+            );
+            continue; // Skip this file
+          }
+
+          // Don't set hasValidFiles here - only set it after successfully processing a file
+          // This prevents empty ZIPs from being counted as valid
+
+          // Step 2: Wait a bit for file to be fully written to disk
           await new Promise((resolve) => setTimeout(resolve, 500));
 
-          // Step 2: Check file size before reading (prevent memory issues)
+          // Step 3: Check file size before reading (prevent memory issues)
           const fileSizeMB = stagedFile.size / (1024 * 1024);
-          console.log(`[FileUpload] File size: ${fileSizeMB.toFixed(2)} MB`);
           if (fileSizeMB > 500) {
             toast.update(
               toastId,
@@ -587,12 +737,14 @@ const MapComponent = ({
               );
 
               if (extractResult.files.length === 0) {
+                toast.dismiss(extractToastId);
                 toast.update(
                   extractToastId,
-                  "No supported files found in ZIP",
+                  "ZIP file is empty or contains no valid files. Only GIS-related files are allowed.",
                   "error"
                 );
-                continue;
+                // Don't mark as valid - continue to next file
+                continue; // Skip this ZIP file
               }
 
               toast.update(
@@ -600,6 +752,9 @@ const MapComponent = ({
                 `Found ${extractResult.files.length} file(s), processing...`,
                 "loading"
               );
+
+              // Track if any valid files were found in ZIP
+              let hasValidFilesInZip = false;
 
               // Process each extracted file sequentially
               for (
@@ -609,6 +764,31 @@ const MapComponent = ({
               ) {
                 const extractedFile = extractResult.files[zipFileIdx];
                 const zipFileNum = zipFileIdx + 1;
+
+                // Check if extracted file extension is allowed
+                const { isFileExtensionAllowed } = await import(
+                  "@/lib/allowed-file-extensions"
+                );
+                if (!isFileExtensionAllowed(extractedFile.name)) {
+                  console.log(
+                    `[FileUpload] Skipping blocked file from ZIP: ${extractedFile.name}`
+                  );
+                  // Delete the extracted file since we don't want to store it
+                  try {
+                    await NativeUploader.deleteFile({
+                      absolutePath: extractedFile.absolutePath,
+                    });
+                  } catch (deleteError) {
+                    console.warn(
+                      `[FileUpload] Failed to delete blocked file: ${extractedFile.name}`,
+                      deleteError
+                    );
+                  }
+                  continue; // Skip this file
+                }
+
+                hasValidFilesInZip = true; // Mark that we have at least one valid file in ZIP
+
                 console.log(
                   `[FileUpload] Processing extracted file ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${extractedFile.type})`
                 );
@@ -674,6 +854,7 @@ const MapComponent = ({
                       `DEM: ${extractedFile.name}`,
                       "success"
                     );
+                    hasValidFiles = true; // Mark that we have at least one valid file overall
                   } else if (
                     extractedFile.type === "vector" ||
                     extractedFile.type === "shapefile"
@@ -709,6 +890,7 @@ const MapComponent = ({
                       `Vector: ${extractedFile.name}`,
                       "success"
                     );
+                    hasValidFiles = true; // Mark that we have at least one valid file overall
                   }
 
                   // Small delay between files
@@ -728,10 +910,24 @@ const MapComponent = ({
                 }
               }
 
-              toast.dismiss(extractToastId);
-              toast.success(
-                `Successfully processed ${extractResult.files.length} file(s) from ZIP`
-              );
+              // Check if ZIP contained any valid files
+              if (!hasValidFilesInZip) {
+                toast.dismiss(extractToastId);
+                toast.update(
+                  extractToastId,
+                  "ZIP file contains no valid files. Only GIS-related files are allowed.",
+                  "error"
+                );
+                continue; // Skip to next file
+              }
+
+              // Only show success if we actually processed valid files
+              if (hasValidFilesInZip) {
+                toast.dismiss(extractToastId);
+                toast.success(
+                  `Successfully processed files from ZIP: ${stagedFile.originalName}`
+                );
+              }
 
               // Delete the original ZIP file after extraction
               try {
@@ -752,6 +948,7 @@ const MapComponent = ({
                 `[FileUpload] Error extracting ZIP file:`,
                 zipError
               );
+              toast.dismiss(extractToastId);
               toast.update(
                 extractToastId,
                 `Error extracting ZIP: ${
@@ -759,6 +956,8 @@ const MapComponent = ({
                 }`,
                 "error"
               );
+              // Don't mark as valid - continue to next file
+              continue; // Skip this ZIP file on error
             }
           } else {
             // Handle regular (non-ZIP) file
@@ -905,6 +1104,7 @@ const MapComponent = ({
                 "File Rendered Successfully",
                 "success"
               );
+              hasValidFiles = true; // Mark that we have at least one valid file
               await new Promise((resolve) => setTimeout(resolve, 1000));
               toast.dismiss(renderToastId);
             } catch (renderError) {
@@ -937,9 +1137,25 @@ const MapComponent = ({
         }
       }
 
+      // Check if any files were actually valid
+      if (!hasValidFiles) {
+        console.log("[FileUpload] No valid files found, showing error message");
+        toast.update(
+          toastId,
+          "No valid files found. Only GIS-related files are allowed.",
+          "error"
+        );
+        return;
+      }
+
+      // Only show success if we actually processed valid files
+      // Don't count files that were skipped (empty ZIPs, invalid formats, etc.)
+      console.log(
+        "[FileUpload] Valid files were processed, showing success message"
+      );
       toast.update(
         toastId,
-        `Successfully uploaded and rendered ${result.files.length} file(s)`,
+        `Successfully uploaded and rendered file(s)`,
         "success"
       );
     } catch (error) {
@@ -1792,9 +2008,12 @@ const MapComponent = ({
     setPendingPolygonPoints(updatedPath);
     setCurrentPath(updatedPath);
 
+    // Get zoom-based threshold for closing polygon (optimized for zoom 18)
+    const closeThreshold = getPolygonCloseThreshold(mapZoom);
+
     if (
       updatedPath.length >= 3 &&
-      isPointNearFirstPoint(point, updatedPath[0])
+      isPointNearFirstPoint(point, updatedPath[0], closeThreshold)
     ) {
       const closedPath = [...updatedPath.slice(0, -1), updatedPath[0]];
       const newLayer: LayerProps = {
@@ -3209,7 +3428,7 @@ const MapComponent = ({
               return {
                 position: point,
                 color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
-                radius: index === 0 ? 200 : 180,
+                radius: index === 0 ? 8 : 6, // Smaller radius in meters that scales with zoom
               };
             })
             .filter((item): item is NonNullable<typeof item> => item !== null);
@@ -3650,7 +3869,7 @@ const MapComponent = ({
     if (isDrawing && currentPath.length > 0) {
       const previewPointData = currentPath.map((point, index) => ({
         position: point,
-        radius: 150,
+        radius: index === 0 ? 8 : 6, // Smaller radius in meters that scales with zoom
         color: index === 0 ? [255, 255, 0] : [255, 0, 255],
       }));
       previewLayers.push(
@@ -3659,9 +3878,11 @@ const MapComponent = ({
           data: previewPointData,
           getPosition: (d: any) => d.position,
           getRadius: (d: any) => d.radius,
+          radiusUnits: "meters",
           getFillColor: (d: any) => d.color,
           pickable: false,
           radiusMinPixels: 4,
+          radiusMaxPixels: 10,
         })
       );
     }
@@ -3894,7 +4115,8 @@ const MapComponent = ({
         ref={mapRef}
         style={{ width: "100%", height: "100%" }}
         mapboxAccessToken="pk.eyJ1IjoibmlraGlsc2FyYWYiLCJhIjoiY2xlc296YjRjMDA5dDNzcXphZjlzamFmeSJ9.7ZDaMZKecY3-70p9pX9-GQ"
-        mapStyle={tileServerUrl ? `${tileServerUrl}/style.json` : undefined}
+        mapStyle={undefined}
+        // Don't use mapStyle prop - we load style manually after modifying tile URLs
         renderWorldCopies={false}
         reuseMaps={true}
         attributionControl={false}
@@ -3926,20 +4148,15 @@ const MapComponent = ({
           }
 
           // Get tile server URL directly (don't rely on state which might not be set yet)
-          const { getTileServerUrl, initializeTileServer } = await import(
-            "./tile-folder-dialog"
-          );
-          const currentTileServerUrl = await getTileServerUrl();
-          let serverUrl =
-            tileServerUrl ||
-            currentTileServerUrl ||
-            (await initializeTileServer());
+          const { initializeTileServer } = await import("./tile-folder-dialog");
+          let serverUrl = tileServerUrl || (await initializeTileServer());
 
           // Ensure serverUrl doesn't have trailing slash
           if (serverUrl && serverUrl.endsWith("/")) {
             serverUrl = serverUrl.slice(0, -1);
           }
 
+          // Always load style manually (never use mapStyle prop to ensure we can modify URLs)
           if (serverUrl) {
             // Update state if needed
             if (serverUrl !== tileServerUrl) {
@@ -3953,20 +4170,62 @@ const MapComponent = ({
             try {
               // Fetch style.json to modify it
               const response = await fetch(styleUrl);
-              let styleJson = await response.json();
 
-              // Convert relative tile URLs to absolute URLs
+              if (!response.ok) {
+                throw new Error(
+                  `Failed to fetch style.json: ${response.status}`
+                );
+              }
+
+              let styleJson = await response.json();
+              console.log("[Map] Fetched style.json, modifying tile URLs...");
+
+              // Force ALL tile URLs to point to tile server
               if (styleJson.sources) {
                 Object.keys(styleJson.sources).forEach((sourceKey) => {
                   const source = styleJson.sources[sourceKey];
                   if (source.type === "vector" && source.tiles) {
+                    console.log(
+                      `[Map] Original source ${sourceKey} tiles:`,
+                      source.tiles
+                    );
                     source.tiles = source.tiles.map((tileUrl: string) => {
-                      // If it's a relative URL (starts with /), make it absolute
-                      if (tileUrl.startsWith("/")) {
-                        return `${serverUrl}${tileUrl}`;
+                      // Extract the tile path (e.g., /3/5/3.pbf from any URL format)
+                      let tilePath = tileUrl;
+
+                      // If it's an absolute URL, extract the path
+                      try {
+                        const url = new URL(tilePath);
+                        tilePath = url.pathname;
+                      } catch {
+                        // Not a valid URL, might be relative or template
                       }
-                      // If it's already absolute, return as is
-                      return tileUrl;
+
+                      // Handle Mapbox tile URL templates like {z}/{x}/{y}.pbf
+                      // If it's a template, keep it but ensure it points to our server
+                      if (
+                        tilePath.includes("{z}") ||
+                        tilePath.includes("{x}") ||
+                        tilePath.includes("{y}")
+                      ) {
+                        // Template format - ensure it starts with / and use our server
+                        if (!tilePath.startsWith("/")) {
+                          tilePath = "/" + tilePath;
+                        }
+                        return `${serverUrl}${tilePath}`;
+                      }
+
+                      // Regular tile path - ensure it starts with /
+                      if (!tilePath.startsWith("/")) {
+                        tilePath = "/" + tilePath;
+                      }
+
+                      // Always use tile server URL
+                      const finalUrl = `${serverUrl}${tilePath}`;
+                      console.log(
+                        `[Map] Converting tile URL: ${tileUrl} -> ${finalUrl}`
+                      );
+                      return finalUrl;
                     });
                     console.log(
                       `[Map] Updated source ${sourceKey} tiles:`,
@@ -3976,48 +4235,128 @@ const MapComponent = ({
                 });
               }
 
+              // Convert relative glyphs URL to absolute URL
+              if (styleJson.glyphs && typeof styleJson.glyphs === "string") {
+                if (styleJson.glyphs.startsWith("/")) {
+                  styleJson.glyphs = `${serverUrl}${styleJson.glyphs}`;
+                  console.log("[Map] Updated glyphs URL:", styleJson.glyphs);
+                }
+              } else if (
+                styleJson.layers &&
+                styleJson.layers.some(
+                  (layer: any) => layer.layout && layer.layout["text-field"]
+                )
+              ) {
+                // If glyphs is missing but text layers exist, set default glyphs path
+                styleJson.glyphs = `${serverUrl}/fonts/{fontstack}/{range}.pbf`;
+                console.log(
+                  "[Map] Added missing glyphs URL:",
+                  styleJson.glyphs
+                );
+              }
+
+              // Set up style.load handler BEFORE applying style
+              mapInstance.once("style.load", () => {
+                console.log("[Map] Style loaded, verifying tile URLs...");
+
+                // Double-check and force update tile URLs after style loads
+                const currentStyle = mapInstance.getStyle();
+                if (currentStyle && currentStyle.sources) {
+                  Object.keys(currentStyle.sources).forEach((sourceKey) => {
+                    const source = mapInstance.getSource(sourceKey);
+                    if (source) {
+                      const sourceData = source as any;
+                      if (sourceData.type === "vector" && sourceData.tiles) {
+                        console.log(
+                          `[Map] Verifying source ${sourceKey} tiles:`,
+                          sourceData.tiles
+                        );
+                        // Check if any tile URL doesn't start with serverUrl
+                        const needsUpdate = sourceData.tiles.some(
+                          (url: string) => !url.startsWith(serverUrl)
+                        );
+                        if (needsUpdate) {
+                          console.warn(
+                            `[Map] Source ${sourceKey} has incorrect tile URLs, updating...`
+                          );
+                          const updatedTiles = sourceData.tiles.map(
+                            (tileUrl: string) => {
+                              let tilePath = tileUrl;
+                              try {
+                                const url = new URL(tilePath);
+                                tilePath = url.pathname;
+                              } catch {}
+                              if (
+                                tilePath.includes("{z}") ||
+                                tilePath.includes("{x}") ||
+                                tilePath.includes("{y}")
+                              ) {
+                                if (!tilePath.startsWith("/"))
+                                  tilePath = "/" + tilePath;
+                                return `${serverUrl}${tilePath}`;
+                              }
+                              if (!tilePath.startsWith("/"))
+                                tilePath = "/" + tilePath;
+                              return `${serverUrl}${tilePath}`;
+                            }
+                          );
+                          try {
+                            mapInstance.removeSource(sourceKey);
+                            mapInstance.addSource(sourceKey, {
+                              type: "vector",
+                              tiles: updatedTiles,
+                              minzoom: 0,
+                              maxzoom: 18,
+                              maxNativeZoom: 14,
+                            });
+                            console.log(
+                              `[Map] Source ${sourceKey} corrected with tiles:`,
+                              updatedTiles
+                            );
+                          } catch (e) {
+                            console.error(
+                              `[Map] Failed to correct source ${sourceKey}:`,
+                              e
+                            );
+                          }
+                        }
+                      }
+                    }
+                  });
+                }
+              });
+
               // Apply the modified style
+              console.log(
+                "[Map] Applying modified style. Sources:",
+                JSON.stringify(Object.keys(styleJson.sources || {}))
+              );
+              if (
+                styleJson.sources &&
+                Object.keys(styleJson.sources).length > 0
+              ) {
+                const firstSource = Object.values(styleJson.sources)[0] as any;
+                console.log("[Map] First source tiles:", firstSource?.tiles);
+              }
               mapInstance.setStyle(styleJson);
             } catch (error) {
-              console.error(
-                "[Map] Failed to fetch style, trying URL directly:",
-                error
-              );
-              // Fallback: try loading from URL directly
-              mapInstance.setStyle(styleUrl);
+              console.error("[Map] Failed to fetch and apply style:", error);
+              // Fallback: use a minimal style if tile server fails
+              mapInstance.setStyle({
+                version: 8,
+                sources: {},
+                layers: [],
+              });
             }
-
-            // Wait for style to load and verify
-            mapInstance.once("style.load", () => {
-              console.log("[Map] Style loaded successfully");
-
-              // Verify sources are available
-              const currentStyle = mapInstance.getStyle();
-              if (currentStyle && currentStyle.sources) {
-                Object.keys(currentStyle.sources).forEach((sourceKey) => {
-                  const source = mapInstance.getSource(sourceKey);
-                  if (source) {
-                    const sourceData = source as any;
-                    console.log(`[Map] Source ${sourceKey} loaded:`, {
-                      type: sourceData.type,
-                      tiles: sourceData.tiles,
-                      url: sourceData.url,
-                    });
-                  } else {
-                    console.warn(
-                      `[Map] Source ${sourceKey} not found after style load`
-                    );
-                  }
-                });
-              }
-            });
-
-            mapInstance.once("style.error", (e: any) => {
-              console.error("[Map] Style loading error:", e);
-            });
           } else {
-            console.warn("[Map] No tile server URL available");
+            // No tile server - use default Mapbox style
+            console.log("[Map] No tile server, using default Mapbox style");
+            mapInstance.setStyle("mapbox://styles/mapbox/streets-v12");
           }
+
+          mapInstance.once("style.error", (e: any) => {
+            console.error("[Map] Style loading error:", e);
+          });
 
           mapInstance.setMaxBounds(null);
         }}
@@ -4159,7 +4498,6 @@ const MapComponent = ({
         onResetHome={handleResetHome}
         showUserLocation={showUserLocation}
         onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
-        onOpenTileFolder={() => setIsTileFolderDialogOpen(true)}
         isProcessingFiles={isProcessingFiles}
         cameraPopoverProps={{
           isOpen: isCameraPopoverOpen,
@@ -4194,16 +4532,6 @@ const MapComponent = ({
         onConfigSet={() => {
           // Trigger reconnection by updating key
           setConfigKey((prev) => prev + 1);
-        }}
-      />
-
-      {/* Tile Folder Dialog */}
-      <TileFolderDialog
-        isOpen={isTileFolderDialogOpen}
-        onOpenChange={setIsTileFolderDialogOpen}
-        onFolderSelected={async (_uri, serverUrl) => {
-          setTileServerUrl(serverUrl);
-          toast.success("Offline tiles loaded successfully!");
         }}
       />
     </div>

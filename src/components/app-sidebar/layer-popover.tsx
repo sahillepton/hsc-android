@@ -186,7 +186,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
           </label>
           <Slider
             min={0}
-            max={20}
+            max={18}
             step={1}
             value={[zoomPreview]}
             onValueChange={(values) => setZoomPreview(values[0])}
@@ -203,7 +203,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
             <span className="font-medium">
               Current: {zoomPreview.toFixed(0)}
             </span>
-            <span>20</span>
+            <span>18</span>
           </div>
         </div>
 

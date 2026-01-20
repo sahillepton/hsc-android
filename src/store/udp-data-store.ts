@@ -8,6 +8,18 @@ interface UdpLayerData {
   engagingMembers: any[];
   threats: any[];
   geoMessages: any[];
+  topology: {
+    nodes: Map<
+      number,
+      {
+        id: number;
+        lat: number;
+        long: number;
+        neighbors: Array<{ id: number; snr: number }>;
+      }
+    >;
+    connections: Map<string, number>; // Key: "nodeId1_nodeId2" (smaller first), Value: SNR
+  };
 }
 
 interface UdpDataState {
@@ -34,6 +46,10 @@ export const useUdpDataStore = create<UdpDataState>((set) => ({
     engagingMembers: [],
     threats: [],
     geoMessages: [],
+    topology: {
+      nodes: new Map(),
+      connections: new Map(),
+    },
   },
   connectionError: null,
   noDataWarning: null,
@@ -47,6 +63,10 @@ export const useUdpDataStore = create<UdpDataState>((set) => ({
           ...newData,
           networkMemberPositions: new Map(newData.networkMemberPositions),
           networkMemberMetadata: new Map(newData.networkMemberMetadata),
+          topology: {
+            nodes: new Map(newData.topology?.nodes || []),
+            connections: new Map(newData.topology?.connections || []),
+          },
         },
       };
     }),
@@ -63,6 +83,10 @@ export const useUdpDataStore = create<UdpDataState>((set) => ({
         engagingMembers: [],
         threats: [],
         geoMessages: [],
+        topology: {
+          nodes: new Map(),
+          connections: new Map(),
+        },
       },
       connectionError: null,
       noDataWarning: null,

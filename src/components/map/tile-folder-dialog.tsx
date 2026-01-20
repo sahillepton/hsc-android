@@ -1,199 +1,79 @@
-import { useState, useEffect } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../ui/dialog";
-import { Button } from "../ui/button";
 import { OfflineTileServer } from "@/plugins/offline-tile-server";
-import { Preferences } from "@capacitor/preferences";
-import { toast } from "@/lib/toast";
 
-const TILE_FOLDER_URI_KEY = "tile_folder_uri";
-const TILE_SERVER_URL_KEY = "tile_server_url";
-
-export const TileFolderDialog = ({
-  isOpen,
-  onOpenChange,
-  onFolderSelected,
-}: {
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => void;
-  onFolderSelected?: (uri: string, serverUrl: string) => void;
-}) => {
-  const [currentUri, setCurrentUri] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-
-  useEffect(() => {
-    if (isOpen) {
-      loadCurrentFolder();
-    }
-  }, [isOpen]);
-
-  const loadCurrentFolder = async () => {
-    try {
-      const result = await OfflineTileServer.getSavedFolderUri();
-      setCurrentUri(result.uri || null);
-    } catch (error) {
-      console.error("Error loading folder:", error);
-    }
-  };
-
-  const handleSelectFolder = async () => {
-    setIsLoading(true);
-    const toastId = toast.loading("Opening folder picker...");
-
-    try {
-      const result = await OfflineTileServer.selectTileFolder();
-      const selectedUri = result.uri;
-
-      // Save URI to preferences
-      await Preferences.set({
-        key: TILE_FOLDER_URI_KEY,
-        value: selectedUri,
-      });
-
-      // Start tile server (useTms: false for XYZ format, set to true if tiles are in TMS format)
-      console.log("[TileServer] Starting server with URI:", selectedUri);
-      const serverResult = await OfflineTileServer.startTileServer({
-        uri: selectedUri,
-        useTms: false, // Change to true if your tiles use TMS format (Y-flipped)
-      });
-      console.log(
-        "[TileServer] Server started, baseUrl:",
-        serverResult.baseUrl
-      );
-
-      // Save server URL
-      await Preferences.set({
-        key: TILE_SERVER_URL_KEY,
-        value: serverResult.baseUrl,
-      });
-
-      setCurrentUri(selectedUri);
-      toast.update(toastId, "Folder selected and server started!", "success");
-
-      onFolderSelected?.(selectedUri, serverResult.baseUrl);
-      onOpenChange(false);
-    } catch (error) {
-      const errorMsg =
-        error instanceof Error ? error.message : "Failed to select folder";
-      toast.update(toastId, errorMsg, "error");
-      console.error("Error selecting folder:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleStopServer = async () => {
-    try {
-      await OfflineTileServer.stopTileServer();
-      await Preferences.remove({ key: TILE_FOLDER_URI_KEY });
-      await Preferences.remove({ key: TILE_SERVER_URL_KEY });
-      setCurrentUri(null);
-      toast.success("Tile server stopped");
-    } catch (error) {
-      console.error("Error stopping server:", error);
-      toast.error("Failed to stop server");
-    }
-  };
-
-  return (
-    <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px]">
-        <DialogHeader>
-          <DialogTitle>Select Offline Tiles Folder</DialogTitle>
-          <DialogDescription>
-            Choose the folder containing your map tiles in tiles/z/x/y.pbf
-            format
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="py-4">
-          {currentUri ? (
-            <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Current folder:</p>
-              <p className="text-sm font-mono bg-muted p-2 rounded break-all">
-                {currentUri}
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleStopServer}
-                className="w-full"
-              >
-                Stop Server & Clear
-              </Button>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No folder selected. Please select a folder containing your map
-              tiles.
-            </p>
-          )}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleSelectFolder} disabled={isLoading}>
-            {isLoading ? "Loading..." : "Select Folder"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-};
-
-export const getTileServerUrl = async (): Promise<string | null> => {
+/**
+ * Check if storage permissions are granted
+ */
+export const checkStoragePermission = async (): Promise<boolean> => {
   try {
-    const { value } = await Preferences.get({ key: TILE_SERVER_URL_KEY });
-    return value || null;
+    const result = await OfflineTileServer.checkStoragePermission();
+    return result.hasPermission;
   } catch (error) {
-    console.error("Error getting tile server URL:", error);
-    return null;
+    console.error("Error checking storage permission:", error);
+    return false;
   }
 };
 
-export const initializeTileServer = async (): Promise<string | null> => {
+/**
+ * Wait for storage permissions to be granted (with timeout)
+ * Polls every 500ms up to maxWaitMs (default 30 seconds)
+ */
+export const waitForStoragePermission = async (
+  maxWaitMs: number = 30000
+): Promise<boolean> => {
+  const startTime = Date.now();
+  const pollInterval = 500; // Check every 500ms
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const hasPermission = await checkStoragePermission();
+    if (hasPermission) {
+      console.log("[TileServer] Storage permission granted");
+      return true;
+    }
+    // Wait before next check
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+  }
+
+  console.warn("[TileServer] Timeout waiting for storage permission");
+  return false;
+};
+
+/**
+ * Initialize tile server - always uses default path: Internal storage/Documents/tiles
+ * Checks permissions first and waits if needed
+ * No folder selection, no preferences - always uses default path
+ */
+export const initializeTileServer = async (
+  waitForPermission: boolean = true
+): Promise<string | null> => {
   try {
-    // Always stop any existing server first to start fresh
-    try {
-      await OfflineTileServer.stopTileServer();
-      console.log("[TileServer] Stopped existing server");
-    } catch (error) {
-      // Ignore errors if server wasn't running
-      console.log("[TileServer] No existing server to stop");
+    // Check permissions first
+    let hasPermission = await checkStoragePermission();
+
+    // If no permission and we should wait, wait for it
+    if (!hasPermission && waitForPermission) {
+      console.log(
+        "[TileServer] Storage permission not granted, waiting for user to grant..."
+      );
+      hasPermission = await waitForStoragePermission(30000); // Wait up to 30 seconds
     }
 
-    // Get saved folder URI
-    const { uri } = await OfflineTileServer.getSavedFolderUri();
-    if (!uri) {
-      console.log("[TileServer] No folder selected, returning null");
-      return null;
+    if (!hasPermission) {
+      console.warn(
+        "[TileServer] Storage permission not granted, server may not be able to read tiles"
+      );
+      // Still return URL - server might work if permissions are granted later
     }
 
-    // Start fresh server with saved URI (useTms: false for XYZ format)
-    console.log("[TileServer] Starting fresh server with URI:", uri);
-    const result = await OfflineTileServer.startTileServer({
-      uri,
-      useTms: false, // Change to true if your tiles use TMS format
-    });
-
-    // Save server URL
-    await Preferences.set({
-      key: TILE_SERVER_URL_KEY,
-      value: result.baseUrl,
-    });
-
-    console.log("[TileServer] Server started successfully:", result.baseUrl);
+    // Server is always running with default path (Documents/tiles)
+    // Just get the URL - server already initialized with default path
+    const result = await OfflineTileServer.getServerUrl();
+    console.log("[TileServer] Server URL:", result.baseUrl);
+    console.log(
+      "[TileServer] Using default path: Internal storage/Documents/tiles"
+    );
     return result.baseUrl;
   } catch (error) {
-    console.error("Error initializing tile server:", error);
+    console.error("Error getting tile server URL:", error);
     return null;
   }
 };

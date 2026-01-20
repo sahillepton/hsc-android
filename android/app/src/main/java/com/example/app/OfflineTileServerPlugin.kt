@@ -3,6 +3,7 @@ package com.example.app
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -18,6 +19,43 @@ import java.io.File
 class OfflineTileServerPlugin : Plugin() {
 
     private var tileServer: TileServer? = null
+    
+    override fun load() {
+        super.load()
+        // Always start with default path - React will update if needed
+        initializeServer()
+    }
+    
+    private fun getDefaultTilesDir(): File {
+        // Default path: Internal storage/Documents/tiles (public)
+        val documentsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+        val tilesDir = File(documentsDir, "tiles")
+        if (!tilesDir.exists()) {
+            tilesDir.mkdirs()
+        }
+        return tilesDir
+    }
+    
+    private fun initializeServer() {
+        try {
+            // Always use default path on startup - React manages saved paths via Capacitor Preferences
+            val defaultDir = getDefaultTilesDir()
+            val defaultUri = Uri.parse("file://${defaultDir.absolutePath}")
+            
+            val server = TileServer(
+                context = context,
+                folderUri = defaultUri,
+                port = 8080,
+                useTms = false
+            )
+            
+            server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
+            tileServer = server
+            android.util.Log.d("TileServer", "Server initialized with default path: ${defaultDir.absolutePath}")
+        } catch (e: Exception) {
+            android.util.Log.e("TileServer", "Failed to initialize server: ${e.message}", e)
+        }
+    }
 
     @PluginMethod
     fun selectTileFolder(call: PluginCall) {
@@ -48,9 +86,9 @@ class OfflineTileServerPlugin : Plugin() {
             val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION
             context.contentResolver.takePersistableUriPermission(treeUri, takeFlags)
 
-            // Save for future sessions
-            val prefs = context.getSharedPreferences("tile_server_prefs", Context.MODE_PRIVATE)
-            prefs.edit().putString("tile_folder_uri", treeUri.toString()).apply()
+            // REMOVED: Don't save to SharedPreferences - React manages via Capacitor Preferences
+            // val prefs = context.getSharedPreferences("tile_server_prefs", Context.MODE_PRIVATE)
+            // prefs.edit().putString("tile_folder_uri", treeUri.toString()).apply()
 
             val ret = JSObject()
             ret.put("uri", treeUri.toString())
@@ -62,16 +100,15 @@ class OfflineTileServerPlugin : Plugin() {
 
     @PluginMethod
     fun getSavedFolderUri(call: PluginCall) {
-        val prefs = context.getSharedPreferences("tile_server_prefs", Context.MODE_PRIVATE)
-        val uriString = prefs.getString("tile_folder_uri", null)
-
+        // REMOVED: React manages storage via Capacitor Preferences
+        // Always return null - React will read from Capacitor Preferences
         val ret = JSObject()
-        ret.put("uri", uriString)
+        ret.put("uri", null)
         call.resolve(ret)
     }
 
     @PluginMethod
-    fun startTileServer(call: PluginCall) {
+    fun updateFolderPath(call: PluginCall) {
         val uriString = call.getString("uri")
         if (uriString.isNullOrBlank()) {
             call.reject("URI is required")
@@ -82,47 +119,47 @@ class OfflineTileServerPlugin : Plugin() {
         val useTms = call.getBoolean("useTms") ?: false
 
         try {
-            stopServerInternal()
-
-            val server = TileServer(
-                context = context,
-                folderUri = uri,
-                port = 8080,
-                useTms = useTms
-            )
-
-            try {
-                // Start server in daemon mode (runs in background thread)
-                server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-            } catch (e: Exception) {
-                throw e
+            // Ensure server is running (initialize if needed)
+            if (tileServer == null) {
+                initializeServer()
             }
             
-            // Give server a moment to initialize
-            Thread.sleep(200)
-            
-            tileServer = server
+            // Update the folder path without restarting server
+            tileServer?.updateFolderPath(uri, useTms)
 
             val ret = JSObject()
-            // Use localhost instead of 127.0.0.1 - some Android WebViews prefer localhost
             val baseUrl = "http://localhost:8080"
             ret.put("baseUrl", baseUrl)
             ret.put("port", 8080)
             call.resolve(ret)
         } catch (e: Exception) {
-            call.reject("Failed to start tile server: ${e.message}")
+            call.reject("Failed to update folder path: ${e.message}")
         }
     }
-
+    
     @PluginMethod
-    fun stopTileServer(call: PluginCall) {
-        stopServerInternal()
-        call.resolve()
+    fun getServerUrl(call: PluginCall) {
+        val ret = JSObject()
+        val baseUrl = "http://localhost:8080"
+        ret.put("baseUrl", baseUrl)
+        ret.put("port", 8080)
+        call.resolve(ret)
     }
-
-    private fun stopServerInternal() {
-        tileServer?.stop()
-        tileServer = null
+    
+    @PluginMethod
+    fun checkStoragePermission(call: PluginCall) {
+        val ret = JSObject()
+        val hasPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            // Android 11+ (API 30+) - Check MANAGE_EXTERNAL_STORAGE
+            android.os.Environment.isExternalStorageManager()
+        } else {
+            // Android 10 and below - Check READ_EXTERNAL_STORAGE
+            val permission = android.Manifest.permission.READ_EXTERNAL_STORAGE
+            android.content.pm.PackageManager.PERMISSION_GRANTED == 
+                context.checkSelfPermission(permission)
+        }
+        ret.put("hasPermission", hasPermission)
+        call.resolve(ret)
     }
 }
 
@@ -132,20 +169,23 @@ class OfflineTileServerPlugin : Plugin() {
  */
 class TileServer(
     private val context: Context,
-    private val folderUri: Uri,
+    folderUri: Uri,
     private val port: Int,
-    private val useTms: Boolean = false
+    private var useTms: Boolean = false
 ) : NanoHTTPD("127.0.0.1", port) {
 
-    // Get base directory path for File API access
-    private val baseDir: File = when {
-        folderUri.scheme == "file" -> {
+    // Mutable base directory - can be updated without restarting server
+    @Volatile
+    private var baseDir: File = resolveBaseDir(folderUri)
+    
+    private fun resolveBaseDir(uri: Uri): File = when {
+        uri.scheme == "file" -> {
             // Direct file:// URI
-            File(folderUri.path ?: throw IllegalArgumentException("Invalid file URI path"))
+            File(uri.path ?: throw IllegalArgumentException("Invalid file URI path"))
         }
-        folderUri.scheme == "content" -> {
+        uri.scheme == "content" -> {
             // Extract file path from content URI using DocumentsContract
-            val docId = android.provider.DocumentsContract.getTreeDocumentId(folderUri)
+            val docId = android.provider.DocumentsContract.getTreeDocumentId(uri)
             val split = docId.split(":")
             if (split.size == 2) {
                 val type = split[0]
@@ -167,7 +207,16 @@ class TileServer(
                 throw IllegalArgumentException("Invalid document ID format: $docId")
             }
         }
-        else -> throw IllegalArgumentException("Unsupported URI scheme: ${folderUri.scheme}")
+        else -> throw IllegalArgumentException("Unsupported URI scheme: ${uri.scheme}")
+    }
+    
+    /**
+     * Update the folder path without restarting the server
+     */
+    fun updateFolderPath(newFolderUri: Uri, newUseTms: Boolean = false) {
+        baseDir = resolveBaseDir(newFolderUri)
+        useTms = newUseTms
+        android.util.Log.d("TileServer", "Folder path updated to: ${baseDir.absolutePath}")
     }
 
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -177,6 +226,15 @@ class TileServer(
             // Handle style.json request
             if (uri == "/style.json" || uri == "/style.json/") {
                 return serveStyleJson()
+            }
+            
+            // Handle font glyph requests: /fonts/{fontstack}/{range}.pbf
+            val fontPattern = Regex("^/fonts/([^/]+)/([^/]+)\\.pbf$")
+            val fontMatch = fontPattern.find(uri)
+            
+            if (fontMatch != null) {
+                val (fontstack, range) = fontMatch.destructured
+                return serveFontGlyph(fontstack, range)
             }
             
             // Handle tile requests: /{z}/{x}/{y}.pbf (no /tiles/ prefix)
@@ -232,7 +290,9 @@ class TileServer(
             ByteArrayInputStream(bytes),
             bytes.size.toLong()
         )
-        res.addHeader("Cache-Control", "public, max-age=3600")
+        res.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+        res.addHeader("Pragma", "no-cache")
+        res.addHeader("Expires", "0")
         res.addHeader("Access-Control-Allow-Origin", "*")
         return res
     }
@@ -257,7 +317,8 @@ class TileServer(
     }
 
     /**
-     * Serve style.json from root folder, or generate default if not found
+     * Serve style.json from root folder.
+     * Returns 404 if style.json is not found - NEVER serves default style.
      */
     private fun serveStyleJson(): NanoHTTPD.Response {
         // Try to read style.json using File API
@@ -271,185 +332,58 @@ class TileServer(
                     ByteArrayInputStream(bytes),
                     bytes.size.toLong()
                 )
-                res.addHeader("Cache-Control", "public, max-age=3600")
+                res.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                res.addHeader("Pragma", "no-cache")
+                res.addHeader("Expires", "0")
                 res.addHeader("Access-Control-Allow-Origin", "*")
                 return res
             }
         } catch (e: Exception) {
-            // Ignore and generate default
+            android.util.Log.e("TileServer", "Error reading style.json: ${e.message}", e)
         }
         
-        // Fallback: generate default style.json
-        return serveDefaultStyleJson()
+        // No fallback - return 404 if style.json doesn't exist
+        return NanoHTTPD.newFixedLengthResponse(
+            NanoHTTPD.Response.Status.NOT_FOUND,
+            NanoHTTPD.MIME_PLAINTEXT,
+            "style.json not found in tile directory"
+        )
     }
 
     /**
-     * Generate default style.json for offline tiles
+     * Serve font glyph file from:
+     * <selectedFolder>/fonts/{fontstack}/{range}.pbf
      */
-    private fun serveDefaultStyleJson(): NanoHTTPD.Response {
-        val styleJson = """
-        {
-          "version": 8,
-          "id": "86575a9a-670f-4772-be37-2c0c00fe1f68",
-          "name": "Offline Map Style",
-          "sources": {
-            "openmaptiles": {
-              "type": "vector",
-              "tiles": ["http://localhost:8080/{z}/{x}/{y}.pbf"],
-              "minzoom": 0,
-              "maxzoom": 14
+    private fun serveFontGlyph(fontstack: String, range: String): NanoHTTPD.Response {
+        try {
+            // Decode URL-encoded fontstack (e.g., "Open%20Sans%20Regular" -> "Open Sans Regular")
+            val decodedFontstack = java.net.URLDecoder.decode(fontstack, "UTF-8")
+            val fontFile = File(baseDir, "fonts/$decodedFontstack/$range.pbf")
+            
+            if (fontFile.exists() && fontFile.isFile) {
+                val bytes = fontFile.readBytes()
+                val res = NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    "application/x-protobuf",
+                    ByteArrayInputStream(bytes),
+                    bytes.size.toLong()
+                )
+                res.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                res.addHeader("Pragma", "no-cache")
+                res.addHeader("Expires", "0")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
             }
-          },
-          "layers": [
-            {
-              "id": "background",
-              "type": "background",
-              "layout": {"visibility": "visible"},
-              "paint": {
-                "background-color": {
-                  "stops": [[6, "hsl(47,79%,94%)"], [14, "hsl(42,49%,93%)"]]
-                }
-              }
-            },
-            {
-              "id": "water",
-              "type": "fill",
-              "source": "openmaptiles",
-              "source-layer": "water",
-              "layout": {"visibility": "visible"},
-              "paint": {
-                "fill-color": [
-                  "match",
-                  ["get", "intermittent"],
-                  1, "hsl(205,91%,83%)",
-                  "hsl(204,92%,75%)"
-                ],
-                "fill-opacity": ["match", ["get", "intermittent"], 1, 0.85, 1],
-                "fill-antialias": true
-              },
-              "filter": ["all"]
-            },
-            {
-              "id": "road_network",
-              "type": "line",
-              "source": "openmaptiles",
-              "source-layer": "transportation",
-              "minzoom": 4,
-              "layout": {"line-cap": "butt", "line-join": "round", "visibility": "visible"},
-              "paint": {
-                "line-color": [
-                  "match",
-                  ["get", "class"],
-                  "motorway", "hsl(35,100%,76%)",
-                  ["trunk", "primary"], "hsl(48,100%,83%)",
-                  "hsl(0,0%,100%)"
-                ],
-                "line-width": [
-                  "interpolate",
-                  ["linear", 2],
-                  ["zoom"],
-                  5, 0.5,
-                  10, 1.5,
-                  12, 2.5,
-                  14, 4,
-                  16, 8,
-                  20, 24
-                ]
-              },
-              "filter": ["all", ["!=", "brunnel", "tunnel"], ["!in", "class", "ferry", "rail", "transit", "pier", "bridge", "path", "aerialway"]]
-            },
-            {
-              "id": "building",
-              "type": "fill",
-              "source": "openmaptiles",
-              "source-layer": "building",
-              "minzoom": 13,
-              "layout": {"visibility": "visible"},
-              "paint": {
-                "fill-color": "hsl(30,6%,73%)",
-                "fill-opacity": 0.3,
-                "fill-outline-color": {
-                  "base": 1,
-                  "stops": [[13, "hsla(35, 6%, 79%, 0.3)"], [14, "hsl(35, 6%, 79%)"]]
-                }
-              }
-            },
-            {
-              "id": "place",
-              "type": "symbol",
-              "source": "openmaptiles",
-              "source-layer": "place",
-              "minzoom": 4,
-              "layout": {
-                "text-font": ["Noto Sans Regular"],
-                "text-size": {"stops": [[4, 11], [8, 13], [12, 16], [16, 20]]},
-                "text-field": "{name}",
-                "visibility": "visible",
-                "text-anchor": "bottom",
-                "text-max-width": 8
-              },
-              "paint": {
-                "text-color": "hsl(0,0%,20%)",
-                "text-halo-color": "hsl(0,0%,100%)",
-                "text-halo-width": 1.2
-              },
-              "filter": ["all", ["!in", "class", "continent", "country", "state", "region", "province", "city", "town"]]
-            },
-            {
-              "id": "city",
-              "type": "symbol",
-              "source": "openmaptiles",
-              "source-layer": "place",
-              "minzoom": 4,
-              "maxzoom": 16,
-              "layout": {
-                "text-font": ["Noto Sans Regular"],
-                "text-size": {"stops": [[4, 12], [8, 16], [12, 20], [16, 28]]},
-                "text-field": "{name}",
-                "visibility": "visible",
-                "text-anchor": "bottom",
-                "text-max-width": 8
-              },
-              "paint": {
-                "text-color": "hsl(0,0%,20%)",
-                "text-halo-color": "hsl(0,0%,100%)",
-                "text-halo-width": 0.8
-              },
-              "filter": ["all", ["==", "class", "city"]]
-            },
-            {
-              "id": "country",
-              "type": "symbol",
-              "source": "openmaptiles",
-              "source-layer": "place",
-              "minzoom": 1,
-              "maxzoom": 12,
-              "layout": {
-                "text-font": ["Noto Sans Regular"],
-                "text-size": {"stops": [[0, 8], [1, 10], [4, 16], [8, 22]]},
-                "text-field": "{name}",
-                "visibility": "visible",
-                "text-max-width": 8
-              },
-              "paint": {
-                "text-color": "hsl(0, 0%, 20%)",
-                "text-halo-color": "hsl(0,0%,100%)",
-                "text-halo-width": 1
-              },
-              "filter": ["all", ["==", "class", "country"], ["has", "iso_a2"]]
-            }
-          ]
+        } catch (e: Exception) {
+            // Log error but continue to return 404
+            android.util.Log.e("TileServer", "Error reading font: ${e.message}")
         }
-        """.trimIndent()
         
-        val res = NanoHTTPD.newFixedLengthResponse(
-            NanoHTTPD.Response.Status.OK,
-            "application/json",
-            styleJson
+        return NanoHTTPD.newFixedLengthResponse(
+            NanoHTTPD.Response.Status.NOT_FOUND,
+            NanoHTTPD.MIME_PLAINTEXT,
+            "Font glyph not found: $fontstack/$range.pbf"
         )
-        res.addHeader("Cache-Control", "public, max-age=3600")
-        res.addHeader("Access-Control-Allow-Origin", "*")
-        return res
     }
 
     /**

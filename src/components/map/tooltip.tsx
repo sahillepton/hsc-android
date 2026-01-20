@@ -419,7 +419,8 @@ const Tooltip = () => {
     // Handle UDP layers
     if (
       layer?.id === "udp-network-members-layer" ||
-      layer?.id === "udp-targets-layer"
+      layer?.id === "udp-targets-layer" ||
+      layer?.id === "udp-topology-nodes-layer"
     ) {
       const importantKeys = [
         "globalId",
@@ -432,6 +433,8 @@ const Tooltip = () => {
         "displayId",
         "role",
         "controllingNodeId",
+        "id",
+        "neighborCount",
       ];
 
       const displayProperties = Object.entries(object)
@@ -476,6 +479,8 @@ const Tooltip = () => {
             title={
               layer.id === "udp-network-members-layer"
                 ? "Network Member"
+                : layer.id === "udp-topology-nodes-layer"
+                ? "Topology Node"
                 : "Target"
             }
           />
@@ -506,7 +511,6 @@ const Tooltip = () => {
                     memberName: String(memberName),
                     metadata: JSON.stringify({ type: "video" }),
                   });
-                  console.log(`[MemberAction] Video call: ${memberId}`);
                 } catch (err) {
                   console.warn("[MemberAction] Plugin not available:", err);
                   alert("Video call initiated");
@@ -534,7 +538,6 @@ const Tooltip = () => {
                     memberName: String(memberName),
                     metadata: JSON.stringify({ type: "ftp" }),
                   });
-                  console.log(`[MemberAction] FTP: ${memberId}`);
                 } catch (err) {
                   console.warn("[MemberAction] Plugin not available:", err);
                   alert("FTP connection initiated");
@@ -562,7 +565,6 @@ const Tooltip = () => {
                     memberName: String(memberName),
                     metadata: JSON.stringify({ type: "voice" }),
                   });
-                  console.log(`[MemberAction] Voice call: ${memberId}`);
                 } catch (err) {
                   console.warn("[MemberAction] Plugin not available:", err);
                   alert("Phone call initiated");
@@ -589,7 +591,6 @@ const Tooltip = () => {
                     action: "message",
                     memberName: String(memberName),
                   });
-                  console.log(`[MemberAction] Message: ${memberId}`);
                 } catch (err) {
                   console.warn("[MemberAction] Plugin not available:", err);
                   alert("Message sent");
@@ -1087,7 +1088,8 @@ const Tooltip = () => {
         top: y - 10,
         pointerEvents:
           layer?.id === "udp-network-members-layer" ||
-          layer?.id === "udp-targets-layer"
+          layer?.id === "udp-targets-layer" ||
+          layer?.id === "udp-topology-nodes-layer"
             ? "auto"
             : "none",
         zIndex: 5,

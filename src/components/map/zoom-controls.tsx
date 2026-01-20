@@ -16,7 +16,6 @@ import {
   RotateCcw,
   Home,
   MapPin,
-  FolderOpen,
   Crop,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -52,7 +51,6 @@ const ZoomControls = ({
   bearing = 0,
   onToggleLayersBox,
   onOpenConnectionConfig,
-  onOpenTileFolder,
   onToggleMeasurementBox,
   onToggleNetworkBox,
   onUpload,
@@ -76,7 +74,6 @@ const ZoomControls = ({
   bearing?: number;
   onToggleLayersBox?: () => void;
   onOpenConnectionConfig?: () => void;
-  onOpenTileFolder?: () => void;
   onToggleMeasurementBox?: () => void;
   onToggleNetworkBox?: () => void;
   onUpload?: () => void;
@@ -481,17 +478,6 @@ const ZoomControls = ({
               onClick={onOpenConnectionConfig}
             >
               <WifiPen className="h-4 w-4" />
-            </Button>
-          )}
-          {onOpenTileFolder && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
-              title="Select Offline Tiles Folder"
-              onClick={onOpenTileFolder}
-            >
-              <FolderOpen className="h-4 w-4" />
             </Button>
           )}
           {onResetHome && (
