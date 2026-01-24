@@ -179,6 +179,27 @@ const NetworkLayersPanel = ({
         return;
       }
 
+      // Calculate zoom based on bounding box size
+      const lngSpan = maxLng - minLng;
+      const latSpan = maxLat - minLat;
+      const maxSpan = Math.max(lngSpan, latSpan);
+      
+      // Calculate appropriate maxZoom based on bounding box size
+      let calculatedMaxZoom: number;
+      if (maxSpan < 0.001) {
+        calculatedMaxZoom = 20;
+      } else if (maxSpan < 0.01) {
+        calculatedMaxZoom = 18;
+      } else if (maxSpan < 0.1) {
+        calculatedMaxZoom = 15;
+      } else if (maxSpan < 1) {
+        calculatedMaxZoom = 12;
+      } else if (maxSpan < 10) {
+        calculatedMaxZoom = 8;
+      } else {
+        calculatedMaxZoom = 5;
+      }
+
       // Use fitBounds with smooth animation to show the entire bounding box
       // Stop any ongoing animations first to prevent jitter
       map.stop();
@@ -190,7 +211,7 @@ const NetworkLayersPanel = ({
         {
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
           duration: 2000, // Smooth, slower duration
-          maxZoom: 12,
+          maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
           linear: false, // Use default easing (smooth)
         }
       );
@@ -233,6 +254,27 @@ const NetworkLayersPanel = ({
       minLat !== Infinity &&
       maxLat !== -Infinity
     ) {
+      // Calculate zoom based on bounding box size
+      const lngSpan = maxLng - minLng;
+      const latSpan = maxLat - minLat;
+      const maxSpan = Math.max(lngSpan, latSpan);
+      
+      // Calculate appropriate maxZoom based on bounding box size
+      let calculatedMaxZoom: number;
+      if (maxSpan < 0.001) {
+        calculatedMaxZoom = 20;
+      } else if (maxSpan < 0.01) {
+        calculatedMaxZoom = 18;
+      } else if (maxSpan < 0.1) {
+        calculatedMaxZoom = 15;
+      } else if (maxSpan < 1) {
+        calculatedMaxZoom = 12;
+      } else if (maxSpan < 10) {
+        calculatedMaxZoom = 8;
+      } else {
+        calculatedMaxZoom = 5;
+      }
+
       map.stop();
       map.fitBounds(
         [
@@ -242,7 +284,7 @@ const NetworkLayersPanel = ({
         {
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
           duration: 2000,
-          maxZoom: 12,
+          maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
           linear: false,
         }
       );

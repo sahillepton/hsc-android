@@ -38,6 +38,13 @@ class OfflineTileServerPlugin : Plugin() {
     
     private fun initializeServer() {
         try {
+            // Check storage permission first (Android 11+)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                if (!android.os.Environment.isExternalStorageManager()) {
+                    android.util.Log.w("TileServer", "Storage permission not granted - server will start but may fail to read files")
+                }
+            }
+            
             // Always use default path on startup - React manages saved paths via Capacitor Preferences
             val defaultDir = getDefaultTilesDir()
             val defaultUri = Uri.parse("file://${defaultDir.absolutePath}")
@@ -242,11 +249,13 @@ class TileServer(
             val match = tilePattern.find(uri)
 
             if (match == null) {
-                return NanoHTTPD.newFixedLengthResponse(
+                val res = NanoHTTPD.newFixedLengthResponse(
                     NanoHTTPD.Response.Status.NOT_FOUND,
                     NanoHTTPD.MIME_PLAINTEXT,
                     "Not Found - Invalid pattern. Expected: /{z}/{x}/{y}.pbf"
                 )
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
             }
 
             var (zStr, xStr, yStr) = match.destructured
@@ -275,11 +284,13 @@ class TileServer(
 
             okTileResponse(bytes)
         } catch (e: Exception) {
-            NanoHTTPD.newFixedLengthResponse(
+            val res = NanoHTTPD.newFixedLengthResponse(
                 NanoHTTPD.Response.Status.INTERNAL_ERROR,
                 NanoHTTPD.MIME_PLAINTEXT,
                 "Server error: ${e.message}"
             )
+            res.addHeader("Access-Control-Allow-Origin", "*")
+            return res
         }
     }
 
@@ -324,7 +335,7 @@ class TileServer(
         // Try to read style.json using File API
         try {
             val styleFile = File(baseDir, "style.json")
-            if (styleFile.exists() && styleFile.isFile) {
+            if (styleFile.exists() && styleFile.isFile && styleFile.canRead()) {
                 val bytes = styleFile.readBytes()
                 val res = NanoHTTPD.newFixedLengthResponse(
                     NanoHTTPD.Response.Status.OK,
@@ -337,17 +348,39 @@ class TileServer(
                 res.addHeader("Expires", "0")
                 res.addHeader("Access-Control-Allow-Origin", "*")
                 return res
+            } else {
+                android.util.Log.w("TileServer", "style.json not accessible: exists=${styleFile.exists()}, canRead=${styleFile.canRead()}")
             }
+        } catch (e: java.io.FileNotFoundException) {
+            android.util.Log.w("TileServer", "Permission denied reading style.json - storage permission may be required")
+            // Return 403 Forbidden for permission errors
+            val res = NanoHTTPD.newFixedLengthResponse(
+                NanoHTTPD.Response.Status.FORBIDDEN,
+                "application/json",
+                "{\"error\": \"Permission denied. Please grant storage permission in app settings.\"}"
+            )
+            res.addHeader("Access-Control-Allow-Origin", "*")
+            return res
         } catch (e: Exception) {
             android.util.Log.e("TileServer", "Error reading style.json: ${e.message}", e)
+            // Return 500 error for other errors
+            val res = NanoHTTPD.newFixedLengthResponse(
+                NanoHTTPD.Response.Status.INTERNAL_ERROR,
+                "application/json",
+                "{\"error\": \"Server error: ${e.message}\"}"
+            )
+            res.addHeader("Access-Control-Allow-Origin", "*")
+            return res
         }
         
         // No fallback - return 404 if style.json doesn't exist
-        return NanoHTTPD.newFixedLengthResponse(
+        val res = NanoHTTPD.newFixedLengthResponse(
             NanoHTTPD.Response.Status.NOT_FOUND,
             NanoHTTPD.MIME_PLAINTEXT,
             "style.json not found in tile directory"
         )
+        res.addHeader("Access-Control-Allow-Origin", "*")
+        return res
     }
 
     /**

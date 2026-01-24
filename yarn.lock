@@ -214,12 +214,10 @@
   dependencies:
     "@capacitor/synapse" "^1.0.3"
 
-"@capacitor/geolocation@^7.1.6":
-  version "7.1.6"
-  resolved "https://registry.yarnpkg.com/@capacitor/geolocation/-/geolocation-7.1.6.tgz#d767366b4e8ccf546be12e067db70bbca0437fbc"
-  integrity sha512-K+SXF8X01sEyCLb1ITqir5Gi3qMNnua7TMdxKmxYBAJATUGoHzJQ0itslkoP4HM6JZac+f8lTpRl1RMWKErRIg==
-  dependencies:
-    "@capacitor/synapse" "^1.0.3"
+"@capacitor/geolocation@5.0.8":
+  version "5.0.8"
+  resolved "https://registry.yarnpkg.com/@capacitor/geolocation/-/geolocation-5.0.8.tgz#d319752123f9d97c2e463f41adb28b0070dd5b25"
+  integrity sha512-ikyAKtgTfBeyZVAhDQ0Cbor6yJ18QM+xstlwRIiTRKMZDHty7rhCB0nTLpZvCGe1RQh7JLInUuKX2mPWaNELUQ==
 
 "@capacitor/preferences@^7.0.2":
   version "7.0.2"
@@ -344,6 +342,29 @@
     "@loaders.gl/wms" "^4.2.0"
     "@luma.gl/gltf" "^9.2.2"
     "@luma.gl/shadertools" "^9.2.2"
+    "@math.gl/core" "^4.1.0"
+    "@math.gl/culling" "^4.1.0"
+    "@math.gl/web-mercator" "^4.1.0"
+    "@types/geojson" "^7946.0.8"
+    a5-js "^0.5.0"
+    h3-js "^4.1.0"
+    long "^3.2.0"
+
+"@deck.gl/geo-layers@^9.2.2":
+  version "9.2.6"
+  resolved "https://registry.yarnpkg.com/@deck.gl/geo-layers/-/geo-layers-9.2.6.tgz#5ee0d3cb0279e536d048612ae3b9469fef171dfb"
+  integrity sha512-Js42GcAlzH5vHWHdg/eKSmFvx1TWlhW+d6p8Y+67/iHpcCXmx/CBmpsr1ZsQ8XYc+GY8NDAmkHe5KECDJsJiDg==
+  dependencies:
+    "@loaders.gl/3d-tiles" "^4.2.0"
+    "@loaders.gl/gis" "^4.2.0"
+    "@loaders.gl/loader-utils" "^4.2.0"
+    "@loaders.gl/mvt" "^4.2.0"
+    "@loaders.gl/schema" "^4.2.0"
+    "@loaders.gl/terrain" "^4.2.0"
+    "@loaders.gl/tiles" "^4.2.0"
+    "@loaders.gl/wms" "^4.2.0"
+    "@luma.gl/gltf" "^9.2.6"
+    "@luma.gl/shadertools" "^9.2.6"
     "@math.gl/core" "^4.1.0"
     "@math.gl/culling" "^4.1.0"
     "@math.gl/web-mercator" "^4.1.0"
@@ -1070,10 +1091,29 @@
     "@loaders.gl/textures" "^4.2.0"
     "@math.gl/core" "^4.1.0"
 
+"@luma.gl/gltf@^9.2.6":
+  version "9.2.6"
+  resolved "https://registry.yarnpkg.com/@luma.gl/gltf/-/gltf-9.2.6.tgz#2e1bfa2cdd7f71ee0e5801525e483436891497b4"
+  integrity sha512-is3YkiGsWqWTmwldMz6PRaIUleufQfUKYjJTKpsF5RS1OnN+xdAO0mJq5qJTtOQpppWAU0VrmDFEVZ6R3qvm0A==
+  dependencies:
+    "@loaders.gl/core" "^4.2.0"
+    "@loaders.gl/gltf" "^4.2.0"
+    "@loaders.gl/textures" "^4.2.0"
+    "@math.gl/core" "^4.1.0"
+
 "@luma.gl/shadertools@^9.2.2":
   version "9.2.3"
   resolved "https://registry.npmjs.org/@luma.gl/shadertools/-/shadertools-9.2.3.tgz"
   integrity sha512-NQYWZk6oY3nMUV5iyv8ChnU9K48Yrp7mi6eofTi4Y42LEDLvm+808f2pm4sI1wPpvqSiuMr/l7nYyoQXH10/BA==
+  dependencies:
+    "@math.gl/core" "^4.1.0"
+    "@math.gl/types" "^4.1.0"
+    wgsl_reflect "^1.2.0"
+
+"@luma.gl/shadertools@^9.2.6":
+  version "9.2.6"
+  resolved "https://registry.yarnpkg.com/@luma.gl/shadertools/-/shadertools-9.2.6.tgz#850a69d3df37125c546d229651aa6936b8164ec7"
+  integrity sha512-4+uUbynqPUra9d/z1nQChyHmhLgmKfSMjS7kOwLB6exSnhKnpHL3+Hu9fv55qyaX50nGH3oHawhGtJ6RRvu65w==
   dependencies:
     "@math.gl/core" "^4.1.0"
     "@math.gl/types" "^4.1.0"
@@ -5538,11 +5578,6 @@ react-virtuoso@^4.17.0:
   version "4.17.0"
   resolved "https://registry.yarnpkg.com/react-virtuoso/-/react-virtuoso-4.17.0.tgz#e81f2da99792cfd9317e910b243d847ebeb09248"
   integrity sha512-od3pi2v13v31uzn5zPXC2u3ouISFCVhjFVFch2VvS2Cx7pWA2F1aJa3XhNTN2F07M3lhfnMnsmGeH+7wZICr7w==
-
-react-window@^2.2.3:
-  version "2.2.3"
-  resolved "https://registry.yarnpkg.com/react-window/-/react-window-2.2.3.tgz#f8ffdddbb612ccd3e1314b59fce79af85d3f15e3"
-  integrity sha512-gTRqQYC8ojbiXyd9duYFiSn2TJw0ROXCgYjenOvNKITWzK0m0eCvkUsEUM08xvydkMh7ncp+LE0uS3DeNGZxnQ==
 
 react-window@^2.2.3:
   version "2.2.3"

@@ -64,6 +64,7 @@ const ZoomControls = ({
   isMeasurementBoxOpen,
   isNetworkBoxOpen,
   isProcessingFiles = false,
+  isExporting = false,
   alertButtonProps,
   igrsToggleProps,
   rubberBandMode,
@@ -87,6 +88,7 @@ const ZoomControls = ({
   isMeasurementBoxOpen?: boolean;
   isNetworkBoxOpen?: boolean;
   isProcessingFiles?: boolean;
+  isExporting?: boolean;
   cameraPopoverProps?: CameraPopoverProps;
   alertButtonProps?: AlertButtonProps;
   igrsToggleProps?: IgrsToggleProps;
@@ -218,12 +220,16 @@ const ZoomControls = ({
               <Button
                 size="icon"
                 variant="ghost"
-                className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
+                className="h-10 w-10 text-slate-800 bg-white/80 hover:bg-white/80 rounded-none"
                 title={
-                  isProcessingFiles ? "Processing files..." : "Upload File"
+                  isExporting
+                    ? "Exporting..."
+                    : isProcessingFiles
+                    ? "Processing files..."
+                    : "Upload File"
                 }
                 onClick={onUpload}
-                disabled={isProcessingFiles}
+                disabled={isProcessingFiles || isExporting}
               >
                 <Plus className="h-4 w-4" />
               </Button>
@@ -251,10 +257,14 @@ const ZoomControls = ({
               variant="ghost"
               className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
               title={
-                isProcessingFiles ? "Processing files..." : "Restore Session"
+                isExporting
+                  ? "Exporting..."
+                  : isProcessingFiles
+                  ? "Processing files..."
+                  : "Restore Session"
               }
               onClick={onRestoreSession}
-              disabled={isProcessingFiles}
+              disabled={isProcessingFiles || isExporting}
             >
               <RotateCcw className="h-4 w-4" />
             </Button>
@@ -264,7 +274,7 @@ const ZoomControls = ({
               size="icon"
               variant="ghost"
               className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
-              title="Save Session"
+              title={isExporting ? "Exporting..." : "Save Session"}
               onClick={async () => {
                 setIsSaving(true);
                 try {
@@ -273,6 +283,7 @@ const ZoomControls = ({
                   setIsSaving(false);
                 }
               }}
+              disabled={isExporting}
             >
               {isSaving ? (
                 <svg

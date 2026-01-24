@@ -93,6 +93,7 @@ export const useRubberBandRectangle = ({
       new PolygonLayer({
         id: "rubber-band-rectangle-fill",
         data: [{ polygon: rectanglePolygon }],
+        fp64: true, // Use 64-bit precision for Samsung devices
         pickable: false,
         stroked: true,
         filled: true,
@@ -168,6 +169,7 @@ export const useRubberBandOverlay = ({
     return new PolygonLayer({
       id: "rubber-band-overlay",
       data: [{ polygon: overlayPolygon }],
+      fp64: true, // Use 64-bit precision for Samsung devices
       pickable: false,
       stroked: false,
       filled: true,

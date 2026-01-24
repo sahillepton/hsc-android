@@ -1167,14 +1167,20 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
     // Network Members layer
     if (udpData.networkMembers.length > 0) {
-      const validNetworkMembers = udpData.networkMembers.filter(
-        (d: any) =>
-          d &&
-          typeof d.longitude === "number" &&
-          typeof d.latitude === "number" &&
-          !isNaN(d.longitude) &&
-          !isNaN(d.latitude)
-      );
+      const validNetworkMembers = udpData.networkMembers
+        .filter(
+          (d: any) =>
+            d &&
+            typeof d.longitude === "number" &&
+            typeof d.latitude === "number" &&
+            !isNaN(d.longitude) &&
+            !isNaN(d.latitude)
+        )
+        .map((d: any) => ({
+          globalId: d.globalId,
+          longitude: d.longitude,
+          latitude: d.latitude,
+        }));
 
       if (validNetworkMembers.length > 0) {
         layers.push(
@@ -1220,14 +1226,20 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
     // Targets layer
     if (udpData.targets.length > 0) {
-      const validTargets = udpData.targets.filter(
-        (d: any) =>
-          d &&
-          typeof d.longitude === "number" &&
-          typeof d.latitude === "number" &&
-          !isNaN(d.longitude) &&
-          !isNaN(d.latitude)
-      );
+      const validTargets = udpData.targets
+        .filter(
+          (d: any) =>
+            d &&
+            typeof d.longitude === "number" &&
+            typeof d.latitude === "number" &&
+            !isNaN(d.longitude) &&
+            !isNaN(d.latitude)
+        )
+        .map((d: any) => ({
+          globalId: d.globalId,
+          longitude: d.longitude,
+          latitude: d.latitude,
+        }));
 
       if (validTargets.length > 0) {
         layers.push(
@@ -1445,16 +1457,12 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           J: "fighter10",
         };
 
-        // Map topology nodes to include properties needed for tooltip and member actions
+        // Map topology nodes to include only properties needed for tooltip and rendering
         const topologyNodesWithProps = topologyNodes.map((node) => ({
-          ...node,
           globalId: node.id,
-          displayId: node.id,
-          callsign: `Node ${node.id}`,
-          latitude: node.lat,
           longitude: node.long,
-          neighborCount: node.neighbors?.length || 0,
-          groupId: nodeToGroup.get(node.id) || "A",
+          latitude: node.lat,
+          groupId: nodeToGroup.get(node.id) || "A", // Needed for icon selection
         }));
 
         layers.push(
