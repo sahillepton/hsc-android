@@ -3054,6 +3054,7 @@ const MapComponent = ({
           id: "polygon-layer",
           data: polygonData,
           fp64: true, // Use 64-bit precision for Samsung devices
+          parameters: { depthTest: false },
           getPolygon: (d: any) => d.ring,
           getFillColor: (d: any) => {
             const color = d.layer.color ?? [32, 32, 32, 120];
@@ -3093,6 +3094,7 @@ const MapComponent = ({
             widthUnits: "pixels",
             widthMinPixels: 1,
             widthMaxPixels: 50,
+            parameters: { depthTest: false, depthMask: false },
             pickable: true,
             pickingRadius: 20,
             onHover: handleLayerHover,
@@ -3321,6 +3323,7 @@ const MapComponent = ({
           id: layer.id,
           data: layer.geojson,
           fp64: true, // Use 64-bit precision for Samsung devices
+          parameters: { depthTest: false },
           pickable: true,
           pickingRadius: 20, // Larger picking radius for touch devices
           stroked: true,
@@ -3415,6 +3418,7 @@ const MapComponent = ({
             id: "preview-polygon-layer",
             fp64: true, // Use 64-bit precision for Samsung devices
             data: [previewPath],
+            parameters: { depthTest: false },
             getPolygon: (d: [number, number][]) => d,
             getFillColor: [32, 32, 32, 60],
             getLineColor: [32, 32, 32],
@@ -3432,6 +3436,7 @@ const MapComponent = ({
             getWidth: 2,
             widthUnits: "pixels",
             widthMinPixels: 1,
+            parameters: { depthTest: false, depthMask: false },
             pickable: false,
           })
         );

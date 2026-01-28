@@ -94,6 +94,7 @@ export const useRubberBandRectangle = ({
         id: "rubber-band-rectangle-fill",
         data: [{ polygon: rectanglePolygon }],
         fp64: true, // Use 64-bit precision for Samsung devices
+        parameters: { depthTest: false },
         pickable: false,
         stroked: true,
         filled: true,
@@ -116,6 +117,7 @@ export const useRubberBandRectangle = ({
         widthUnits: "pixels",
         widthMinPixels: 3,
         widthMaxPixels: 3,
+        parameters: { depthTest: false },
         updateTriggers: {
           getPath: [start, end],
         },
@@ -170,6 +172,7 @@ export const useRubberBandOverlay = ({
       id: "rubber-band-overlay",
       data: [{ polygon: overlayPolygon }],
       fp64: true, // Use 64-bit precision for Samsung devices
+      parameters: { depthTest: false },
       pickable: false,
       stroked: false,
       filled: true,
