@@ -1184,8 +1184,8 @@ const MapComponent = ({
       }
 
       // First, check if manifest exists and what it contains
-      const { loadManifest } = await import("@/sessions/manifestStore");
-      const beforeManifest = await loadManifest();
+      // const { loadManifest } = await import("@/sessions/manifestStore");
+      // const beforeManifest = await loadManifest();
 
 
       // Step 7 & 8: Finalize manifest according to system design:
@@ -2773,90 +2773,6 @@ const MapComponent = ({
     const guardColor = (color: number[] = [0, 0, 0]) =>
       color.length === 4 ? color : [...color, 255];
 
-    const getSignalColor = (
-      snr: number | undefined,
-      rssi: number | undefined
-    ): [number, number, number] => {
-      if (
-        typeof snr !== "number" ||
-        Number.isNaN(snr) ||
-        typeof rssi !== "number" ||
-        Number.isNaN(rssi)
-      ) {
-        return [128, 128, 128];
-      }
-      const normalizedSNR = Math.max(0, Math.min(1, snr / 30));
-      const normalizedRSSI = Math.max(0, Math.min(1, (rssi + 100) / 70));
-      const signalStrength = normalizedSNR * 0.7 + normalizedRSSI * 0.3;
-      if (signalStrength >= 0.7) return [0, 255, 0];
-      if (signalStrength >= 0.4) return [255, 165, 0];
-      return [255, 0, 0];
-    };
-
-    const getNodeIcon = (node: Node, allNodes: Node[] = []) => {
-      const nodeId = node.userId?.toString();
-      if (nodeId && nodeIconMappings[nodeId]) {
-        const iconName = nodeIconMappings[nodeId];
-        const isRectangularIcon = [
-          "ground_unit",
-          "command_post",
-          "naval_unit",
-        ].includes(iconName);
-        return {
-          url: `/icons/${iconName}.svg`,
-          width: isRectangularIcon ? 28 : 24,
-          height: isRectangularIcon ? 20 : 24,
-          anchorY: isRectangularIcon ? 10 : 12,
-          anchorX: isRectangularIcon ? 14 : 12,
-          mask: false,
-        };
-      }
-
-      let iconName = "neutral_aircraft";
-
-      const getMotherAircraft = () => {
-        if (!allNodes.length) return null;
-        const sortedNodes = allNodes
-          .filter((n) => typeof n.snr === "number")
-          .sort((a, b) => {
-            const snrA = a.snr ?? -Infinity;
-            const snrB = b.snr ?? -Infinity;
-            if (snrB !== snrA) return snrB - snrA;
-            return a.userId - b.userId;
-          });
-        return sortedNodes[0] ?? null;
-      };
-
-      const motherAircraft = getMotherAircraft();
-
-      if (motherAircraft && node.userId === motherAircraft.userId) {
-        iconName = "mother-aircraft";
-      } else if (node.hopCount === 0) {
-        iconName = "command_post";
-      } else if ((node.snr ?? 0) > 20) {
-        iconName = "friendly_aircraft";
-      } else if ((node.snr ?? 0) > 10) {
-        iconName = "ground_unit";
-      } else if ((node.snr ?? 0) > 0) {
-        iconName = "neutral_aircraft";
-      } else {
-        iconName = "unknown_aircraft";
-      }
-
-      const isRectangularIcon = [
-        "ground_unit",
-        "command_post",
-        "naval_unit",
-      ].includes(iconName);
-      return {
-        url: `/icons/${iconName}.svg`,
-        width: isRectangularIcon ? 28 : 24,
-        height: isRectangularIcon ? 20 : 24,
-        anchorY: isRectangularIcon ? 10 : 12,
-        anchorX: isRectangularIcon ? 14 : 12,
-        mask: false,
-      };
-    };
 
     const visibleLayers = layers
       .filter(isLayerVisible)
@@ -2884,7 +2800,6 @@ const MapComponent = ({
     const annotationLayers = visibleLayers.filter(
       (l) => l.type === "annotation"
     );
-    const nodeLayers = visibleLayers.filter((l) => l.type === "nodes");
 
     const deckLayers: any[] = [];
     const measurementCharacterSet = [
@@ -3459,52 +3374,6 @@ const MapComponent = ({
       );
     });
 
-    nodeLayers.forEach((layer) => {
-      if (!layer.nodes?.length) return;
-      const nodes = [...layer.nodes];
-
-      deckLayers.push(
-        new IconLayer({
-          id: `${layer.id}-icon-layer`,
-          data: nodes,
-          pickable: true,
-          pickingRadius: 20, // Larger picking radius for touch devices
-          getIcon: (node: Node) => getNodeIcon(node, nodes),
-          getPosition: (node: Node) => [node.longitude, node.latitude],
-          getSize: 24,
-          sizeScale: 1,
-          getPixelOffset: [0, -10],
-          alphaCutoff: 0.001,
-          billboard: true,
-          sizeUnits: "pixels",
-          sizeMinPixels: 16,
-          sizeMaxPixels: 32,
-          updateTriggers: {
-            getIcon: [nodes.length, Object.values(nodeIconMappings).join(",")],
-          },
-          onHover: handleLayerHover,
-          onClick: handleNodeIconClick,
-        })
-      );
-
-      deckLayers.push(
-        new ScatterplotLayer({
-          id: `${layer.id}-signal-overlay`,
-          data: nodes,
-          getPosition: (node: Node) => [node.longitude, node.latitude],
-          getRadius: 12000,
-          getFillColor: (node: Node) => getSignalColor(node.snr, node.rssi),
-          getLineColor: [255, 255, 255, 200],
-          getLineWidth: 2,
-          radiusMinPixels: 8,
-          radiusMaxPixels: 32,
-          pickable: true,
-          pickingRadius: 20, // Larger picking radius for touch devices
-          onHover: handleLayerHover,
-          onClick: handleNodeIconClick,
-        })
-      );
-    });
 
     // --- Preview layers ---
     const previewLayers: any[] = [];
