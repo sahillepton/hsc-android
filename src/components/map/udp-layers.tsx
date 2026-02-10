@@ -1154,6 +1154,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           id: "udp-topology-lines",
           data: connections,
           pickable: false,
+          parameters: { depthTest: false, depthMask: false },
           getSourcePosition: (d: any) => [d.from.longitude, d.from.latitude],
           getTargetPosition: (d: any) => [d.to.longitude, d.to.latitude],
           getColor: (d: any) => d.color,
@@ -1189,6 +1190,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             data: validNetworkMembers,
             pickable: true,
             onHover: onHover,
+            parameters: { depthTest: false, depthMask: false },
             getIcon: (_d: any) => {
               const customSymbol = getLayerSymbol(networkMembersLayerId);
               const symbol = customSymbol || "fighter8";
@@ -1248,6 +1250,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             data: validTargets,
             pickable: true,
             onHover: onHover,
+            parameters: { depthTest: false, depthMask: false },
             getIcon: (_d: any) => {
               const customSymbol = getLayerSymbol(targetsLayerId);
               const symbol = customSymbol || "alert";
@@ -1300,6 +1303,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             id: geoMessagesLayerId,
             data: validGeoMessages,
             pickable: false, // No tooltip for geo messages
+            parameters: { depthTest: false, depthMask: false },
             getIcon: (_d: any) => {
               return {
                 url: `/icons/unknown_aircraft.svg`,
@@ -1354,6 +1358,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             id: "udp-topology-connections-layer",
             data: connectionData,
             pickable: true,
+            parameters: { depthTest: false, depthMask: false },
             getSourcePosition: (d: any) => [d.from.longitude, d.from.latitude],
             getTargetPosition: (d: any) => [d.to.longitude, d.to.latitude],
             getColor: (d: any) => d.color,
@@ -1471,6 +1476,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             data: topologyNodesWithProps,
             pickable: true,
             onHover: onHover,
+            parameters: { depthTest: false, depthMask: false },
             getIcon: (d: any) => {
               const groupId = d.groupId || "A";
               // Get group-specific icon, fallback to default for group, then fighter1
