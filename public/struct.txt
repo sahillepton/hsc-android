@@ -1,3 +1,23 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    // PREFER_PROJECT allows Capacitor modules to use their own repository definitions
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://plugins.gradle.org/m2/") }
+        // Ionic libs repository (for Geolocation plugin dependencies)
+        maven { url = uri("https://jitpack.io") }
+    }
+}
+
+
 #include <vector>
 #include "AppLayerCommonDefs.h"
 /*
