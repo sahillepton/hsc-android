@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Capacitor Integration Guide - deal_wf_mcsa-develop</title>
+    <style>
+        body {
+            font-family: 'Calibri', 'Arial', sans-serif;
+            line-height: 1.6;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            color: #333;
+        }
+
+        h1 {
+            color: #0066cc;
+            border-bottom: 3px solid #0066cc;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            color: #0066cc;
+            margin-top: 30px;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 5px;
+        }
+
+        h3 {
+            color: #0088cc;
+            margin-top: 20px;
+        }
+
+        h4 {
+            color: #0099cc;
+            margin-top: 15px;
+        }
+
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background-color: #f4f4f4;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            overflow-x: auto;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.9em;
+            line-height: 1.4;
+        }
+
+        .note {
+            background-color: #fff9e6;
+            border-left: 4px solid #ffcc00;
+            padding: 10px;
+            margin: 15px 0;
+        }
+
+        .warning {
+            background-color: #ffe6e6;
+            border-left: 4px solid #ff0000;
+            padding: 10px;
+            margin: 15px 0;
+        }
+
+        .success {
+            background-color: #e6ffe6;
+            border-left: 4px solid #00cc00;
+            padding: 10px;
+            margin: 15px 0;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Capacitor Integration Guide - deal_wf_mcsa-develop</h1>
+    <p>Complete step-by-step guide for integrating Capacitor GIS view into the client Android app.</p>
+
+    <hr>
+
+    <h2>Prerequisites</h2>
+    <p><strong>Before starting, ensure:</strong></p>
+    <ul>
+        <li>✅ <code>hsc-android</code> folder exists at the same level as <code>deal_wf_mcsa-develop</code></li>
+        <li>✅ <code>hsc-android</code> has been built (<code>yarn install</code>, <code>yarn build</code>,
+            <code>npx cap sync</code>)
+        </li>
+        <li>✅ <code>hsc-android/node_modules/</code> folder exists with Capacitor packages</li>
+    </ul>
+
+    <p><strong>Required Folder Structure:</strong></p>
+    <pre>HSC android setup/
+├── hsc-android/          ← Must exist and be built
+│   ├── node_modules/     ← Must contain @capacitor packages
+│   └── android/          ← Must contain capacitor-cordova-android-plugins
+└── deal_wf_mcsa-develop/ ← Your client app</pre>
+
+    <hr>
+
+    <h2>Step 1: Update root build.gradle.kts</h2>
+    <h3>File Modified</h3>
+    <p><code>deal_wf_mcsa-develop/build.gradle.kts</code></p>
+
+    <h3>Complete File Content</h3>
+    <p><strong>Replace the entire file with this (includes all Capacitor changes):</strong></p>
+    <pre><code>import com.android.build.gradle.LibraryExtension // ADDED
+
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.kotlin.compose) apply false
+    alias(libs.plugins.hilt.android) apply false
+    alias(libs.plugins.kotlin.kapt) apply false
+}
+
+// ADDED: Apply variables from Groovy file for Capacitor compatibility
+apply(from = "variables.gradle") // ADDED
+
+// ADDED: Ensure namespace is set for the capacitor-file-picker library (AGP 8+ requirement)
+subprojects {
+    if (name == "capacitor-file-picker") {
+        plugins.withId("com.android.library") {
+            extensions.configure&lt;LibraryExtension&gt; {
+                namespace = "com.epicshaggy.filepicker.capacitorfilepicker" // ADDED
+            }
+        }
+    }
+}</code></pre>
+
+    <h3>Changes Made</h3>
+    <ol>
+        <li>Added <code>import com.android.build.gradle.LibraryExtension</code> at the top</li>
+        <li>Added <code>apply(from = "variables.gradle")</code> to apply Capacitor variables</li>
+        <li>Added namespace override for <code>capacitor-file-picker</code> to fix AGP 8+ build errors</li>
+    </ol>
+
+    <p><strong>Reason:</strong></p>
+    <ul>
+        <li>Variables.gradle provides SDK versions to all Capacitor modules</li>
+        <li>Namespace override fixes "Namespace not specified" build error for file-picker plugin</li>
+    </ul>
+
+    <hr>
+
+    <h2>Step 2: Update app/build.gradle.kts</h2>
+    <h3>File Modified</h3>
+    <p><code>deal_wf_mcsa-develop/app/build.gradle.kts</code></p>
+
+    <h3>Changes Made</h3>
+
+    <p><strong>Enable MultiDex (inside <code>android { defaultConfig { ... } }</code>):</strong></p>
+    <pre><code>defaultConfig {
+    // ... existing configs ...
+    multiDexEnabled = true
+}</code></pre>
+
+    <p><strong>Disable R8 in debug (inside <code>android { buildTypes { debug { ... } } }</code>):</strong></p>
+    <pre><code>buildTypes {
+    debug {
+        // Disable R8 in debug to prevent plugin loading issues
+        isMinifyEnabled = false
+    }
+}</code></pre>
+
+    <p><strong>Add these dependencies (keep your existing ones; add only if missing):</strong></p>
+    <pre><code>dependencies {
+    // Capacitor core
+    implementation(project(":capacitor-android"))
+
+    // Capacitor plugins
+    implementation(project(":capacitor-app"))
+    implementation(project(":capacitor-filesystem"))
+    implementation(project(":capacitor-geolocation"))
+    implementation(project(":capacitor-preferences"))
+    implementation(project(":capacitor-share"))
+    implementation(project(":capacitor-file-picker"))
+
+    // Cordova compatibility
+    implementation(project(":capacitor-cordova-android-plugins"))
+
+    // Geolocation dependencies
+    implementation("io.ionic.libs:iongeolocation-android:1.0.0")
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.6.4")
+
+    // WebView support
+    implementation("androidx.webkit:webkit:1.12.1")
+
+    // Local tile server
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+
+    // MultiDex runtime
+    implementation("androidx.multidex:multidex:2.0.1")
+}</code></pre>
+
+    <p><strong>Reason:</strong> Required dependencies for Capacitor core/plugins, geolocation, WebView, local tile
+        server, and multidex.</p>
+
+    <hr>
+
+    <h2>Step 3: Update AndroidManifest.xml</h2>
+    <h3>File Modified</h3>
+    <p><code>deal_wf_mcsa-develop/app/src/main/AndroidManifest.xml</code></p>
+
+    <h3>Changes Made</h3>
+    <p><strong>Note:</strong> The app already had most permissions. The following exact code was added/updated:</p>
+
+    <h4>1. Permissions Added (after <code>ACCESS_NETWORK_STATE</code> permission):</h4>
+    <pre><code>&lt;uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" /&gt;
+&lt;uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" /&gt;</code></pre>
+
+    <h4>2. Permissions Updated:</h4>
+
+    <p><strong>Changed <code>READ_EXTERNAL_STORAGE</code>:</strong></p>
+    <pre><code>&lt;!-- BEFORE --&gt;
+&lt;uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" /&gt;
+&lt;!-- AFTER --&gt;
+&lt;uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" /&gt;</code></pre>
+
+    <p><strong>Changed <code>MANAGE_EXTERNAL_STORAGE</code>:</strong></p>
+    <pre><code>&lt;!-- BEFORE --&gt;
+&lt;uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" /&gt;
+&lt;!-- AFTER --&gt;
+&lt;uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" /&gt;</code></pre>
+
+    <p><strong>Changed <code>WRITE_EXTERNAL_STORAGE</code>:</strong></p>
+    <pre><code>&lt;!-- BEFORE --&gt;
+&lt;uses-permission
+    android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+    android:maxSdkVersion="28" /&gt;
+&lt;!-- AFTER --&gt;
+&lt;uses-permission
+    android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+    android:maxSdkVersion="29" /&gt;</code></pre>
+
+    <p><strong>Already present (no changes needed):</strong></p>
+    <ul>
+        <li><code>INTERNET</code></li>
+        <li><code>ACCESS_NETWORK_STATE</code></li>
+        <li><code>READ_MEDIA_IMAGES</code>, <code>READ_MEDIA_VIDEO</code>, <code>READ_MEDIA_AUDIO</code></li>
+    </ul>
+
+    <h4>3. Application Attributes Added:</h4>
+    <p><strong>Added to the existing <code>&lt;application&gt;</code> tag (before
+            <code>tools:targetApi="31"&gt;</code>):</strong></p>
+    <pre><code>&lt;!-- BEFORE --&gt;
+&lt;application
+    android:name=".MCSADealApp"
+    android:allowBackup="true"
+    android:dataExtractionRules="@xml/data_extraction_rules"
+    android:fullBackupContent="@xml/backup_rules"
+    android:hardwareAccelerated="true"
+    android:icon="@drawable/drdologo"
+    android:label="@string/app_name"
+    android:roundIcon="@mipmap/ic_launcher_round"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.DealMCSA"
+    tools:targetApi="31"&gt;
+
+&lt;!-- AFTER (added two attributes) --&gt;
+&lt;application
+    android:name=".MCSADealApp"
+    android:allowBackup="true"
+    android:dataExtractionRules="@xml/data_extraction_rules"
+    android:fullBackupContent="@xml/backup_rules"
+    android:hardwareAccelerated="true"
+    android:icon="@drawable/drdologo"
+    android:label="@string/app_name"
+    android:roundIcon="@mipmap/ic_launcher_round"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.DealMCSA"
+    android:requestLegacyExternalStorage="true"
+    android:usesCleartextTraffic="true"
+    tools:targetApi="31"&gt;</code></pre>
+
+    <h4>4. Add FileProvider for Capacitor:</h4>
+    <p><strong>Added after the existing FileProvider (before <code>&lt;/application&gt;</code> tag):</strong></p>
+    <pre><code>&lt;provider
+    android:name="androidx.core.content.FileProvider"
+    android:authorities="${applicationId}.fileprovider"
+    android:exported="false"
+    android:grantUriPermissions="true"&gt;
+    &lt;meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/file_paths" /&gt;
+&lt;/provider&gt;</code></pre>
+    <p><strong>Note:</strong> The app already has a FileProvider with <code>${applicationId}.provider</code> (for
+        existing functionality). This is an additional FileProvider specifically for Capacitor.</p>
+
+    <hr>
+
+    <h2>Step 4: Create file_paths.xml</h2>
+    <h3>File Created</h3>
+    <p><code>deal_wf_mcsa-develop/app/src/main/res/xml/file_paths.xml</code></p>
+
+    <h3>File Contents</h3>
+    <p><strong>Created file content:</strong></p>
+    <pre><code>&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;paths&gt;
+    &lt;external-path name="external" path="." /&gt;
+    &lt;external-files-path name="external_files" path="." /&gt;
+    &lt;cache-path name="cache" path="." /&gt;
+    &lt;files-path name="files" path="." /&gt;
+&lt;/paths&gt;</code></pre>
+
+    <p><strong>Note:</strong> The <code>xml</code> directory already exists in the app (it has
+        <code>provider_paths.xml</code>). The <code>file_paths.xml</code> file has been created in the same directory.
+    </p>
+
+    <p><strong>Reason:</strong> This file is required by the Capacitor FileProvider added in Step 3 to define which file
+        paths can be shared.</p>
+
+    <hr>
+
+    <h2>Step 5: Copy Custom Plugins</h2>
+    <h3>Exact Copy Instructions</h3>
+
+    <p><strong>Step 1: Create the plugins folder</strong></p>
+    <ul>
+        <li>Create folder: <code>deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/plugins/</code></li>
+        <li>(The <code>plugins</code> folder doesn't exist yet, you need to create it)</li>
+    </ul>
+
+    <p><strong>Step 2: Copy all 5 plugin files</strong></p>
+    <p><strong>Copy FROM (source):</strong></p>
+    <pre>HSC android setup/integrationApp/app/src/main/java/com/client/integrationapp/plugins/</pre>
+
+    <p><strong>Copy TO (destination):</strong></p>
+    <pre>HSC android setup/deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/plugins/</pre>
+
+    <p><strong>Files to copy (copy all 5 files):</strong></p>
+    <ol>
+        <li><code>UdpPlugin.kt</code></li>
+        <li><code>NativeUploaderPlugin.kt</code></li>
+        <li><code>ZipFolderPlugin.kt</code></li>
+        <li><code>MemberActionPlugin.kt</code></li>
+        <li><code>OfflineTileServerPlugin.kt</code></li>
+    </ol>
+
+    <p><strong>Step 3: Update package names in each file</strong></p>
+    <p>After copying, open each file and change <strong>line 1</strong> from:</p>
+    <pre><code>package com.client.integrationapp.plugins</code></pre>
+    <p>To:</p>
+    <pre><code>package org.deal.mcsa.plugins</code></pre>
+
+    <p><strong>Files to update (all 5 files):</strong></p>
+    <ul>
+        <li><code>UdpPlugin.kt</code> - Line 1: Change package</li>
+        <li><code>NativeUploaderPlugin.kt</code> - Line 1: Change package</li>
+        <li><code>ZipFolderPlugin.kt</code> - Line 1: Change package</li>
+        <li><code>MemberActionPlugin.kt</code> - Line 1: Change package</li>
+        <li><code>OfflineTileServerPlugin.kt</code> - Line 1: Change package</li>
+    </ul>
+
+    <hr>
+
+    <h2>Step 6: Copy GisCapacitorFragment.kt</h2>
+    <h3>File Created</h3>
+    <p><code>deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/GisCapacitorFragment.kt</code></p>
+
+    <p><strong>Use this code:</strong></p>
+    <pre><code>package org.deal.mcsa
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.ConsoleMessage
+import androidx.fragment.app.Fragment
+import com.getcapacitor.Bridge
+import com.getcapacitor.Logger
+import com.getcapacitor.Plugin
+import com.getcapacitor.PluginLoadException
+import com.getcapacitor.PluginManager
+import com.getcapacitor.PluginHandle
+import com.getcapacitor.android.R as CapacitorR
+
+// Custom plugins ONLY (official plugins are loaded via PluginManager from capacitor.plugins.json)
+import org.deal.mcsa.plugins.UdpPlugin
+import org.deal.mcsa.plugins.NativeUploaderPlugin
+import org.deal.mcsa.plugins.ZipFolderPlugin
+import org.deal.mcsa.plugins.MemberActionPlugin
+import org.deal.mcsa.plugins.OfflineTileServerPlugin
+
+/**
+ * GisCapacitorFragment - A fragment that hosts the Capacitor WebView
+ * for the hsc-android GIS application with FULL plugin support.
+ * 
+ * This mirrors BridgeActivity's approach:
+ * - Official plugins are loaded via PluginManager from capacitor.plugins.json
+ * - Custom plugins are registered manually via registerPlugin()
+ */
+class GisCapacitorFragment : Fragment() {
+
+    private var bridge: Bridge? = null
+    private var keepRunning = true
+    
+    // Only for CUSTOM plugins (not in capacitor.plugins.json)
+    private val initialPlugins = mutableListOf<Class<out Plugin>>()
+    
+    // Bridge builder - initialized when fragment is attached
+    private val bridgeBuilder: Bridge.Builder by lazy { 
+        Bridge.Builder(this)
+    }
+
+    companion object {
+        private const val TAG = "GisCapacitorFragment"
+        
+        fun newInstance(): GisCapacitorFragment {
+            return GisCapacitorFragment()
+        }
+    }
+    
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        
+        // Register ONLY custom plugins (same as hsc-android MainActivity does)
+        // Official plugins are loaded from capacitor.plugins.json by PluginManager
+        registerPlugin(UdpPlugin::class.java)
+        registerPlugin(NativeUploaderPlugin::class.java)
+        registerPlugin(ZipFolderPlugin::class.java)
+        registerPlugin(MemberActionPlugin::class.java)
+        registerPlugin(OfflineTileServerPlugin::class.java)
+        
+        Logger.debug("$TAG: Registered ${initialPlugins.size} custom plugins")
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        return try {
+            val view = inflater.inflate(CapacitorR.layout.capacitor_bridge_layout_main, container, false)
+            Logger.debug("$TAG: Capacitor layout inflated")
+            view
+        } catch (e: Exception) {
+            Logger.error("$TAG: Error inflating Capacitor layout", e)
+            null
+        }
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        
+        Logger.debug("$TAG: onViewCreated - initializing bridge")
+        
+        bridgeBuilder.setInstanceState(savedInstanceState)
+        
+        // Load OFFICIAL plugins from capacitor.plugins.json (same as BridgeActivity)
+        val loader = PluginManager(requireActivity().assets)
+        try {
+            val plugins = loader.loadPluginClasses()
+            bridgeBuilder.addPlugins(plugins)
+            Logger.debug("$TAG: Loaded ${plugins.size} plugins from capacitor.plugins.json")
+            
+            // Log plugin names for debugging
+            plugins.forEach { pluginClass ->
+                Logger.debug("$TAG: Auto-loaded plugin: ${pluginClass.simpleName}")
+            }
+        } catch (ex: PluginLoadException) {
+            Logger.error("$TAG: Error loading plugins from capacitor.plugins.json", ex)
+        }
+        
+        // Load the bridge
+        load()
+    }
+    
+        /**
+         * Load the bridge - mirrors BridgeActivity.load()
+         * Catches PluginLoadException to handle individual plugin failures gracefully
+         */
+        private fun load() {
+            Logger.debug("$TAG: Starting bridge load")
+            Logger.debug("$TAG: Custom plugins count: ${initialPlugins.size}")
+            
+            // Add custom plugins and create bridge
+            // Wrap in try-catch to handle GeolocationPlugin load failures gracefully
+            try {
+                bridge = bridgeBuilder
+                    .addPlugins(initialPlugins)  // Custom plugins
+                    .setConfig(null)             // Use default config from assets/capacitor.config.json
+                    .create()
+                
+                keepRunning = bridge?.shouldKeepRunning() ?: true
+                Logger.debug("$TAG: Bridge created successfully")
+            } catch (e: com.getcapacitor.PluginLoadException) {
+                Logger.error("$TAG: Plugin load exception (likely GeolocationPlugin): ${e.message}", e)
+                // Try to create bridge without the failing plugin
+                // The plugin that failed won't be loaded, but others will work
+                try {
+                    // Rebuild bridge builder without problematic plugins
+                    bridge = bridgeBuilder
+                        .addPlugins(initialPlugins)
+                        .setConfig(null)
+                        .create()
+                    keepRunning = bridge?.shouldKeepRunning() ?: true
+                    Logger.warn("$TAG: Bridge created with reduced plugin set")
+                } catch (e2: Exception) {
+                    Logger.error("$TAG: Failed to create bridge even after retry: ${e2.message}", e2)
+                }
+            } catch (e: Exception) {
+                Logger.error("$TAG: Unexpected error creating bridge: ${e.message}", e)
+            }
+        
+        // Suppress verbose console logs from WebView (Udp.addListener result logs)
+        bridge?.webView?.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                val message = consoleMessage?.message() ?: ""
+                // Suppress verbose Capacitor logs only (keep actual errors visible)
+                if (message.contains("result Udp.addListener", ignoreCase = true)) {
+                    // Silently ignore verbose result logs
+                    return true
+                }
+                // Allow other console messages through (including Geolocation errors if they occur)
+                return super.onConsoleMessage(consoleMessage)
+            }
+        }
+        
+        Logger.debug("$TAG: Bridge created successfully")
+    }
+    
+    /**
+     * Register a custom plugin (call before bridge is created)
+     */
+    fun registerPlugin(plugin: Class<out Plugin>) {
+        initialPlugins.add(plugin)
+    }
+
+    fun getBridge(): Bridge? = bridge
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        bridge?.saveInstanceState(outState)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        bridge?.onStart()
+        Logger.debug("$TAG: onStart")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        bridge?.let {
+            it.app?.fireStatusChange(true)
+            it.onResume()
+        }
+        Logger.debug("$TAG: onResume")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        bridge?.onPause()
+        Logger.debug("$TAG: onPause")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        bridge?.let {
+            it.app?.fireStatusChange(false)
+            it.onStop()
+        }
+        Logger.debug("$TAG: onStop")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        bridge?.onDestroy()
+        Logger.debug("$TAG: onDestroy")
+    }
+
+    fun handleBackPress(): Boolean {
+        val webView = bridge?.webView
+        if (webView?.canGoBack() == true) {
+            webView.goBack()
+            return true
+        }
+        return false
+    }
+
+    fun reload() {
+        bridge?.webView?.reload()
+    }
+}</code></pre>
+
+    <hr>
+
+    <h2>Step 7: Create GisScreen.kt (Compose Screen)</h2>
+    <h3>File Created</h3>
+    <p><code>deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/presentation/ui/screens/GisScreen.kt</code></p>
+
+    <p><strong>Use this code:</strong></p>
+    <pre><code>
+        package org.deal.mcsa
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.ConsoleMessage
+import androidx.fragment.app.Fragment
+import com.getcapacitor.Bridge
+import com.getcapacitor.Logger
+import com.getcapacitor.Plugin
+import com.getcapacitor.PluginLoadException
+import com.getcapacitor.PluginManager
+import com.getcapacitor.PluginHandle
+import com.getcapacitor.android.R as CapacitorR
+
+// Custom plugins ONLY (official plugins are loaded via PluginManager from capacitor.plugins.json)
+import org.deal.mcsa.plugins.UdpPlugin
+import org.deal.mcsa.plugins.NativeUploaderPlugin
+import org.deal.mcsa.plugins.ZipFolderPlugin
+import org.deal.mcsa.plugins.MemberActionPlugin
+import org.deal.mcsa.plugins.OfflineTileServerPlugin
+
+/**
+ * GisCapacitorFragment - A fragment that hosts the Capacitor WebView
+ * for the hsc-android GIS application with FULL plugin support.
+ * 
+ * This mirrors BridgeActivity's approach:
+ * - Official plugins are loaded via PluginManager from capacitor.plugins.json
+ * - Custom plugins are registered manually via registerPlugin()
+ */
+class GisCapacitorFragment : Fragment() {
+
+    private var bridge: Bridge? = null
+    private var keepRunning = true
+    
+    // Only for CUSTOM plugins (not in capacitor.plugins.json)
+    private val initialPlugins = mutableListOf<Class<out Plugin>>()
+    
+    // Bridge builder - initialized when fragment is attached
+    private val bridgeBuilder: Bridge.Builder by lazy { 
+        Bridge.Builder(this)
+    }
+
+    companion object {
+        private const val TAG = "GisCapacitorFragment"
+        
+        fun newInstance(): GisCapacitorFragment {
+            return GisCapacitorFragment()
+        }
+    }
+    
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        
+        // Register ONLY custom plugins (same as hsc-android MainActivity does)
+        // Official plugins are loaded from capacitor.plugins.json by PluginManager
+        registerPlugin(UdpPlugin::class.java)
+        registerPlugin(NativeUploaderPlugin::class.java)
+        registerPlugin(ZipFolderPlugin::class.java)
+        registerPlugin(MemberActionPlugin::class.java)
+        registerPlugin(OfflineTileServerPlugin::class.java)
+        
+        Logger.debug("$TAG: Registered ${initialPlugins.size} custom plugins")
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        return try {
+            val view = inflater.inflate(CapacitorR.layout.capacitor_bridge_layout_main, container, false)
+            Logger.debug("$TAG: Capacitor layout inflated")
+            view
+        } catch (e: Exception) {
+            Logger.error("$TAG: Error inflating Capacitor layout", e)
+            null
+        }
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        
+        Logger.debug("$TAG: onViewCreated - initializing bridge")
+        
+        bridgeBuilder.setInstanceState(savedInstanceState)
+        
+        // Load OFFICIAL plugins from capacitor.plugins.json (same as BridgeActivity)
+        val loader = PluginManager(requireActivity().assets)
+        try {
+            val plugins = loader.loadPluginClasses()
+            bridgeBuilder.addPlugins(plugins)
+            Logger.debug("$TAG: Loaded ${plugins.size} plugins from capacitor.plugins.json")
+            
+            // Log plugin names for debugging
+            plugins.forEach { pluginClass ->
+                Logger.debug("$TAG: Auto-loaded plugin: ${pluginClass.simpleName}")
+            }
+        } catch (ex: PluginLoadException) {
+            Logger.error("$TAG: Error loading plugins from capacitor.plugins.json", ex)
+        }
+        
+        // Load the bridge
+        load()
+    }
+    
+        /**
+         * Load the bridge - mirrors BridgeActivity.load()
+         * Catches PluginLoadException to handle individual plugin failures gracefully
+         */
+        private fun load() {
+            Logger.debug("$TAG: Starting bridge load")
+            Logger.debug("$TAG: Custom plugins count: ${initialPlugins.size}")
+            
+            // Add custom plugins and create bridge
+            // Wrap in try-catch to handle GeolocationPlugin load failures gracefully
+            try {
+                bridge = bridgeBuilder
+                    .addPlugins(initialPlugins)  // Custom plugins
+                    .setConfig(null)             // Use default config from assets/capacitor.config.json
+                    .create()
+                
+                keepRunning = bridge?.shouldKeepRunning() ?: true
+                Logger.debug("$TAG: Bridge created successfully")
+            } catch (e: com.getcapacitor.PluginLoadException) {
+                Logger.error("$TAG: Plugin load exception (likely GeolocationPlugin): ${e.message}", e)
+                // Try to create bridge without the failing plugin
+                // The plugin that failed won't be loaded, but others will work
+                try {
+                    // Rebuild bridge builder without problematic plugins
+                    bridge = bridgeBuilder
+                        .addPlugins(initialPlugins)
+                        .setConfig(null)
+                        .create()
+                    keepRunning = bridge?.shouldKeepRunning() ?: true
+                    Logger.warn("$TAG: Bridge created with reduced plugin set")
+                } catch (e2: Exception) {
+                    Logger.error("$TAG: Failed to create bridge even after retry: ${e2.message}", e2)
+                }
+            } catch (e: Exception) {
+                Logger.error("$TAG: Unexpected error creating bridge: ${e.message}", e)
+            }
+        
+        // Suppress verbose console logs from WebView (Udp.addListener result logs)
+        bridge?.webView?.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                val message = consoleMessage?.message() ?: ""
+                // Suppress verbose Capacitor logs only (keep actual errors visible)
+                if (message.contains("result Udp.addListener", ignoreCase = true)) {
+                    // Silently ignore verbose result logs
+                    return true
+                }
+                // Allow other console messages through (including Geolocation errors if they occur)
+                return super.onConsoleMessage(consoleMessage)
+            }
+        }
+        
+        Logger.debug("$TAG: Bridge created successfully")
+    }
+    
+    /**
+     * Register a custom plugin (call before bridge is created)
+     */
+    fun registerPlugin(plugin: Class<out Plugin>) {
+        initialPlugins.add(plugin)
+    }
+
+    fun getBridge(): Bridge? = bridge
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        bridge?.saveInstanceState(outState)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        bridge?.onStart()
+        Logger.debug("$TAG: onStart")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        bridge?.let {
+            it.app?.fireStatusChange(true)
+            it.onResume()
+        }
+        Logger.debug("$TAG: onResume")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        bridge?.onPause()
+        Logger.debug("$TAG: onPause")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        bridge?.let {
+            it.app?.fireStatusChange(false)
+            it.onStop()
+        }
+        Logger.debug("$TAG: onStop")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        bridge?.onDestroy()
+        Logger.debug("$TAG: onDestroy")
+    }
+
+    fun handleBackPress(): Boolean {
+        val webView = bridge?.webView
+        if (webView?.canGoBack() == true) {
+            webView.goBack()
+            return true
+        }
+        return false
+    }
+
+    fun reload() {
+        bridge?.webView?.reload()
+    }
+}
+
+    </code></pre>
+
+    <hr>
+
+    <h2>Step 8: Add GisScreen to Navigation</h2>
+    <h3>File Modified</h3>
+    <p><code>deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/presentation/ui/screens/HomeScreen.kt</code> (or your
+        navigation file)</p>
+
+    <p>Add <code>AppDestination.Gis -> GisScreen()</code> to your navigation system.</p>
+
+    <hr>
+
+    <h2>Step 9: Copy Web Assets</h2>
+    <h3>Assets to Copy</h3>
+    <ol>
+        <li><strong>Web Files:</strong> <code>hsc-android/dist/*</code> →
+            <code>deal_wf_mcsa-develop/app/src/main/assets/public/</code>
+        </li>
+        <li><strong>Capacitor Plugins JSON:</strong>
+            <code>hsc-android/android/app/src/main/assets/capacitor.plugins.json</code> →
+            <code>deal_wf_mcsa-develop/app/src/main/assets/</code>
+        </li>
+        <li><strong>Capacitor Config JSON:</strong>
+            <code>hsc-android/android/app/src/main/assets/capacitor.config.json</code> →
+            <code>deal_wf_mcsa-develop/app/src/main/assets/</code>
+        </li>
+    </ol>
+
+    <div class="warning">
+        <p><strong>Important:</strong> These assets must be copied AFTER building <code>hsc-android</code>
+            (<code>yarn build</code>). If you rebuild <code>hsc-android</code>, copy the assets again.</p>
+    </div>
+
+    <hr>
+
+    <h2>Step 10: Additional Required File Changes</h2>
+
+    <h3>File 1: Update BaseActivity.kt</h3>
+    <p><strong>File Modified:</strong>
+        <code>deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/presentation/ui/activity/BaseActivity.kt</code>
+    </p>
+    <p><strong>Change the class declaration:</strong></p>
+    <pre><code>// BEFORE
+open class BaseActivity : ComponentActivity()
+
+// AFTER
+open class BaseActivity : AppCompatActivity()</code></pre>
+    <p><strong>Reason:</strong> Capacitor's Bridge requires <code>AppCompatActivity</code> (which extends
+        <code>FragmentActivity</code>), not <code>ComponentActivity</code>.
+    </p>
+
+    <h3>File 2: Update themes.xml</h3>
+    <p><strong>File Modified:</strong> <code>deal_wf_mcsa-develop/app/src/main/res/values/themes.xml</code></p>
+    <p><strong>Change the theme parent:</strong></p>
+    <pre><code>&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;resources&gt;
+    &lt;style name="Theme.DealMCSA" parent="Theme.AppCompat.Light.NoActionBar" /&gt;
+&lt;/resources&gt;</code></pre>
+    <p><strong>Reason:</strong> <code>AppCompatActivity</code> requires an AppCompat theme, not Material theme.</p>
+
+    <h3>File 3: Update HomeActivity.kt</h3>
+    <p><strong>File Modified:</strong>
+        <code>deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/presentation/ui/activity/HomeActivity.kt</code>
+    </p>
+
+    <pre><code>package org.deal.mcsa.presentation.ui.activity
+
+import android.os.Bundle
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.compose.runtime.remember
+import androidx.core.view.WindowCompat
+import android.Manifest
+import android.content.Context
+import android.content.Intent              // ADDED (for storage permission)
+import android.net.Uri                     // ADDED (for storage permission)
+import android.os.Build                    // ADDED (for storage permission)
+import android.os.Environment              // ADDED (for storage permission)
+import android.provider.Settings           // ADDED (for storage permission)
+import android.util.Log
+import android.widget.Toast
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.core.app.ActivityCompat
+import androidx.appcompat.app.AlertDialog  // ADDED (for storage permission dialog)
+import dagger.hilt.android.AndroidEntryPoint
+// ... other existing imports ...
+
+@AndroidEntryPoint
+class HomeActivity : BaseActivity() {
+    // ... existing viewModels and properties ...
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // ... existing code ...
+        checkPermissions()
+        checkStoragePermission()  // ADDED (call storage permission check)
+        // ... rest of existing code ...
+    }
+
+    // UPDATED CODE
+    private fun checkPermissions() {
+        val permissions = mutableListOf&lt;String&gt;()
+        
+        // Camera, Audio, Bluetooth permissions (existing - unchanged)
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.CAMERA)
+        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) 
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) 
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        
+        // ADDED: Location permissions (required for Geolocation plugin)
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) 
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) 
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        
+        if (permissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 0)
+        }
+    }
+    
+    // ADDED: Storage permission methods (for offline tile server)
+    private fun checkStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                showStoragePermissionDialog()
+            } else {
+                Log.d("HomeActivity", "Storage permission already granted")
+            }
+        }
+    }
+    
+    private fun showStoragePermissionDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Storage Permission Required")
+            .setMessage("This app needs access to manage all files for the GIS map tile server.\n\nWithout this permission, the map cannot:\n• Load offline map tiles\n• Access tile files\n• Display the map correctly\n\nPlease tap 'Open Settings' and enable 'Allow access to manage all files'.")
+            .setPositiveButton("Open Settings") { _, _ ->
+                requestManageStoragePermission()
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+                Toast.makeText(this, "Map may not work without storage permission", Toast.LENGTH_LONG).show()
+            }
+            .setIcon(android.R.drawable.ic_dialog_alert)
+            .setCancelable(false)
+            .show()
+    }
+    
+    private fun requestManageStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
+            } catch (e: Exception) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    startActivity(intent)
+                } catch (e2: Exception) {
+                    Log.e("HomeActivity", "Failed to open storage settings: ${e2.message}", e2)
+                    Toast.makeText(this, "Could not open settings. Please grant storage permission manually.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    // ... rest of existing methods ...
+}</code></pre>
+    <p><strong>Summary of Capacitor additions:</strong></p>
+    <ol>
+        <li><strong>Imports added:</strong> <code>Intent</code>, <code>Uri</code>, <code>Build</code>,
+            <code>Environment</code>, <code>Settings</code>, <code>AlertDialog</code>
+        </li>
+        <li><strong>In <code>onCreate()</code>:</strong> Added <code>checkStoragePermission()</code> call</li>
+        <li><strong>In <code>checkPermissions()</code>:</strong> Added location permission checks</li>
+        <li><strong>New methods added:</strong> <code>checkStoragePermission()</code>,
+            <code>showStoragePermissionDialog()</code>, <code>requestManageStoragePermission()</code>
+        </li>
+    </ol>
+    <p><strong>Reason:</strong> Geolocation plugin and offline tile server require runtime permissions.</p>
+
+    <h3>File 4: Update MCSADealApp.kt</h3>
+    <p><strong>File Modified:</strong> <code>deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/MCSADealApp.kt</code>
+    </p>
+
+    <p><strong>Add imports (top of file):</strong></p>
+    <pre><code>import androidx.multidex.MultiDex                // ADDED
+import androidx.multidex.MultiDexApplication     // ADDED (if you change the base class)
+import android.app.Application                   // ADDED (if you keep Application as base class)
+import android.content.Context                   // ADDED</code></pre>
+
+    <p><strong>If you can change the base class (preferred with multidex):</strong></p>
+    <pre><code>class MCSADealApp : MultiDexApplication() {
+    // ... existing code ...
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        MultiDex.install(this)
+    }
+}</code></pre>
+
+    <p><strong>If you keep extending Application:</strong></p>
+    <pre><code>class MCSADealApp : Application() {
+    // ... existing code ...
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        MultiDex.install(this)
+    }
+}</code></pre>
+    <p><strong>Reason:</strong> Required when <code>multiDexEnabled = true</code> is set in
+        <code>app/build.gradle.kts</code>.
+    </p>
+
+    <h3>File 5: Update proguard-rules.pro</h3>
+    <p><strong>File Modified:</strong> <code>deal_wf_mcsa-develop/app/proguard-rules.pro</code></p>
+    <p><strong>Add these rules at the end of the file:</strong></p>
+    <pre><code># Keep attributes needed for reflection
+-keepattributes *Annotation*
+-keepattributes Signature
+-keepattributes Exceptions
+-keepattributes InnerClasses
+-keepattributes EnclosingMethod
+
+# Capacitor Plugin Rules - Keep all Capacitor plugins from being obfuscated
+-keep class com.capacitorjs.plugins.** { *; }
+-keep class com.getcapacitor.** { *; }
+-keepclassmembers class * extends com.getcapacitor.Plugin {
+    &lt;init&gt;(...);
+    *;
+}
+
+# Specifically keep GeolocationPlugin and its dependencies
+-keep class com.capacitorjs.plugins.geolocation.** { *; }
+-keep class com.capacitorjs.plugins.geolocation.GeolocationPlugin { 
+    &lt;init&gt;(...); 
+    *; 
+}
+
+# Keep all plugin classes referenced in capacitor.plugins.json
+-keep class com.capacitorjs.plugins.app.AppPlugin { *; }
+-keep class com.capacitorjs.plugins.filesystem.FilesystemPlugin { *; }
+-keep class com.capacitorjs.plugins.geolocation.GeolocationPlugin { *; }
+-keep class com.capacitorjs.plugins.preferences.PreferencesPlugin { *; }
+-keep class com.capacitorjs.plugins.share.SharePlugin { *; }
+-keep class com.epicshaggy.filepicker.FilePicker { *; }
+
+# Keep custom plugins
+-keep class org.deal.mcsa.plugins.** { *; }
+
+# Keep PluginHandle and Bridge classes that load plugins
+-keep class com.getcapacitor.PluginHandle { *; }
+-keep class com.getcapacitor.Bridge { *; }
+-keep class com.getcapacitor.Bridge$Builder { *; }
+-keep class com.getcapacitor.PluginManager { *; }
+
+# Keep all plugin constructors (critical for reflection-based instantiation)
+-keepclassmembers class com.capacitorjs.plugins.** {
+    public &lt;init&gt;();
+    public &lt;init&gt;(android.content.Context);
+}
+
+# Keep all public methods in plugins (needed for JavaScript bridge)
+-keepclassmembers class com.capacitorjs.plugins.** {
+    public *;
+}
+
+# Keep all classes that implement Plugin interface
+-keep class * implements com.getcapacitor.Plugin {
+    &lt;init&gt;(...);
+    *;
+}
+
+# Don't obfuscate plugin method names (needed for JavaScript bridge)
+-keepclassmembers class com.capacitorjs.plugins.** {
+    @com.getcapacitor.annotation.PluginMethod *;
+}</code></pre>
+    <p><strong>Reason:</strong> Prevents R8/ProGuard from obfuscating Capacitor plugins, which would cause "Unable to
+        load plugin instance" errors.</p>
+
+    <h3>File 6: Fix Screenshot to Capture WebView (HomeScreen.kt)</h3>
+    <p><strong>File Modified:</strong>
+        <code>deal_wf_mcsa-develop/app/src/main/java/org/deal/mcsa/presentation/ui/screens/HomeScreen.kt</code>
+    </p>
+    <p><strong>Problem:</strong> The screenshot button captures a blank area where the Capacitor WebView should be. This
+        happens because WebViews use hardware acceleration and aren't captured by the standard <code>view.draw()</code>
+        method.</p>
+    <p><strong>Solution:</strong> Use Android's <code>PixelCopy</code> API to capture the actual rendered window surface
+        (like the system screenshot does).</p>
+
+    <h4>1. Add Imports (after line 7):</h4>
+    <pre><code>import android.graphics.Canvas
+import android.view.PixelCopy        // ADDED
+import android.os.Handler            // ADDED
+import android.os.Looper             // ADDED
+import android.view.Window           // ADDED
+import android.util.Log</code></pre>
+
+    <h4>2. Replace onClick Handler in ScreenshotButton (lines 424-436):</h4>
+    <p><strong>BEFORE (doesn't capture WebView):</strong></p>
+    <pre><code>onClick = {
+    isVisible = false
+    val view = activity.window.decorView.rootView
+    val bitmap = createBitmap(activity.window.decorView.width, activity.window.decorView.height)
+    val canvas = Canvas(bitmap)
+    view.draw(canvas)  // ❌ This misses hardware-accelerated WebView
+    file.value = saveScreenshotToCache(activity, bitmap)
+    isVisible = true
+    if (file.value!!.exists()) {
+        Log.d("Screenshot", "Saved at: ${file.value!!.absolutePath}")
+        showConfirmDialog.value = true
+    }
+}</code></pre>
+
+    <p><strong>AFTER (captures WebView using PixelCopy):</strong></p>
+    <pre><code>onClick = {
+    isVisible = false
+    
+    val window = activity.window
+    val width = window.decorView.width
+    val height = window.decorView.height
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    
+    // Use PixelCopy to capture the actual rendered window surface
+    PixelCopy.request(window, bitmap, { result ->
+        if (result == PixelCopy.SUCCESS) {
+            // Successfully captured the window surface (including WebView)
+            file.value = saveScreenshotToCache(activity, bitmap)
+            isVisible = true
+            if (file.value!!.exists()) {
+                Log.d("Screenshot", "Saved at: ${file.value!!.absolutePath}")
+                showConfirmDialog.value = true
+            }
+        } else {
+            // Fallback to old method if PixelCopy fails
+            Log.e("Screenshot", "PixelCopy failed: $result")
+            val view = activity.window.decorView.rootView
+            val fallbackBitmap = createBitmap(width, height)
+            val canvas = Canvas(fallbackBitmap)
+            view.draw(canvas)
+            file.value = saveScreenshotToCache(activity, fallbackBitmap)
+            isVisible = true
+            if (file.value!!.exists()) {
+                Log.d("Screenshot", "Saved at: ${file.value!!.absolutePath}")
+                showConfirmDialog.value = true
+            }
+        }
+    }, Handler(Looper.getMainLooper()))
+}</code></pre>
+
+    <p><strong>Summary of changes:</strong></p>
+    <ol>
+        <li><strong>Imports added:</strong> <code>PixelCopy</code>, <code>Handler</code>, <code>Looper</code>,
+            <code>Window</code>
+        </li>
+        <li><strong>onClick handler:</strong> Replaced <code>view.draw(canvas)</code> with
+            <code>PixelCopy.request()</code>
+            to capture the rendered window surface
+        </li>
+        <li><strong>Fallback:</strong> Includes fallback to old method if PixelCopy fails (for compatibility)</li>
+    </ol>
+    <p><strong>Reason:</strong> <code>PixelCopy</code> captures the actual rendered window surface (like system
+        screenshot
+        volume+power), including hardware-accelerated WebView content. This ensures the Capacitor WebView appears in
+        screenshots.</p>
+    <div class="note">
+        <p><strong>Note:</strong> <code>PixelCopy</code> requires Android 7.0+ (API 24+). The fallback ensures
+            compatibility with older devices.</p>
+    </div>
+
+    <hr>
+
+    <h2>Final Steps: Build and Test</h2>
+    <ol>
+        <li><strong>Sync Gradle:</strong> File → Sync Project with Gradle Files</li>
+        <li><strong>Build Project:</strong> Build → Clean Project, then Build → Rebuild Project</li>
+        <li><strong>Run App:</strong> Run → Run 'app'</li>
+    </ol>
+
+    <h3>Common Issues</h3>
+    <ul>
+        <li><strong>"Failed to resolve: project: capacitor-android"</strong> - Ensure <code>hsc-android</code> folder is
+            at the same level and has <code>node_modules</code> installed</li>
+        <li><strong>Package import errors</strong> - Verify package names match your structure
+            (<code>org.deal.mcsa</code>)</li>
+        <li><strong>Blank GIS screen</strong> - Ensure web assets are copied to <code>assets/public/</code></li>
+    </ul>
+
+    <hr>
+
+    <div class="success">
+        <h2>Integration Complete! ✅</h2>
+        <p>All steps completed. The Capacitor GIS view is now integrated into your Android app.</p>
+    </div>
+
+</body>
+
+</html>
