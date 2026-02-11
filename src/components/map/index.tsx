@@ -22,6 +22,12 @@ import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 import UdpConfigDialog from "./udp-config-dialog";
 import OfflineLocationTracker from "./offline-location-tracker";
+import { initializeTileServer } from "./tile-folder-dialog";
+import {
+  useRubberBandRectangle,
+  useRubberBandOverlay,
+  calculateRectangleBounds,
+} from "./rubber-band-overlay";
 import { useUdpConfigStore } from "@/store/udp-config-store";
 // import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
@@ -46,6 +52,7 @@ import {
   destinationPoint,
   generateLayerId,
   isPointNearFirstPoint,
+  getPolygonCloseThreshold,
   normalizeAngleSigned,
   computePolygonAreaMeters,
   computePolygonPerimeterMeters,
@@ -61,6 +68,7 @@ import {
 import type { LayerProps, Node } from "@/lib/definitions";
 import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
+import { Geolocation } from "@capacitor/geolocation";
 import { ZipFolder } from "@/plugins/zip-folder";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
 import { MAX_UPLOAD_FILES, HSC_FILES_DIR } from "@/sessions/constants";
@@ -124,7 +132,23 @@ const MapComponent = ({
     };
   }, []);
 
-  // Reset view to India when app resumes from background (fixes layer rendering issue)
+  // Detect Android tablet (or allow on any device with touch support for testing)
+  useEffect(() => {
+    const userAgent = navigator.userAgent.toLowerCase();
+    const isAndroid = /android/.test(userAgent);
+    const isMobile = /mobile/.test(userAgent);
+    const screenWidth = window.innerWidth;
+
+    // Consider it a tablet if Android and not mobile, or screen width > 600px
+    // For now, allow on any device with touch support for testing
+    const isTabletDevice =
+      (isAndroid && !isMobile) ||
+      (isAndroid && screenWidth > 600) ||
+      "ontouchstart" in window;
+    setIsAndroidTablet(isTabletDevice);
+  }, []);
+
+  // Reset view and restart tile server when app resumes from background
   useEffect(() => {
     let appStateListener: any;
     let visibilityListener: any;
@@ -137,23 +161,58 @@ const MapComponent = ({
         // Listen for app state changes (foreground/background)
         appStateListener = await App.addListener(
           "appStateChange",
-          ({ isActive }) => {
-            if (isActive && mapRef.current) {
-              // App came to foreground - reset view to India to force re-render
-              setTimeout(() => {
-                handleResetHome();
-              }, 100);
+          async ({ isActive }) => {
+            if (isActive) {
+       
+              const { initializeTileServer } = await import(
+                "./tile-folder-dialog"
+              );
+              // Wait for permissions when app comes to foreground (user might have granted them)
+              const url = await initializeTileServer(true);
+
+              if (url) {
+                // Force retry by clearing and resetting URL to trigger style reload
+                setTileServerUrl(null);
+                setTimeout(() => {
+                  setTileServerUrl(url);
+                }, 100);
+              }
+
+              // Reset view to India to force re-render
+              if (mapRef.current) {
+                setTimeout(() => {
+                  handleResetHome();
+                }, 100);
+              }
             }
           }
         );
       } catch (error) {
         // Capacitor App plugin not available, use browser visibility API as fallback
-        const handleVisibilityChange = () => {
-          if (!document.hidden && mapRef.current) {
-            // App came to foreground - reset view to India to force re-render
-            setTimeout(() => {
-              handleResetHome();
-            }, 100);
+        const handleVisibilityChange = async () => {
+          if (!document.hidden) {
+            // App came to foreground - restart tile server fresh
+
+            const { initializeTileServer } = await import(
+              "./tile-folder-dialog"
+            );
+            // Wait for permissions when app comes to foreground (user might have granted them)
+            const url = await initializeTileServer(true);
+
+            if (url) {
+              // Force retry by clearing and resetting URL to trigger style reload
+              setTileServerUrl(null);
+              setTimeout(() => {
+                setTileServerUrl(url);
+              }, 100);
+            }
+
+            // Reset view to India to force re-render
+            if (mapRef.current) {
+              setTimeout(() => {
+                handleResetHome();
+              }, 100);
+            }
           }
         };
 
@@ -188,7 +247,7 @@ const MapComponent = ({
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { dragStart, setDragStart } = useDragStart();
   const { mousePosition, setMousePosition } = useMousePosition();
-  const { layers, addLayer, deleteLayer } = useLayers();
+  const { layers, addLayer, setLayers } = useLayers();
   // const { setNodeIconMappings } = useNodeIconMappings();
   const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
   const { drawingMode } = useDrawingMode();
@@ -199,14 +258,31 @@ const MapComponent = ({
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const useIgrs = useIgrsPreference();
   const setUseIgrs = useSetIgrsPreference();
-  const { userLocation, showUserLocation, setShowUserLocation } =
-    useUserLocation();
+  const {
+    userLocation,
+    showUserLocation,
+    setShowUserLocation,
+    setUserLocation,
+  } = useUserLocation();
   const previousDrawingModeRef = useRef(drawingMode);
 
   // const { nodeCoordinatesData, setNodeCoordinatesData } =
   //   useProgressiveNodes(networkLayersVisible);
   const [isMapEnabled] = useState(true);
   const [pitch, setPitch] = useState(0);
+  const [rubberBandMode, setRubberBandMode] = useState(false);
+  const [isRubberBandDrawing, setIsRubberBandDrawing] = useState(false);
+  const [isRubberBandZooming, setIsRubberBandZooming] = useState(false);
+  const [rubberBandStart, setRubberBandStart] = useState<
+    [number, number] | null
+  >(null);
+  const [rubberBandEnd, setRubberBandEnd] = useState<[number, number] | null>(
+    null
+  );
+  const [isAndroidTablet, setIsAndroidTablet] = useState(false);
+  const [rubberBandToastId, setRubberBandToastId] = useState<string | null>(
+    null
+  );
 
   const [selectedNodeForIcon, setSelectedNodeForIcon] = useState<string | null>(
     null
@@ -220,7 +296,248 @@ const MapComponent = ({
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
   const [isNetworkBoxOpen, setIsNetworkBoxOpen] = useState(false);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
   const lastLayerCreationTimeRef = useRef<number>(0);
+
+  // Initialize tile server on mount and set up fetch interceptor for tile logging
+  useEffect(() => {
+    const initServer = async () => {
+      // Wait for permissions on initial load (user might need to grant them)
+      const url = await initializeTileServer(true);
+      if (url) {
+        setTileServerUrl(url);
+
+        // Intercept fetch requests to log tile requests with x, y, z values
+        const originalFetch = window.fetch;
+        window.fetch = async function (...args) {
+          const url = args[0]?.toString() || "";
+          const tileMatch = url.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf/);
+
+          if (tileMatch) {
+            const [, z, x, y] = tileMatch;
+
+
+            try {
+              const response = await originalFetch.apply(this, args);
+              if (!response.ok) {
+                console.error(
+                  `CAPACITOR_HAHA [Tile Request] FAILED: z=${z}, x=${x}, y=${y} - Status: ${response.status} ${response.statusText}`
+                );
+              } else {
+                
+              }
+              return response;
+            } catch (error) {
+              console.error(
+                `CAPACITOR_HAHA [Tile Request] ERROR: z=${z}, x=${x}, y=${y} -`,
+                error
+              );
+              throw error;
+            }
+          }
+
+          return originalFetch.apply(this, args);
+        };
+      }
+    };
+
+    initServer();
+
+    // Cleanup: restore original fetch on unmount
+    return () => {
+      // Note: We can't easily restore fetch without storing the original,
+      // but this is fine as it only runs once on mount
+    };
+  }, []);
+
+  // Reload style when tileServerUrl changes (after map is loaded)
+  useEffect(() => {
+    if (!tileServerUrl || !mapRef.current) return;
+
+    const map = mapRef.current.getMap();
+    if (!map || !map.loaded()) return;
+
+    // Load style from URL
+    const styleUrl = `${tileServerUrl}/style.json`;
+
+    try {
+      // Fetch style.json to modify it
+      fetch(styleUrl)
+        .then(async (response) => {
+          // If 404, check permissions and retry once
+          if (response.status === 404) {
+            console.warn(
+              "[Map] style.json not found (404), checking permissions..."
+            );
+            const { checkStoragePermission, waitForStoragePermission } =
+              await import("./tile-folder-dialog");
+            const hasPermission = await checkStoragePermission();
+            if (!hasPermission) {
+              const granted = await waitForStoragePermission(5000); // Wait 5 seconds
+              if (granted) {
+                // Retry fetch
+                const retryResponse = await fetch(styleUrl);
+                if (retryResponse.ok) {
+                  return retryResponse.json();
+                }
+              }
+            }
+            // If still 404 or no permission, throw error
+            throw new Error(
+              `style.json not found (404) - Check if file exists in Documents/tiles/ and permissions are granted`
+            );
+          }
+          if (!response.ok) {
+            throw new Error(`Failed to fetch style.json: ${response.status}`);
+          }
+          return response.json();
+        })
+        .then((styleJson) => {
+          // Force ALL tile URLs to point to tile server
+          if (styleJson.sources) {
+            Object.keys(styleJson.sources).forEach((sourceKey) => {
+              const source = styleJson.sources[sourceKey];
+              if (source.type === "vector" && source.tiles) {
+            
+                source.tiles = source.tiles.map((tileUrl: string) => {
+                  // Extract the tile path (e.g., /3/5/3.pbf from any URL format)
+                  let tilePath = tileUrl;
+
+                  // If it's an absolute URL, extract the path
+                  try {
+                    const url = new URL(tilePath);
+                    tilePath = url.pathname;
+                  } catch {
+                    // Not a valid URL, might be relative or template
+                  }
+
+                  // Handle Mapbox tile URL templates like {z}/{x}/{y}.pbf
+                  // If it's a template, keep it but ensure it points to our server
+                  if (
+                    tilePath.includes("{z}") ||
+                    tilePath.includes("{x}") ||
+                    tilePath.includes("{y}")
+                  ) {
+                    // Template format - ensure it starts with / and use our server
+                    if (!tilePath.startsWith("/")) {
+                      tilePath = "/" + tilePath;
+                    }
+                    return `${tileServerUrl}${tilePath}`;
+                  }
+
+                  // Regular tile path - ensure it starts with /
+                  if (!tilePath.startsWith("/")) {
+                    tilePath = "/" + tilePath;
+                  }
+
+                  // Always use tile server URL
+                  const finalUrl = `${tileServerUrl}${tilePath}`;
+               
+                  return finalUrl;
+                });
+         
+              }
+            });
+          }
+
+          // Convert relative glyphs URL to absolute URL
+          if (styleJson.glyphs && typeof styleJson.glyphs === "string") {
+            if (styleJson.glyphs.startsWith("/")) {
+              styleJson.glyphs = `${tileServerUrl}${styleJson.glyphs}`;
+            }
+          } else if (
+            styleJson.layers &&
+            styleJson.layers.some(
+              (layer: any) => layer.layout && layer.layout["text-field"]
+            )
+          ) {
+            // If glyphs is missing but text layers exist, set default glyphs path
+            styleJson.glyphs = `${tileServerUrl}/fonts/{fontstack}/{range}.pbf`;
+          }
+
+          // Apply the modified style
+          map.setStyle(styleJson);
+        })
+        .catch((error) => {
+          console.error("[Map] Failed to fetch and apply style:", error);
+        });
+    } catch (error) {
+      console.error("[Map] Error reloading style:", error);
+    }
+
+    map.once("style.load", () => {
+
+      // Force update all tile source URLs to point to tile server
+      const currentStyle = map.getStyle();
+      if (currentStyle && currentStyle.sources) {
+        Object.keys(currentStyle.sources).forEach((sourceKey) => {
+          const source = map.getSource(sourceKey);
+          if (source) {
+            const sourceData = source as any;
+            if (sourceData.type === "vector" && sourceData.tiles) {
+             
+
+              // Update tiles to point to tile server
+              const updatedTiles = sourceData.tiles.map((tileUrl: string) => {
+                let tilePath = tileUrl;
+
+                // Extract path from absolute URL
+                try {
+                  const url = new URL(tilePath);
+                  tilePath = url.pathname;
+                } catch {
+                  // Not a valid URL
+                }
+
+                // Handle template format
+                if (
+                  tilePath.includes("{z}") ||
+                  tilePath.includes("{x}") ||
+                  tilePath.includes("{y}")
+                ) {
+                  if (!tilePath.startsWith("/")) {
+                    tilePath = "/" + tilePath;
+                  }
+                  return `${tileServerUrl}${tilePath}`;
+                }
+
+                // Regular path
+                if (!tilePath.startsWith("/")) {
+                  tilePath = "/" + tilePath;
+                }
+
+                return `${tileServerUrl}${tilePath}`;
+              });
+
+              // Update the source with new tile URLs
+              try {
+                map.removeSource(sourceKey);
+                map.addSource(sourceKey, {
+                  type: "vector",
+                  tiles: updatedTiles,
+
+                  minzoom: 0,
+                  maxzoom: 18, // camera zoom allowed
+                  maxNativeZoom: 14, // 🔥 THIS IS THE KEY
+                });
+               
+              } catch (e) {
+                console.error(`[Map] Failed to update source ${sourceKey}:`, e);
+              }
+            } else {
+              
+            }
+          }
+        });
+      }
+    });
+
+    map.once("style.error", (e: any) => {
+      console.error("[Map] Failed to reload style:", e);
+    });
+  }, [tileServerUrl]);
+
   // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
   // const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -229,14 +546,12 @@ const MapComponent = ({
       return; // Prevent multiple uploads while processing
     }
     setIsProcessingFiles(true);
-    console.log("[FileUpload] Upload button clicked");
     const toastId = toast.loading("Opening file picker...");
     let progressListener: { remove: () => void } | null = null;
 
     try {
       // Set up progress listener for upload
       let currentUploadProgress = 0;
-      console.log("[FileUpload] Setting up progress listener...");
       try {
         progressListener = await NativeUploader.addListener(
           "uploadProgress",
@@ -245,9 +560,7 @@ const MapComponent = ({
               currentUploadProgress = Math.round(
                 (event.bytesWritten / event.totalBytes) * 100
               );
-              console.log(
-                `[FileUpload] Upload progress: ${currentUploadProgress}% (${event.bytesWritten}/${event.totalBytes} bytes)`
-              );
+        
               toast.update(
                 toastId,
                 `Uploading File: ${currentUploadProgress}/100 %`,
@@ -256,7 +569,6 @@ const MapComponent = ({
             }
           }
         );
-        console.log("[FileUpload] Progress listener added successfully");
       } catch (listenerError) {
         console.warn(
           "[FileUpload] Failed to add progress listener:",
@@ -265,20 +577,13 @@ const MapComponent = ({
         // Continue without progress listener
       }
 
-      // Pick and stage files (max 2) - plugin saves them
-      console.log(
-        `[FileUpload] Calling pickAndStageMany with maxFiles: ${MAX_UPLOAD_FILES}`
-      );
+;
       const result = await NativeUploader.pickAndStageMany({
         maxFiles: MAX_UPLOAD_FILES,
       });
-      console.log(
-        `[FileUpload] pickAndStageMany result: ${result.files.length} file(s)`
-      );
 
       if (progressListener) {
         await progressListener.remove();
-        console.log("[FileUpload] Progress listener removed");
       }
 
       if (!result.files || result.files.length === 0) {
@@ -286,21 +591,35 @@ const MapComponent = ({
         return;
       }
 
+      // Track if any files were actually valid
+      let hasValidFiles = false;
+
       // Process files sequentially
       for (let i = 0; i < result.files.length; i++) {
         const stagedFile = result.files[i];
         const fileNum = i + 1;
-        console.log(
-          `[FileUpload] Processing file ${fileNum}/${result.files.length}: ${stagedFile.originalName}`
-        );
 
         try {
-          // Step 1: Wait a bit for file to be fully written to disk
+          // Step 1: Check if file extension is allowed
+          const { isFileExtensionAllowed, getBlockedFileMessage } =
+            await import("@/lib/allowed-file-extensions");
+          if (!isFileExtensionAllowed(stagedFile.originalName)) {
+            toast.update(
+              toastId,
+              getBlockedFileMessage(stagedFile.originalName),
+              "error"
+            );
+            continue; // Skip this file
+          }
+
+          // Don't set hasValidFiles here - only set it after successfully processing a file
+          // This prevents empty ZIPs from being counted as valid
+
+          // Step 2: Wait a bit for file to be fully written to disk
           await new Promise((resolve) => setTimeout(resolve, 500));
 
-          // Step 2: Check file size before reading (prevent memory issues)
+          // Step 3: Check file size before reading (prevent memory issues)
           const fileSizeMB = stagedFile.size / (1024 * 1024);
-          console.log(`[FileUpload] File size: ${fileSizeMB.toFixed(2)} MB`);
           if (fileSizeMB > 500) {
             toast.update(
               toastId,
@@ -315,7 +634,6 @@ const MapComponent = ({
           }
 
           // Step 3: Convert staged file to File object (with error handling and timeout)
-          console.log(`[FileUpload] Converting staged path to File object...`);
           let file: File;
           try {
             file = await Promise.race([
@@ -331,7 +649,6 @@ const MapComponent = ({
                 )
               ),
             ]);
-            console.log(`[FileUpload] File object created successfully`);
           } catch (fileError) {
             console.error("[FileUpload] Error reading file:", fileError);
             const errorMsg =
@@ -349,10 +666,7 @@ const MapComponent = ({
           const isZip = fileNameLower.endsWith(".zip");
 
           if (isZip) {
-            // Handle ZIP file using native extraction
-            console.log(
-              `[FileUpload] ZIP file detected, using native extraction...`
-            );
+
             const extractToastId = toast.loading(
               `Extracting ZIP: ${stagedFile.originalName}...`
             );
@@ -364,17 +678,16 @@ const MapComponent = ({
                 outputDir: HSC_FILES_DIR,
               });
 
-              console.log(
-                `[FileUpload] Native extraction found ${extractResult.files.length} file(s)`
-              );
-
+            
               if (extractResult.files.length === 0) {
+                toast.dismiss(extractToastId);
                 toast.update(
                   extractToastId,
-                  "No supported files found in ZIP",
+                  "ZIP file is empty or contains no valid files. Only GIS-related files are allowed.",
                   "error"
                 );
-                continue;
+                // Don't mark as valid - continue to next file
+                continue; // Skip this ZIP file
               }
 
               toast.update(
@@ -382,6 +695,9 @@ const MapComponent = ({
                 `Found ${extractResult.files.length} file(s), processing...`,
                 "loading"
               );
+
+              // Track if any valid files were found in ZIP
+              let hasValidFilesInZip = false;
 
               // Process each extracted file sequentially
               for (
@@ -391,9 +707,28 @@ const MapComponent = ({
               ) {
                 const extractedFile = extractResult.files[zipFileIdx];
                 const zipFileNum = zipFileIdx + 1;
-                console.log(
-                  `[FileUpload] Processing extracted file ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${extractedFile.type})`
+
+                // Check if extracted file extension is allowed
+                const { isFileExtensionAllowed } = await import(
+                  "@/lib/allowed-file-extensions"
                 );
+                if (!isFileExtensionAllowed(extractedFile.name)) {
+            
+                  // Delete the extracted file since we don't want to store it
+                  try {
+                    await NativeUploader.deleteFile({
+                      absolutePath: extractedFile.absolutePath,
+                    });
+                  } catch (deleteError) {
+                    console.warn(
+                      `[FileUpload] Failed to delete blocked file: ${extractedFile.name}`,
+                      deleteError
+                    );
+                  }
+                  continue; // Skip this file
+                }
+
+                hasValidFilesInZip = true; // Mark that we have at least one valid file in ZIP
 
                 try {
                   // Add to manifest
@@ -456,6 +791,7 @@ const MapComponent = ({
                       `DEM: ${extractedFile.name}`,
                       "success"
                     );
+                    hasValidFiles = true; // Mark that we have at least one valid file overall
                   } else if (
                     extractedFile.type === "vector" ||
                     extractedFile.type === "shapefile"
@@ -491,6 +827,7 @@ const MapComponent = ({
                       `Vector: ${extractedFile.name}`,
                       "success"
                     );
+                    hasValidFiles = true; // Mark that we have at least one valid file overall
                   }
 
                   // Small delay between files
@@ -510,19 +847,31 @@ const MapComponent = ({
                 }
               }
 
-              toast.dismiss(extractToastId);
-              toast.success(
-                `Successfully processed ${extractResult.files.length} file(s) from ZIP`
-              );
+              // Check if ZIP contained any valid files
+              if (!hasValidFilesInZip) {
+                toast.dismiss(extractToastId);
+                toast.update(
+                  extractToastId,
+                  "ZIP file contains no valid files. Only GIS-related files are allowed.",
+                  "error"
+                );
+                continue; // Skip to next file
+              }
+
+              // Only show success if we actually processed valid files
+              if (hasValidFilesInZip) {
+                toast.dismiss(extractToastId);
+                toast.success(
+                  `Successfully processed files from ZIP: ${stagedFile.originalName}`
+                );
+              }
 
               // Delete the original ZIP file after extraction
               try {
                 await NativeUploader.deleteFile({
                   absolutePath: stagedFile.absolutePath,
                 });
-                console.log(
-                  `[FileUpload] Deleted original ZIP file: ${stagedFile.originalName}`
-                );
+  
               } catch (deleteError) {
                 console.warn(
                   `[FileUpload] Failed to delete original ZIP file:`,
@@ -534,6 +883,7 @@ const MapComponent = ({
                 `[FileUpload] Error extracting ZIP file:`,
                 zipError
               );
+              toast.dismiss(extractToastId);
               toast.update(
                 extractToastId,
                 `Error extracting ZIP: ${
@@ -541,6 +891,8 @@ const MapComponent = ({
                 }`,
                 "error"
               );
+              // Don't mark as valid - continue to next file
+              continue; // Skip this ZIP file on error
             }
           } else {
             // Handle regular (non-ZIP) file
@@ -560,14 +912,9 @@ const MapComponent = ({
               createdAt: Date.now(),
             };
 
-            console.log(`[FileUpload] Adding to manifest: ${layerId}`);
-            console.log(
-              `[FileUpload] Manifest entry:`,
-              JSON.stringify(manifestEntry, null, 2)
-            );
+
             try {
               await upsertManifestEntry(manifestEntry);
-              console.log(`[FileUpload] Successfully added to manifest`);
             } catch (manifestError) {
               console.error(
                 `[FileUpload] Error adding to manifest:`,
@@ -610,9 +957,6 @@ const MapComponent = ({
               ext = parts.length > 1 ? parts[parts.length - 1] : "";
             }
 
-            console.log(
-              `[FileUpload] Detected file extension: ${ext} for ${stagedFile.originalName}`
-            );
             const isRaster = rasterExtensions.includes(ext);
             const isVector = vectorExtensions.includes(ext);
 
@@ -627,11 +971,7 @@ const MapComponent = ({
             );
 
             try {
-              console.log(
-                `[FileUpload] Starting ${
-                  isRaster ? "DEM" : "Vector"
-                } parsing...`
-              );
+
               if (isRaster) {
                 const demResult = await parseDemFile(file, {
                   layerId,
@@ -654,7 +994,6 @@ const MapComponent = ({
                   "@/sessions/manifestStore"
                 );
                 await updateManifestColor(layerId, newLayer.color);
-                console.log(`[FileUpload] DEM layer created: ${layerId}`);
               } else {
                 const featureCollection = await parseVectorFile(file, {
                   layerId,
@@ -679,7 +1018,6 @@ const MapComponent = ({
                   "@/sessions/manifestStore"
                 );
                 await updateManifestColor(layerId, newLayer.color);
-                console.log(`[FileUpload] Vector layer created: ${layerId}`);
               }
 
               toast.update(
@@ -687,6 +1025,7 @@ const MapComponent = ({
                 "File Rendered Successfully",
                 "success"
               );
+              hasValidFiles = true; // Mark that we have at least one valid file
               await new Promise((resolve) => setTimeout(resolve, 1000));
               toast.dismiss(renderToastId);
             } catch (renderError) {
@@ -719,26 +1058,47 @@ const MapComponent = ({
         }
       }
 
+      // Check if any files were actually valid
+      if (!hasValidFiles) {
+        toast.update(
+          toastId,
+          "No valid files found. Only GIS-related files are allowed.",
+          "error"
+        );
+        return;
+      }
+
       toast.update(
         toastId,
-        `Successfully uploaded and rendered ${result.files.length} file(s)`,
+        `Successfully uploaded and rendered file(s)`,
         "success"
       );
     } catch (error) {
       console.error("[FileUpload] Error:", error);
-      toast.update(
-        toastId,
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-        "error"
-      );
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      
+      // Check if user cancelled - show notification toast instead of error
+      if (
+        errorMessage.toLowerCase().includes("user cancelled") ||
+        errorMessage.toLowerCase().includes("user canceled") ||
+        errorMessage.toLowerCase().includes("cancelled") ||
+        errorMessage.toLowerCase().includes("canceled")
+      ) {
+        toast.update(toastId, "File selection cancelled", "notification");
+        // Auto-dismiss notification toast after 5 seconds
+        setTimeout(() => {
+          toast.dismiss(toastId);
+        }, 5000);
+      } else {
+        toast.update(toastId, `Error: ${errorMessage}`, "error");
+      }
     } finally {
       // Always try to remove progress listener if it exists
       if (progressListener) {
         try {
           progressListener.remove();
-          console.log(
-            "[FileUpload] Progress listener removed in finally block"
-          );
+
         } catch (removeError) {
           console.warn(
             "[FileUpload] Error removing progress listener in finally:",
@@ -753,6 +1113,7 @@ const MapComponent = ({
 
   // Export layers based on tempManifest
   const handleExportLayers = async () => {
+    setIsExporting(true);
     const toastId = toast.loading("Exporting layers...");
     try {
       // Get tempManifest and filter for staged/saved entries
@@ -777,10 +1138,7 @@ const MapComponent = ({
         size: entry.size,
       }));
 
-      console.log(
-        `[Export] Preparing to export ${manifestFiles.length} file(s)`
-      );
-      console.log(`[Export] Files to export:`, manifestFiles);
+
 
       // Call Android plugin to create ZIP
       const { ZipFolder } = await import("@/plugins/zip-folder");
@@ -802,6 +1160,8 @@ const MapComponent = ({
       } else {
         toast.update(toastId, `Failed to export: ${errorMessage}`, "error");
       }
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -809,7 +1169,6 @@ const MapComponent = ({
   const handleSaveSession = async () => {
     const toastId = toast.loading("Saving session...");
     try {
-      console.log("[SessionSave] Starting session save...");
 
       // Early validation: Check if there's anything to save
       const { getTempManifest } = await import("@/sessions/manifestStore");
@@ -825,17 +1184,9 @@ const MapComponent = ({
       }
 
       // First, check if manifest exists and what it contains
-      const { loadManifest } = await import("@/sessions/manifestStore");
-      const beforeManifest = await loadManifest();
-      console.log(
-        `[SessionSave] Manifest before save: ${beforeManifest.length} entries`
-      );
-      if (beforeManifest.length > 0) {
-        console.log(
-          `[SessionSave] Manifest entries:`,
-          JSON.stringify(beforeManifest, null, 2)
-        );
-      }
+      // const { loadManifest } = await import("@/sessions/manifestStore");
+      // const beforeManifest = await loadManifest();
+
 
       // Step 7 & 8: Finalize manifest according to system design:
       // - Sort all layers in manifest by size (increasing order)
@@ -843,13 +1194,7 @@ const MapComponent = ({
       // - Delete "staged_delete" files from files folder
       // - Remove "staged_delete" entries from manifest
       const finalizedEntries = await finalizeSaveManifest();
-      console.log(
-        `[SessionSave] Manifest finalized: ${finalizedEntries.length} file(s) saved`
-      );
-      console.log(
-        `[SessionSave] Files sorted by size and staged files upgraded to saved`
-      );
-
+ 
       // Save sketch layers as ZIP file in HSC-SESSIONS/FILES folder
       // Note: sketchLayers already filtered above in early validation
       const { HSC_FILES_DIR } = await import("@/sessions/constants");
@@ -857,13 +1202,10 @@ const MapComponent = ({
       const sketchLayersPath = `${HSC_FILES_DIR}/sketch_layers.zip`;
 
       if (sketchLayers.length > 0) {
-        console.log(
-          `[SessionSave] Saving ${sketchLayers.length} sketch layer(s)...`
-        );
+
         const { saveLayers } = await import("@/lib/autosave");
         const { Directory } = await import("@capacitor/filesystem");
         await saveLayers(sketchLayers, sketchLayersPath, Directory.Documents);
-        console.log(`[SessionSave] Sketch layers saved successfully`);
       } else {
         // Delete sketch_layers.zip if no sketch layers exist (clear old sketch layers)
         try {
@@ -872,14 +1214,10 @@ const MapComponent = ({
             path: sketchLayersPath,
             directory: Directory.Documents,
           });
-          console.log(
-            `[SessionSave] Deleted sketch_layers.zip (no sketch layers in session)`
-          );
+    
         } catch (error) {
           // File might not exist, which is fine
-          console.log(
-            `[SessionSave] sketch_layers.zip doesn't exist (this is OK)`
-          );
+        
         }
       }
 
@@ -913,59 +1251,22 @@ const MapComponent = ({
     setIsProcessingFiles(true);
     const toastId = toast.loading("Restoring session...");
     try {
-      console.log("[SessionRestore] Starting session restore...");
       // Restore: Merge temp manifest with stored manifest (ensures unique layer_id)
       const { restoreManifest } = await import("@/sessions/manifestStore");
       const mergedEntries = await restoreManifest();
 
       // Filter to only "saved" entries for rendering
       const savedEntries = mergedEntries.filter((x) => x.status === "saved");
-      console.log(
-        `[SessionRestore] Found ${savedEntries.length} saved entries to restore`
-      );
+  
 
-      // Create set of saved layer IDs
-      const savedLayerIds = new Set(savedEntries.map((e) => e.layerId));
+      // Clear ALL current layers from UI - complete reset to saved state
+      // Don't call deleteLayer() as it would delete "staged" files immediately
+      // Just clear the UI - we'll restore everything from saved manifest
+   
+      setLayers([]); // Clear everything - complete reset
 
-      // Clear all current layers that are NOT in the saved manifest
-      // This ensures we only show layers from the saved session
-      const currentLayers = layers;
-      const layersToKeep: LayerProps[] = [];
-      const layersToRemove: string[] = [];
-
-      for (const layer of currentLayers) {
-        // Keep sketch layers (point, line, polygon, azimuth) as they're restored separately
-        const isSketchLayer =
-          layer.type === "point" ||
-          layer.type === "line" ||
-          layer.type === "polygon" ||
-          layer.type === "azimuth";
-
-        if (isSketchLayer) {
-          // Sketch layers will be restored from ZIP, so we'll keep them for now
-          // They'll be replaced when sketch layers are restored
-          layersToKeep.push(layer);
-        } else if (savedLayerIds.has(layer.id)) {
-          // Keep layers that are in saved manifest
-          layersToKeep.push(layer);
-        } else {
-          // Mark for removal - these are staged layers not in saved manifest
-          layersToRemove.push(layer.id);
-        }
-      }
-
-      // Remove layers that are not in saved manifest
-      if (layersToRemove.length > 0) {
-        console.log(
-          `[SessionRestore] Removing ${layersToRemove.length} layer(s) not in saved session`
-        );
-        for (const layerId of layersToRemove) {
-          deleteLayer(layerId);
-        }
-      }
-
-      // Get existing layer IDs after cleanup to ensure uniqueness
-      const existingLayerIds = new Set(layersToKeep.map((l) => l.id));
+      // No existing layers after reset - all will be restored fresh
+      const existingLayerIds = new Set<string>();
 
       // Restore layers from saved files (only if layer_id is unique)
       let restoredFileCount = 0;
@@ -975,9 +1276,7 @@ const MapComponent = ({
 
         // Skip if layer_id already exists (prevent duplicates)
         if (existingLayerIds.has(entry.layerId)) {
-          console.log(
-            `[SessionRestore] Skipping duplicate layer_id: ${entry.layerId}`
-          );
+       
           continue;
         }
 
@@ -988,11 +1287,7 @@ const MapComponent = ({
         );
 
         try {
-          console.log(
-            `[SessionRestore] Restoring file ${i + 1}/${savedEntries.length}: ${
-              entry.originalName
-            }`
-          );
+      
 
           // Check if this is a shapefile ZIP (stored as ZIP with type="shapefile")
           // Regular ZIP files should have been extracted, but shapefile ZIPs are stored as-is
@@ -1005,9 +1300,7 @@ const MapComponent = ({
             entry.originalName.toLowerCase().endsWith(".zip") &&
             !isShapefileZip
           ) {
-            console.log(
-              `[SessionRestore] Skipping ZIP file (should have been extracted): ${entry.originalName}`
-            );
+         
             toast.dismiss(progressToastId);
             continue;
           }
@@ -1100,9 +1393,7 @@ const MapComponent = ({
             restoredFileCount++;
           } else if (isShapefileZip) {
             // Explicitly handle shapefile ZIPs using shpToGeoJSON
-            console.log(
-              `[SessionRestore] Processing shapefile ZIP: ${entry.originalName}`
-            );
+    
             toast.update(
               progressToastId,
               `Restoring Shapefile ${i + 1}/${savedEntries.length}: ${
@@ -1175,25 +1466,7 @@ const MapComponent = ({
       }
 
       // Restore sketch layers from ZIP file
-      // First, remove existing sketch layers to avoid duplicates
-      const currentSketchLayerIds = layersToKeep
-        .filter(
-          (l) =>
-            l.type === "point" ||
-            l.type === "line" ||
-            l.type === "polygon" ||
-            l.type === "azimuth"
-        )
-        .map((l) => l.id);
-
-      if (currentSketchLayerIds.length > 0) {
-        console.log(
-          `[SessionRestore] Removing ${currentSketchLayerIds.length} existing sketch layer(s) before restore`
-        );
-        for (const layerId of currentSketchLayerIds) {
-          deleteLayer(layerId);
-        }
-      }
+      // Note: All layers have already been cleared above, so no need to remove existing sketch layers
 
       try {
         const { HSC_FILES_DIR } = await import("@/sessions/constants");
@@ -1237,26 +1510,19 @@ const MapComponent = ({
                   zip
                 );
 
-                // Get updated existing layer IDs after cleanup
-                const updatedExistingLayerIds = new Set(
-                  layers.map((l) => l.id)
-                );
+                // Use existingLayerIds that was tracking restored file layers
+                // This ensures we don't duplicate layers that were already restored
+                // existingLayerIds was populated when restoring file layers above
 
                 // Add sketch layers ensuring unique layer_id
                 for (const sketchLayer of sketchLayers) {
-                  if (!updatedExistingLayerIds.has(sketchLayer.id)) {
+                  if (!existingLayerIds.has(sketchLayer.id)) {
                     addLayer(sketchLayer);
-                    updatedExistingLayerIds.add(sketchLayer.id);
+                    existingLayerIds.add(sketchLayer.id);
                     restoredSketchCount++;
-                  } else {
-                    console.log(
-                      `[SessionRestore] Skipping duplicate sketch layer_id: ${sketchLayer.id}`
-                    );
                   }
                 }
-                console.log(
-                  `[SessionRestore] Restored ${restoredSketchCount} sketch layer(s)`
-                );
+               
               }
             }
           }
@@ -1317,18 +1583,79 @@ const MapComponent = ({
   };
 
   // Toggle user location visibility and focus to location when enabling
-  const handleToggleUserLocation = () => {
+  const handleToggleUserLocation = async () => {
     const willShow = !showUserLocation;
     setShowUserLocation(willShow);
 
-    // If enabling location and we have user location, focus/pan to it
-    if (willShow && userLocation && mapRef.current) {
-      const map = mapRef.current.getMap();
-      map.easeTo({
-        center: [userLocation.lng, userLocation.lat],
-        zoom: Math.max(map.getZoom(), 14), // Zoom to at least level 14, or keep current if higher
-        duration: 1000,
-      });
+    // If disabling location, just return
+    if (!willShow) {
+      return;
+    }
+
+    let toastId: string | null = null;
+
+    try {
+      // If we don't have location yet, fetch it and show loading toast
+      if (!userLocation) {
+        toastId = toast.loading("Fetching your location");
+
+        // Request permissions first
+        const permission = await Geolocation.requestPermissions();
+        if (permission.location !== "granted") {
+          if (toastId) toast.dismiss(toastId);
+          toast.error("Location permission denied");
+          setShowUserLocation(false);
+          return;
+        }
+
+        // Get current position
+        const position = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+        });
+
+        if (position?.coords) {
+          const location = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            accuracy: position.coords.accuracy || 0,
+          };
+          // Update location in store (this will trigger OfflineLocationTracker to start watching)
+          setUserLocation(location);
+
+          // Wait a bit for the location to be set in the store
+          await new Promise((resolve) => setTimeout(resolve, 100));
+
+          // Zoom to location with smooth animation
+          if (mapRef.current) {
+            const map = mapRef.current.getMap();
+            map.easeTo({
+              center: [location.lng, location.lat],
+              zoom: 14, // Fixed zoom level for better view
+              duration: 1500, // Smooth animation over 1.5 seconds
+            });
+          }
+
+          // Dismiss loading toast and show success
+          if (toastId) {
+            toast.update(toastId, "Location found", "success");
+          }
+        }
+      } else {
+        // We already have location, just zoom to it smoothly
+        if (mapRef.current) {
+          const map = mapRef.current.getMap();
+          map.easeTo({
+            center: [userLocation.lng, userLocation.lat],
+            zoom: 14, // Fixed zoom level for better view
+            duration: 1500, // Smooth animation over 1.5 seconds
+          });
+        }
+      }
+    } catch (error: any) {
+      console.error("Location error:", error);
+      if (toastId) toast.dismiss(toastId);
+      toast.error(error.message || "Failed to get location");
+      setShowUserLocation(false);
     }
   };
 
@@ -1513,9 +1840,12 @@ const MapComponent = ({
     setPendingPolygonPoints(updatedPath);
     setCurrentPath(updatedPath);
 
+    // Get zoom-based threshold for closing polygon (optimized for zoom 18)
+    const closeThreshold = getPolygonCloseThreshold(mapZoom);
+
     if (
       updatedPath.length >= 3 &&
-      isPointNearFirstPoint(point, updatedPath[0])
+      isPointNearFirstPoint(point, updatedPath[0], closeThreshold)
     ) {
       const closedPath = [...updatedPath.slice(0, -1), updatedPath[0]];
       const newLayer: LayerProps = {
@@ -1920,7 +2250,37 @@ const MapComponent = ({
           currentBounds.getEast() >= maxLng &&
           currentBounds.getSouth() <= minLat &&
           currentBounds.getNorth() >= maxLat;
-        const zoomDiff = Math.abs(currentZoom - 12); // Rough check
+        
+        // Calculate zoom based on bounding box size
+        // Smaller bounding box = higher zoom, larger bounding box = lower zoom
+        const lngSpan = maxLng - minLng;
+        const latSpan = maxLat - minLat;
+        const maxSpan = Math.max(lngSpan, latSpan);
+        
+        // Calculate appropriate maxZoom based on bounding box size
+        // Formula: smaller span = higher zoom (up to 20), larger span = lower zoom (down to 3)
+        let calculatedMaxZoom: number;
+        if (maxSpan < 0.001) {
+          // Very small area - zoom in very high
+          calculatedMaxZoom = 20;
+        } else if (maxSpan < 0.01) {
+          // Small area - zoom in high
+          calculatedMaxZoom = 18;
+        } else if (maxSpan < 0.1) {
+          // Medium area - moderate zoom
+          calculatedMaxZoom = 15;
+        } else if (maxSpan < 1) {
+          // Large area - lower zoom
+          calculatedMaxZoom = 12;
+        } else if (maxSpan < 10) {
+          // Very large area - even lower zoom
+          calculatedMaxZoom = 8;
+        } else {
+          // Extremely large area - very low zoom
+          calculatedMaxZoom = 5;
+        }
+        
+        const zoomDiff = Math.abs(currentZoom - calculatedMaxZoom);
         const isAlreadyFocused = boundsContained && zoomDiff < 1;
 
         if (isAlreadyFocused) {
@@ -1939,7 +2299,7 @@ const MapComponent = ({
           {
             padding: { top: 120, bottom: 120, left: 160, right: 160 },
             duration: 2000, // Smooth, slower duration
-            maxZoom: 12,
+            maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
             linear: false, // Use default easing (smooth)
           }
         );
@@ -2019,6 +2379,12 @@ const MapComponent = ({
     const { lng: longitude, lat: latitude } = event.lngLat;
     const currentPoint: [number, number] = [longitude, latitude];
     setMousePosition(currentPoint);
+
+    // Update rubber band end point if drawing (for mouse/touch support)
+    if (isRubberBandDrawing && rubberBandStart) {
+      setRubberBandEnd([longitude, latitude]);
+      // Force re-render by updating state
+    }
   };
 
   const handleMouseUp = () => {
@@ -2027,6 +2393,269 @@ const MapComponent = ({
     setIsDrawing(false);
     setDragStart(null);
   };
+
+  // Handle mouse down for rubber band (for desktop testing and mouse support)
+  const handleMouseDown = useCallback(
+    (event: any) => {
+      // Only activate when rubber band mode is on and no drawing mode is active
+      if (!rubberBandMode || drawingMode || isDrawing) {
+        return;
+      }
+
+      // Check if it's a left mouse button (not right click)
+      if (
+        event.originalEvent?.button !== 0 &&
+        event.originalEvent?.button !== undefined
+      ) {
+        return;
+      }
+
+      const point = event.lngLat;
+      if (!point) return;
+
+      // Start rubber band selection
+      setIsRubberBandDrawing(true);
+      setRubberBandStart([point.lng, point.lat]);
+      setRubberBandEnd([point.lng, point.lat]);
+      setIsRubberBandZooming(false);
+
+      // Prevent default map panning
+      if (event.originalEvent) {
+        event.originalEvent.preventDefault();
+      }
+    },
+    [rubberBandMode, drawingMode, isDrawing]
+  );
+
+  // Handle mouse up for rubber band (for desktop testing)
+  const handleMouseUpForRubberBand = useCallback(() => {
+    if (!isRubberBandDrawing || !rubberBandStart || !rubberBandEnd) {
+      return;
+    }
+
+    // Calculate minimum distance threshold (e.g., 0.001 degrees)
+    const lngDiff = Math.abs(rubberBandEnd[0] - rubberBandStart[0]);
+    const latDiff = Math.abs(rubberBandEnd[1] - rubberBandStart[1]);
+
+    // Only zoom if selection is large enough (not just a click)
+    if (lngDiff < 0.001 && latDiff < 0.001) {
+      // Too small, cleanup
+      setIsRubberBandDrawing(false);
+      setRubberBandStart(null);
+      setRubberBandEnd(null);
+      return;
+    }
+
+    // Calculate bounding box
+    const bounds = calculateRectangleBounds(rubberBandStart, rubberBandEnd);
+    if (!bounds) {
+      setIsRubberBandDrawing(false);
+      setRubberBandStart(null);
+      setRubberBandEnd(null);
+      return;
+    }
+
+    // Start zoom phase
+    setIsRubberBandDrawing(false);
+    setIsRubberBandZooming(true);
+
+    // Dismiss notification toast when rectangle is drawn
+    if (rubberBandToastId) {
+      toast.dismiss(rubberBandToastId);
+      setRubberBandToastId(null);
+    }
+
+    // Zoom to selected area
+    if (mapRef.current) {
+      const map = mapRef.current.getMap();
+      map.fitBounds(
+        [
+          [bounds.minLng, bounds.minLat],
+          [bounds.maxLng, bounds.maxLat],
+        ],
+        {
+          padding: { top: 50, bottom: 50, left: 50, right: 50 },
+          duration: 500,
+          maxZoom: 18,
+        }
+      );
+    }
+  }, [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId]);
+
+  // Rubber band zoom handlers (rectangle-based)
+  const handleTouchStart = useCallback(
+    (event: any) => {
+      // Only activate on Android tablets when rubber band mode is on and no drawing mode is active
+      if (!isAndroidTablet || !rubberBandMode || drawingMode || isDrawing) {
+        return;
+      }
+
+      // Check if it's a single touch (not multi-touch)
+      const touches =
+        event.originalEvent?.touches || event.nativeEvent?.touches;
+      if (touches && touches.length !== 1) return;
+
+      const point = event.lngLat;
+      if (!point) return;
+
+      // Start rubber band selection
+      setIsRubberBandDrawing(true);
+      setRubberBandStart([point.lng, point.lat]);
+      setRubberBandEnd([point.lng, point.lat]);
+      setIsRubberBandZooming(false);
+
+      // Prevent default map panning
+      if (event.originalEvent) {
+        event.originalEvent.preventDefault();
+      } else if (event.nativeEvent) {
+        event.nativeEvent.preventDefault();
+      }
+    },
+    [isAndroidTablet, rubberBandMode, drawingMode, isDrawing]
+  );
+
+  const handleTouchMove = useCallback(
+    (event: any) => {
+      if (!isRubberBandDrawing || !rubberBandStart) return;
+
+      const point = event.lngLat;
+      if (!point) return;
+
+      // Update end point for rectangle
+      setRubberBandEnd([point.lng, point.lat]);
+
+      // Prevent default map panning
+      if (event.originalEvent) {
+        event.originalEvent.preventDefault();
+      } else if (event.nativeEvent) {
+        event.nativeEvent.preventDefault();
+      }
+    },
+    [isRubberBandDrawing, rubberBandStart]
+  );
+
+  const handleTouchEnd = useCallback(
+    (event: any) => {
+      if (!isRubberBandDrawing || !rubberBandStart || !rubberBandEnd) {
+        return;
+      }
+
+      // Calculate minimum distance threshold (e.g., 0.001 degrees)
+      const lngDiff = Math.abs(rubberBandEnd[0] - rubberBandStart[0]);
+      const latDiff = Math.abs(rubberBandEnd[1] - rubberBandStart[1]);
+
+      // Only zoom if selection is large enough (not just a tap)
+      if (lngDiff < 0.001 && latDiff < 0.001) {
+        // Too small, cleanup
+        setIsRubberBandDrawing(false);
+        setRubberBandStart(null);
+        setRubberBandEnd(null);
+        return;
+      }
+
+      // Calculate bounding box
+      const bounds = calculateRectangleBounds(rubberBandStart, rubberBandEnd);
+      if (!bounds) {
+        setIsRubberBandDrawing(false);
+        setRubberBandStart(null);
+        setRubberBandEnd(null);
+        return;
+      }
+
+      // Start zoom phase
+      setIsRubberBandDrawing(false);
+      setIsRubberBandZooming(true);
+
+      // Dismiss notification toast when rectangle is drawn
+      if (rubberBandToastId) {
+        toast.dismiss(rubberBandToastId);
+        setRubberBandToastId(null);
+      }
+
+      // Zoom to selected area
+      if (mapRef.current) {
+        const map = mapRef.current.getMap();
+        map.fitBounds(
+          [
+            [bounds.minLng, bounds.minLat],
+            [bounds.maxLng, bounds.maxLat],
+          ],
+          {
+            padding: { top: 50, bottom: 50, left: 50, right: 50 },
+            duration: 500,
+            maxZoom: 18,
+          }
+        );
+      }
+
+      // Prevent default
+      if (event.originalEvent) {
+        event.originalEvent.preventDefault();
+      } else if (event.nativeEvent) {
+        event.nativeEvent.preventDefault();
+      }
+    },
+    [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId]
+  );
+
+  // Show notification toast when rubber band mode is enabled
+  useEffect(() => {
+    if (rubberBandMode) {
+      const toastId = toast.notification("Drag to draw a rectangle");
+      setRubberBandToastId(toastId);
+    } else {
+      // Dismiss toast when mode is disabled
+      if (rubberBandToastId) {
+        toast.dismiss(rubberBandToastId);
+        setRubberBandToastId(null);
+      }
+    }
+  }, [rubberBandMode]);
+
+  // Cleanup rubber band when mode is disabled
+  useEffect(() => {
+    if (!rubberBandMode) {
+      setIsRubberBandDrawing(false);
+      setIsRubberBandZooming(false);
+      setRubberBandStart(null);
+      setRubberBandEnd(null);
+    }
+  }, [rubberBandMode]);
+
+  // Cleanup rubber band when drawing mode is activated (disable rubber band mode)
+  useEffect(() => {
+    if (drawingMode) {
+      setIsRubberBandDrawing(false);
+      setIsRubberBandZooming(false);
+      setRubberBandStart(null);
+      setRubberBandEnd(null);
+      // Disable rubber band mode when any drawing tool is activated
+      setRubberBandMode(false);
+    }
+  }, [drawingMode]);
+
+  // Listen for zoom completion to cleanup and exit mode
+  useEffect(() => {
+    if (!mapRef.current || !isRubberBandZooming) return;
+
+    const map = mapRef.current.getMap();
+    const handleMoveEnd = () => {
+      // Small delay to ensure zoom animation is complete
+      setTimeout(() => {
+        // Cleanup all state and exit rubber band mode after zoom completes
+        setIsRubberBandZooming(false);
+        setRubberBandStart(null);
+        setRubberBandEnd(null);
+        setRubberBandMode(false); // Exit mode after one zoom
+      }, 100);
+    };
+
+    map.on("moveend", handleMoveEnd);
+
+    return () => {
+      map.off("moveend", handleMoveEnd);
+    };
+  }, [isRubberBandZooming]);
 
   // Ensure we always hand BitmapLayer a canvas (avoid createImageBitmap on blob)
   const ensureCanvasImage = (img: any): HTMLCanvasElement | null => {
@@ -2091,6 +2720,22 @@ const MapComponent = ({
   const { udpLayers, connectionError, noDataWarning, isConnected } =
     useUdpLayers(handleLayerHover);
 
+  // Rubber band overlay layers
+  const rubberBandRectangle = useRubberBandRectangle({
+    isDrawing: isRubberBandDrawing,
+    isZooming: isRubberBandZooming,
+    start: rubberBandStart,
+    end: rubberBandEnd,
+  });
+
+
+
+  const rubberBandOverlay = useRubberBandOverlay({
+    isZooming: isRubberBandZooming,
+    start: rubberBandStart,
+    end: rubberBandEnd,
+  });
+
   const notificationsActive =
     networkLayersVisible && (connectionError || noDataWarning);
   const { host, port } = useUdpConfigStore();
@@ -2128,90 +2773,6 @@ const MapComponent = ({
     const guardColor = (color: number[] = [0, 0, 0]) =>
       color.length === 4 ? color : [...color, 255];
 
-    const getSignalColor = (
-      snr: number | undefined,
-      rssi: number | undefined
-    ): [number, number, number] => {
-      if (
-        typeof snr !== "number" ||
-        Number.isNaN(snr) ||
-        typeof rssi !== "number" ||
-        Number.isNaN(rssi)
-      ) {
-        return [128, 128, 128];
-      }
-      const normalizedSNR = Math.max(0, Math.min(1, snr / 30));
-      const normalizedRSSI = Math.max(0, Math.min(1, (rssi + 100) / 70));
-      const signalStrength = normalizedSNR * 0.7 + normalizedRSSI * 0.3;
-      if (signalStrength >= 0.7) return [0, 255, 0];
-      if (signalStrength >= 0.4) return [255, 165, 0];
-      return [255, 0, 0];
-    };
-
-    const getNodeIcon = (node: Node, allNodes: Node[] = []) => {
-      const nodeId = node.userId?.toString();
-      if (nodeId && nodeIconMappings[nodeId]) {
-        const iconName = nodeIconMappings[nodeId];
-        const isRectangularIcon = [
-          "ground_unit",
-          "command_post",
-          "naval_unit",
-        ].includes(iconName);
-        return {
-          url: `/icons/${iconName}.svg`,
-          width: isRectangularIcon ? 28 : 24,
-          height: isRectangularIcon ? 20 : 24,
-          anchorY: isRectangularIcon ? 10 : 12,
-          anchorX: isRectangularIcon ? 14 : 12,
-          mask: false,
-        };
-      }
-
-      let iconName = "neutral_aircraft";
-
-      const getMotherAircraft = () => {
-        if (!allNodes.length) return null;
-        const sortedNodes = allNodes
-          .filter((n) => typeof n.snr === "number")
-          .sort((a, b) => {
-            const snrA = a.snr ?? -Infinity;
-            const snrB = b.snr ?? -Infinity;
-            if (snrB !== snrA) return snrB - snrA;
-            return a.userId - b.userId;
-          });
-        return sortedNodes[0] ?? null;
-      };
-
-      const motherAircraft = getMotherAircraft();
-
-      if (motherAircraft && node.userId === motherAircraft.userId) {
-        iconName = "mother-aircraft";
-      } else if (node.hopCount === 0) {
-        iconName = "command_post";
-      } else if ((node.snr ?? 0) > 20) {
-        iconName = "friendly_aircraft";
-      } else if ((node.snr ?? 0) > 10) {
-        iconName = "ground_unit";
-      } else if ((node.snr ?? 0) > 0) {
-        iconName = "neutral_aircraft";
-      } else {
-        iconName = "unknown_aircraft";
-      }
-
-      const isRectangularIcon = [
-        "ground_unit",
-        "command_post",
-        "naval_unit",
-      ].includes(iconName);
-      return {
-        url: `/icons/${iconName}.svg`,
-        width: isRectangularIcon ? 28 : 24,
-        height: isRectangularIcon ? 20 : 24,
-        anchorY: isRectangularIcon ? 10 : 12,
-        anchorX: isRectangularIcon ? 14 : 12,
-        mask: false,
-      };
-    };
 
     const visibleLayers = layers
       .filter(isLayerVisible)
@@ -2239,7 +2800,6 @@ const MapComponent = ({
     const annotationLayers = visibleLayers.filter(
       (l) => l.type === "annotation"
     );
-    const nodeLayers = visibleLayers.filter((l) => l.type === "nodes");
 
     const deckLayers: any[] = [];
     const measurementCharacterSet = [
@@ -2281,12 +2841,7 @@ const MapComponent = ({
         null;
 
       if (!image) {
-        console.warn("DEM layer missing usable image source:", {
-          id: layer.id,
-          name: layer.name,
-          hasBitmap: !!layer.bitmap,
-          hasTexture: !!layer.texture,
-        });
+
         return;
       }
 
@@ -2336,7 +2891,7 @@ const MapComponent = ({
           getLineWidth: 1,
           stroked: true,
           pickable: true,
-          pickingRadius: 300, // Larger picking radius for touch devices
+          pickingRadius: 20, // Larger picking radius for touch devices
           radiusMinPixels: 1,
           radiusMaxPixels: 50,
           onHover: handleLayerHover,
@@ -2407,7 +2962,7 @@ const MapComponent = ({
             widthMinPixels: 1, // Minimum width of 1 pixel
             widthMaxPixels: 50, // Maximum width of 50 pixels
             pickable: true,
-            pickingRadius: 300, // Larger picking radius for touch devices
+            pickingRadius: 20, // Larger picking radius for touch devices
             onHover: handleLayerHover,
           })
         );
@@ -2463,7 +3018,7 @@ const MapComponent = ({
             widthMinPixels: 1, // Minimum width of 1 pixel
             widthMaxPixels: 50, // Maximum width of 50 pixels
             pickable: true,
-            pickingRadius: 300, // Larger picking radius for touch devices
+            pickingRadius: 20, // Larger picking radius for touch devices
             onHover: handleLayerHover,
           })
         );
@@ -2498,6 +3053,8 @@ const MapComponent = ({
         new PolygonLayer({
           id: "polygon-layer",
           data: polygonData,
+          fp64: true, // Use 64-bit precision for Samsung devices
+          parameters: { depthTest: false },
           getPolygon: (d: any) => d.ring,
           getFillColor: (d: any) => {
             const color = d.layer.color ?? [32, 32, 32, 120];
@@ -2512,8 +3069,9 @@ const MapComponent = ({
           getLineWidth: 1,
           stroked: false,
           pickable: true,
-          pickingRadius: 300, // Larger picking radius for touch devices
+          pickingRadius: 20, // Larger picking radius for touch devices
           onHover: handleLayerHover,
+
         })
       );
 
@@ -2536,8 +3094,9 @@ const MapComponent = ({
             widthUnits: "pixels",
             widthMinPixels: 1,
             widthMaxPixels: 50,
+            parameters: { depthTest: false, depthMask: false },
             pickable: true,
-            pickingRadius: 300,
+            pickingRadius: 20,
             onHover: handleLayerHover,
           })
         );
@@ -2603,7 +3162,7 @@ const MapComponent = ({
             widthMinPixels: 1,
             widthMaxPixels: 50,
             pickable: true,
-            pickingRadius: 300,
+            pickingRadius: 20,
             onHover: handleLayerHover,
             capRounded: true,
             jointRounded: true,
@@ -2630,7 +3189,7 @@ const MapComponent = ({
               return {
                 position: point,
                 color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
-                radius: index === 0 ? 200 : 180,
+                radius: index === 0 ? 8 : 6, // Smaller radius in meters that scales with zoom
               };
             })
             .filter((item): item is NonNullable<typeof item> => item !== null);
@@ -2719,7 +3278,7 @@ const MapComponent = ({
             id: "azimuth-lines-layer",
             data: azimuthLineData,
             pickable: true,
-            pickingRadius: 200,
+            pickingRadius: 20,
             onHover: handleLayerHover,
             getSourcePosition: (d: any) => d.sourcePosition,
             getTargetPosition: (d: any) => d.targetPosition,
@@ -2763,8 +3322,10 @@ const MapComponent = ({
         new GeoJsonLayer({
           id: layer.id,
           data: layer.geojson,
+          fp64: true, // Use 64-bit precision for Samsung devices
+          parameters: { depthTest: false },
           pickable: true,
-          pickingRadius: 300, // Larger picking radius for touch devices
+          pickingRadius: 20, // Larger picking radius for touch devices
           stroked: true,
           filled: true,
           pointRadiusUnits: "pixels", // Use pixels for point radius
@@ -2807,7 +3368,7 @@ const MapComponent = ({
           getTextAnchor: "middle",
           getAlignmentBaseline: "center",
           pickable: true,
-          pickingRadius: 300, // Larger picking radius for touch devices
+          pickingRadius: 20, // Larger picking radius for touch devices
           sizeScale: 1,
           fontFamily: "Arial, sans-serif",
           fontWeight: "normal",
@@ -2816,58 +3377,12 @@ const MapComponent = ({
       );
     });
 
-    nodeLayers.forEach((layer) => {
-      if (!layer.nodes?.length) return;
-      const nodes = [...layer.nodes];
-
-      deckLayers.push(
-        new IconLayer({
-          id: `${layer.id}-icon-layer`,
-          data: nodes,
-          pickable: true,
-          pickingRadius: 300, // Larger picking radius for touch devices
-          getIcon: (node: Node) => getNodeIcon(node, nodes),
-          getPosition: (node: Node) => [node.longitude, node.latitude],
-          getSize: 24,
-          sizeScale: 1,
-          getPixelOffset: [0, -10],
-          alphaCutoff: 0.001,
-          billboard: true,
-          sizeUnits: "pixels",
-          sizeMinPixels: 16,
-          sizeMaxPixels: 32,
-          updateTriggers: {
-            getIcon: [nodes.length, Object.values(nodeIconMappings).join(",")],
-          },
-          onHover: handleLayerHover,
-          onClick: handleNodeIconClick,
-        })
-      );
-
-      deckLayers.push(
-        new ScatterplotLayer({
-          id: `${layer.id}-signal-overlay`,
-          data: nodes,
-          getPosition: (node: Node) => [node.longitude, node.latitude],
-          getRadius: 12000,
-          getFillColor: (node: Node) => getSignalColor(node.snr, node.rssi),
-          getLineColor: [255, 255, 255, 200],
-          getLineWidth: 2,
-          radiusMinPixels: 8,
-          radiusMaxPixels: 32,
-          pickable: true,
-          pickingRadius: 300, // Larger picking radius for touch devices
-          onHover: handleLayerHover,
-          onClick: handleNodeIconClick,
-        })
-      );
-    });
 
     // --- Preview layers ---
     const previewLayers: any[] = [];
 
-    // Add UDP layers to the deck layers
-    if (udpLayers && udpLayers.length > 0) {
+    // Add UDP layers to the deck layers only when networkLayersVisible is true
+    if (networkLayersVisible && udpLayers && udpLayers.length > 0) {
       deckLayers.push(...udpLayers);
     }
     if (
@@ -2901,7 +3416,9 @@ const MapComponent = ({
         previewLayers.push(
           new PolygonLayer({
             id: "preview-polygon-layer",
+            fp64: true, // Use 64-bit precision for Samsung devices
             data: [previewPath],
+            parameters: { depthTest: false },
             getPolygon: (d: [number, number][]) => d,
             getFillColor: [32, 32, 32, 60],
             getLineColor: [32, 32, 32],
@@ -2919,6 +3436,7 @@ const MapComponent = ({
             getWidth: 2,
             widthUnits: "pixels",
             widthMinPixels: 1,
+            parameters: { depthTest: false, depthMask: false },
             pickable: false,
           })
         );
@@ -3071,7 +3589,7 @@ const MapComponent = ({
     if (isDrawing && currentPath.length > 0) {
       const previewPointData = currentPath.map((point, index) => ({
         position: point,
-        radius: 150,
+        radius: index === 0 ? 8 : 6, // Smaller radius in meters that scales with zoom
         color: index === 0 ? [255, 255, 0] : [255, 0, 255],
       }));
       previewLayers.push(
@@ -3080,9 +3598,11 @@ const MapComponent = ({
           data: previewPointData,
           getPosition: (d: any) => d.position,
           getRadius: (d: any) => d.radius,
+          radiusUnits: "meters",
           getFillColor: (d: any) => d.color,
           pickable: false,
           radiusMinPixels: 4,
+          radiusMaxPixels: 10,
         })
       );
     }
@@ -3103,6 +3623,7 @@ const MapComponent = ({
     userLocation,
     showUserLocation,
     mapZoom,
+    tileServerUrl,
   ]);
 
   return (
@@ -3314,73 +3835,233 @@ const MapComponent = ({
         ref={mapRef}
         style={{ width: "100%", height: "100%" }}
         mapboxAccessToken="pk.eyJ1IjoibmlraGlsc2FyYWYiLCJhIjoiY2xlc296YjRjMDA5dDNzcXphZjlzamFmeSJ9.7ZDaMZKecY3-70p9pX9-GQ"
+        mapStyle={undefined}
+        // Don't use mapStyle prop - we load style manually after modifying tile URLs
         renderWorldCopies={false}
         reuseMaps={true}
         attributionControl={false}
         dragRotate={true}
-        touchZoomRotate={true}
         pitchWithRotate={true}
         initialViewState={{
-          longitude: 81.5, // Center of India (between 63.5°E and 99.5°E)
-          latitude: 20.5, // Center of India (between 2.5°N and 38.5°N)
-          zoom: 6, // Zoom level to show India's bounding box
+          longitude: tileServerUrl ? 81.5 : 81.5, // World center (0) when using tile server, India center (home view) otherwise
+          latitude: tileServerUrl ? 81.5 : 20.5, // Equator (0) when using tile server, India center (home view) otherwise
+          zoom: tileServerUrl ? 3 : 3, // World view (zoom 2) when using tile server, India view (zoom 3 - home view) otherwise
           pitch: pitch,
           bearing: 0,
         }}
         minZoom={0}
-        maxZoom={15}
+        maxZoom={18}
         maxPitch={85}
         onLoad={async (map: any) => {
-          // Fit map to India's bounding box
           const mapInstance = map.target;
-          mapInstance.fitBounds(
-            [
-              [63.5, 2.5], // Southwest corner (West, South)
-              [99.5, 38.5], // Northeast corner (East, North)
-            ],
-            {
-              padding: { top: 50, bottom: 50, left: 50, right: 50 },
-              duration: 0, // Instant fit
-            }
-          );
 
-          if (!mapInstance.getSource("offline-tiles")) {
-            mapInstance.addSource("offline-tiles", {
-              type: "raster",
-              tiles: ["/tiles-map/{z}/{x}/{y}.png"],
-              minzoom: 0,
-              maxzoom: 20,
-            });
+          // Remove any old raster tile sources/layers if they exist (we only use tile server)
+          try {
+            if (mapInstance.getLayer("offline-tiles-layer")) {
+              mapInstance.removeLayer("offline-tiles-layer");
+            }
+            if (mapInstance.getSource("offline-tiles")) {
+              mapInstance.removeSource("offline-tiles");
+            }
+          } catch (e) {
+            // Ignore errors if source/layer doesn't exist
           }
 
-          mapInstance.on("sourcedata", (e: any) => {
-            if (e.sourceId === "offline-tiles" && e.isSourceLoaded) {
-            }
-          });
+          // Get tile server URL directly (don't rely on state which might not be set yet)
+          const { initializeTileServer } = await import("./tile-folder-dialog");
+          let serverUrl = tileServerUrl || (await initializeTileServer());
 
-          mapInstance.on("error", (e: any) => {
-            if (e.sourceId === "offline-tiles") {
-              console.warn("Failed to load offline tiles:", e.error);
-            }
-          });
-
-          if (!mapInstance.getLayer("offline-tiles-layer")) {
-            mapInstance.addLayer({
-              id: "offline-tiles-layer",
-              type: "raster",
-              source: "offline-tiles",
-              paint: {
-                "raster-opacity": 0.9,
-              },
-            });
+          // Ensure serverUrl doesn't have trailing slash
+          if (serverUrl && serverUrl.endsWith("/")) {
+            serverUrl = serverUrl.slice(0, -1);
           }
+
+          // Always load style manually (never use mapStyle prop to ensure we can modify URLs)
+          if (serverUrl) {
+            // Update state if needed
+            if (serverUrl !== tileServerUrl) {
+              setTileServerUrl(serverUrl);
+            }
+
+            // Load style from tile server
+            const styleUrl = `${serverUrl}/style.json`;
+
+            try {
+              // Fetch style.json to modify it
+              const response = await fetch(styleUrl);
+
+              if (!response.ok) {
+                throw new Error(
+                  `Failed to fetch style.json: ${response.status}`
+                );
+              }
+
+              let styleJson = await response.json();
+
+              // Force ALL tile URLs to point to tile server
+              if (styleJson.sources) {
+                Object.keys(styleJson.sources).forEach((sourceKey) => {
+                  const source = styleJson.sources[sourceKey];
+                  if (source.type === "vector" && source.tiles) {
+                   
+                    source.tiles = source.tiles.map((tileUrl: string) => {
+                      // Extract the tile path (e.g., /3/5/3.pbf from any URL format)
+                      let tilePath = tileUrl;
+
+                      // If it's an absolute URL, extract the path
+                      try {
+                        const url = new URL(tilePath);
+                        tilePath = url.pathname;
+                      } catch {
+                        // Not a valid URL, might be relative or template
+                      }
+
+                      // Handle Mapbox tile URL templates like {z}/{x}/{y}.pbf
+                      // If it's a template, keep it but ensure it points to our server
+                      if (
+                        tilePath.includes("{z}") ||
+                        tilePath.includes("{x}") ||
+                        tilePath.includes("{y}")
+                      ) {
+                        // Template format - ensure it starts with / and use our server
+                        if (!tilePath.startsWith("/")) {
+                          tilePath = "/" + tilePath;
+                        }
+                        return `${serverUrl}${tilePath}`;
+                      }
+
+                      // Regular tile path - ensure it starts with /
+                      if (!tilePath.startsWith("/")) {
+                        tilePath = "/" + tilePath;
+                      }
+
+                      // Always use tile server URL
+                      const finalUrl = `${serverUrl}${tilePath}`;
+                    
+                      return finalUrl;
+                    });
+                   
+                  }
+                });
+              }
+
+              // Convert relative glyphs URL to absolute URL
+              if (styleJson.glyphs && typeof styleJson.glyphs === "string") {
+                if (styleJson.glyphs.startsWith("/")) {
+                  styleJson.glyphs = `${serverUrl}${styleJson.glyphs}`;
+                }
+              } else if (
+                styleJson.layers &&
+                styleJson.layers.some(
+                  (layer: any) => layer.layout && layer.layout["text-field"]
+                )
+              ) {
+                // If glyphs is missing but text layers exist, set default glyphs path
+                styleJson.glyphs = `${serverUrl}/fonts/{fontstack}/{range}.pbf`;
+               
+              }
+
+              // Set up style.load handler BEFORE applying style
+              mapInstance.once("style.load", () => {
+
+                // Double-check and force update tile URLs after style loads
+                const currentStyle = mapInstance.getStyle();
+                if (currentStyle && currentStyle.sources) {
+                  Object.keys(currentStyle.sources).forEach((sourceKey) => {
+                    const source = mapInstance.getSource(sourceKey);
+                    if (source) {
+                      const sourceData = source as any;
+                      if (sourceData.type === "vector" && sourceData.tiles) {
+                        
+                        // Check if any tile URL doesn't start with serverUrl
+                        const needsUpdate = sourceData.tiles.some(
+                          (url: string) => !url.startsWith(serverUrl)
+                        );
+                        if (needsUpdate) {
+                          console.warn(
+                            `[Map] Source ${sourceKey} has incorrect tile URLs, updating...`
+                          );
+                          const updatedTiles = sourceData.tiles.map(
+                            (tileUrl: string) => {
+                              let tilePath = tileUrl;
+                              try {
+                                const url = new URL(tilePath);
+                                tilePath = url.pathname;
+                              } catch {}
+                              if (
+                                tilePath.includes("{z}") ||
+                                tilePath.includes("{x}") ||
+                                tilePath.includes("{y}")
+                              ) {
+                                if (!tilePath.startsWith("/"))
+                                  tilePath = "/" + tilePath;
+                                return `${serverUrl}${tilePath}`;
+                              }
+                              if (!tilePath.startsWith("/"))
+                                tilePath = "/" + tilePath;
+                              return `${serverUrl}${tilePath}`;
+                            }
+                          );
+                          try {
+                            mapInstance.removeSource(sourceKey);
+                            mapInstance.addSource(sourceKey, {
+                              type: "vector",
+                              tiles: updatedTiles,
+                              minzoom: 0,
+                              maxzoom: 18,
+                              maxNativeZoom: 14,
+                            });
+                           
+                          } catch (e) {
+                            console.error(
+                              `[Map] Failed to correct source ${sourceKey}:`,
+                              e
+                            );
+                          }
+                        }
+                      }
+                    }
+                  });
+                }
+              });
+
+              // Apply the modified style
+             
+             
+              mapInstance.setStyle(styleJson);
+            } catch (error) {
+              console.error("[Map] Failed to fetch and apply style:", error);
+              // Fallback: use a minimal style if tile server fails
+              mapInstance.setStyle({
+                version: 8,
+                sources: {},
+                layers: [],
+              });
+            }
+          } else {
+            // No tile server - use default Mapbox style
+            mapInstance.setStyle("mapbox://styles/mapbox/streets-v12");
+          }
+
+          mapInstance.once("style.error", (e: any) => {
+            console.error("[Map] Style loading error:", e);
+          });
 
           mapInstance.setMaxBounds(null);
         }}
         onClick={handleMapClick}
         onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMove={(e: any) => {
+        onMouseUp={() => {
+          handleMouseUp();
+          handleMouseUpForRubberBand();
+        }}
+        onMouseDown={handleMouseDown}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        dragPan={!isRubberBandDrawing}
+        touchZoomRotate={!isRubberBandDrawing}
+        onMoveEnd={(e: any) => {
           if (e && e.viewState) {
             // Throttle updates to reduce re-renders during map operations
             if (zoomUpdateTimeoutRef.current) {
@@ -3400,6 +4081,13 @@ const MapComponent = ({
         <DeckGLOverlay
           layers={[
             ...deckGlLayers,
+            // Rubber band overlay layers (render on top)
+            ...(rubberBandRectangle
+              ? Array.isArray(rubberBandRectangle)
+                ? rubberBandRectangle
+                : [rubberBandRectangle]
+              : []),
+            ...(rubberBandOverlay ? [rubberBandOverlay] : []),
 
             // Add user location layers LAST so they render on top of everything
             ...(userLocation && showUserLocation
@@ -3441,7 +4129,7 @@ const MapComponent = ({
                     sizeMinPixels: 24,
                     sizeMaxPixels: 48,
                     pickable: true,
-                    pickingRadius: 300,
+                    pickingRadius: 20,
                     onHover: handleLayerHover,
                   }),
                 ]
@@ -3500,6 +4188,7 @@ const MapComponent = ({
         showUserLocation={showUserLocation}
         onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
         isProcessingFiles={isProcessingFiles}
+        isExporting={isExporting}
         cameraPopoverProps={{
           isOpen: isCameraPopoverOpen,
           onOpenChange: setIsCameraPopoverOpen,
@@ -3521,6 +4210,8 @@ const MapComponent = ({
           value: useIgrs,
           onToggle: (checked) => setUseIgrs(checked),
         }}
+        rubberBandMode={rubberBandMode}
+        onToggleRubberBand={() => setRubberBandMode((prev) => !prev)}
       />
 
       {/* UDP Config Dialog */}

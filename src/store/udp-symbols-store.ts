@@ -11,6 +11,11 @@ interface UdpSymbolsState {
   setNodeSymbol: (layerId: string, userId: number, symbol: string) => void;
   getNodeSymbol: (layerId: string, userId: number) => string | undefined;
   clearNodeSymbol: (layerId: string, userId: number) => void;
+  // Group-level symbols for topology groups
+  groupSymbols: Record<string, string>; // Key: "topology-group-{groupId}", Value: symbol name
+  setGroupSymbol: (groupId: string, symbol: string) => void;
+  getGroupSymbol: (groupId: string) => string | undefined;
+  clearGroupSymbol: (groupId: string) => void;
 }
 
 export const useUdpSymbolsStore = create<UdpSymbolsState>()(
@@ -60,6 +65,30 @@ export const useUdpSymbolsStore = create<UdpSymbolsState>()(
           const newSymbols = { ...state.nodeSymbols };
           delete newSymbols[key];
           return { nodeSymbols: newSymbols };
+        }),
+      // Group-level symbols
+      groupSymbols: {},
+      setGroupSymbol: (groupId: string, symbol: string) =>
+        set((state) => {
+          const key = `topology-group-${groupId}`;
+          const newSymbols = { ...state.groupSymbols };
+          if (symbol === "") {
+            delete newSymbols[key];
+          } else {
+            newSymbols[key] = symbol;
+          }
+          return { groupSymbols: newSymbols };
+        }),
+      getGroupSymbol: (groupId: string) => {
+        const key = `topology-group-${groupId}`;
+        return get().groupSymbols[key];
+      },
+      clearGroupSymbol: (groupId: string) =>
+        set((state) => {
+          const key = `topology-group-${groupId}`;
+          const newSymbols = { ...state.groupSymbols };
+          delete newSymbols[key];
+          return { groupSymbols: newSymbols };
         }),
     }),
     {

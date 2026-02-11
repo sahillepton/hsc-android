@@ -1,26 +1,94 @@
 package com.example.app;
 
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.Settings;
 import android.view.View;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.widget.Toast;
+import androidx.appcompat.app.AlertDialog;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.PluginHandle;
+import android.webkit.WebView;
 
 public class MainActivity extends BridgeActivity {
+
+    private static final int REQUEST_MANAGE_STORAGE = 1001;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         // Register plugins BEFORE super
+        WebView.setWebContentsDebuggingEnabled(true);
         registerPlugin(UdpPlugin.class);
         registerPlugin(NativeUploaderPlugin.class);
         registerPlugin(ZipFolderPlugin.class);
+        registerPlugin(MemberActionPlugin.class);
+        registerPlugin(OfflineTileServerPlugin.class);
 
         super.onCreate(savedInstanceState);
         
         // Enable immersive fullscreen mode (hide status bar and navigation bar)
         enableImmersiveMode();
+        
+        // Check and request storage permissions
+        checkStoragePermission();
+    }
+    
+    private void checkStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ (API 30+) - Need MANAGE_EXTERNAL_STORAGE
+            if (!Environment.isExternalStorageManager()) {
+                showStoragePermissionDialog();
+            }
+        }
+    }
+    
+    private void showStoragePermissionDialog() {
+        new AlertDialog.Builder(this)
+            .setTitle("Storage Permission Required")
+            .setMessage("This app needs access to manage all files to save GIS sessions and offline maps.\n\nPlease enable 'Allow access to manage all files' in the next screen.")
+            .setPositiveButton("Open Settings", (dialog, which) -> {
+                requestManageStoragePermission();
+            })
+            .setNegativeButton("Cancel", (dialog, which) -> {
+                dialog.dismiss();
+                Toast.makeText(this, "Storage permission denied. Some features may not work.", Toast.LENGTH_LONG).show();
+            })
+            .setCancelable(false)
+            .show();
+    }
+    
+    private void requestManageStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, REQUEST_MANAGE_STORAGE);
+            } catch (Exception e) {
+                // Fallback for devices that don't support the specific intent
+                Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                startActivityForResult(intent, REQUEST_MANAGE_STORAGE);
+            }
+        }
+    }
+    
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        
+        if (requestCode == REQUEST_MANAGE_STORAGE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (Environment.isExternalStorageManager()) {
+                    Toast.makeText(this, "Storage permission granted!", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "Storage permission denied. Some features may not work.", Toast.LENGTH_LONG).show();
+                }
+            }
+        }
     }
     
     private void enableImmersiveMode() {
@@ -73,6 +141,9 @@ public class MainActivity extends BridgeActivity {
         
         // Re-enable immersive mode when app resumes
         enableImmersiveMode();
+        
+        // Configure WebView to allow localhost access (after bridge is ready)
+        configureWebViewForLocalhost();
 
         // Optional: test event (your existing code)
         PluginHandle handle = getBridge().getPlugin("Udp");
@@ -90,6 +161,40 @@ public class MainActivity extends BridgeActivity {
         if (hasFocus) {
             // Re-enable immersive mode when window gains focus
             enableImmersiveMode();
+        }
+    }
+    
+    private void configureWebViewForLocalhost() {
+        // Enable WebView debugging
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            WebView.setWebContentsDebuggingEnabled(true);
+        }
+        
+        // Get the bridge's WebView and configure it
+        try {
+            com.getcapacitor.Bridge bridge = getBridge();
+            if (bridge != null) {
+                android.webkit.WebView webView = bridge.getWebView();
+                if (webView != null) {
+                    android.webkit.WebSettings settings = webView.getSettings();
+                    // Allow mixed content (HTTP on HTTPS page) - needed for localhost
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                    }
+                    // Enable JavaScript (should already be enabled, but ensure it)
+                    settings.setJavaScriptEnabled(true);
+                    // Allow file access from file URLs
+                    settings.setAllowFileAccess(true);
+                    settings.setAllowContentAccess(true);
+                    android.util.Log.d("CAPACITOR_MainActivity", "WebView configured for localhost access");
+                } else {
+                    android.util.Log.w("CAPACITOR_MainActivity", "WebView is null, cannot configure");
+                }
+            } else {
+                android.util.Log.w("CAPACITOR_MainActivity", "Bridge is null, cannot configure WebView");
+            }
+        } catch (Exception e) {
+            android.util.Log.e("CAPACITOR_MainActivity", "Error configuring WebView for localhost", e);
         }
     }
 }

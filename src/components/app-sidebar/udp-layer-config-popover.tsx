@@ -2,19 +2,25 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Settings2 } from "lucide-react";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
-import { useUdpLayers } from "@/components/map/udp-layers";
+import { useState } from "react";
 
-const availableIcons = [
-  "alert",
-  "command_post",
-  "friendly_aircraft",
-  "ground_unit",
-  "hostile_aircraft",
-  "mother-aircraft",
-  "naval_unit",
-  "neutral_aircraft",
-  "sam_site",
-  "unknown_aircraft",
+// All available icons (including fighters 11-14 and helicopters)
+const allAvailableIcons = [
+  "fighter1",
+  "fighter2",
+  "fighter3",
+  "fighter4",
+  "fighter5",
+  "fighter6",
+  "fighter7",
+  "fighter8",
+  "fighter9",
+  "fighter10",
+  "fighter11",
+  "fighter12",
+  "fighter13",
+  "fighter14",
+  "helicopter1",
 ];
 
 interface UdpLayerConfigPopoverProps {
@@ -26,19 +32,68 @@ const UdpLayerConfigPopover = ({
   layerId,
   layerName,
 }: UdpLayerConfigPopoverProps) => {
-  const { getLayerSymbol, setLayerSymbol } = useUdpSymbolsStore();
-  const { udpLayers } = useUdpLayers();
+  const { getLayerSymbol, setLayerSymbol, getGroupSymbol, setGroupSymbol } =
+    useUdpSymbolsStore();
 
-  const layer = udpLayers.find((l: any) => l?.id === layerId);
-  const layerData = layer?.props?.data || [];
+  const [open, setOpen] = useState(false);
+
+  // Check if this is a topology group (starts with "topology-group-")
+  const isTopologyGroup = layerId.startsWith("topology-group-");
+  const groupId = isTopologyGroup
+    ? layerId.replace("topology-group-", "")
+    : null;
+
+  // Default icons for each group (fighter1, fighter2, etc.)
+  const defaultGroupIcons: Record<string, string> = {
+    A: "fighter1",
+    B: "fighter2",
+    C: "fighter3",
+    D: "fighter4",
+    E: "fighter5",
+    F: "fighter6",
+    G: "fighter7",
+    H: "fighter8",
+    I: "fighter9",
+    J: "fighter10",
+  };
+
   const defaultSymbol =
-    layerId === "udp-network-members-layer" ? "friendly_aircraft" : "alert";
+    layerId === "udp-network-members-layer" ? "fighter1" : "fighter3";
 
-  const currentSymbol = getLayerSymbol(layerId);
-  const displaySymbol = currentSymbol || defaultSymbol;
+  // Get current symbol - for groups use groupSymbol, for layers use layerSymbol
+  const currentSymbol =
+    isTopologyGroup && groupId
+      ? getGroupSymbol(groupId) || defaultGroupIcons[groupId] || "fighter1"
+      : getLayerSymbol(layerId) || defaultSymbol;
+
+  const displaySymbol = currentSymbol;
+
+  const handleIconClick = (iconName: string) => {
+    // Close popover first
+    setOpen(false);
+    // Then update the symbol after a small delay to ensure popover closes first
+    setTimeout(() => {
+      if (isTopologyGroup && groupId) {
+        setGroupSymbol(groupId, iconName);
+      } else {
+        setLayerSymbol(layerId, iconName);
+      }
+    }, 150);
+  };
+
+  const handleReset = () => {
+    setOpen(false);
+    setTimeout(() => {
+      if (isTopologyGroup && groupId) {
+        setGroupSymbol(groupId, "");
+      } else {
+        setLayerSymbol(layerId, "");
+      }
+    }, 150);
+  };
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
@@ -62,15 +117,17 @@ const UdpLayerConfigPopover = ({
           <div className="space-y-3">
             <div className="space-y-2">
               <div className="text-sm text-muted-foreground">
-                Select icon for all nodes in this layer
+                {isTopologyGroup
+                  ? "Select icon for this group"
+                  : "Select icon for all nodes in this layer"}
               </div>
-              <div className="grid grid-cols-5 gap-1">
-                {availableIcons.map((iconName) => {
+              <div className="grid grid-cols-5 gap-1 max-h-64 overflow-y-auto">
+                {allAvailableIcons.map((iconName) => {
                   const isSelected = displaySymbol === iconName;
                   return (
                     <button
                       key={iconName}
-                      onClick={() => setLayerSymbol(layerId, iconName)}
+                      onClick={() => handleIconClick(iconName)}
                       className={`flex flex-col items-center justify-center p-1.5 rounded border transition-all ${
                         isSelected
                           ? "border-blue-500 bg-blue-100 ring-2 ring-blue-400"
@@ -87,28 +144,13 @@ const UdpLayerConfigPopover = ({
                   );
                 })}
               </div>
-              <div className="flex items-center justify-between pt-2">
-                <div className="text-xs text-muted-foreground">
-                  Current: {displaySymbol.replace(/_/g, " ").replace(/-/g, " ")}
-                </div>
-                {currentSymbol && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs"
-                    onClick={() => setLayerSymbol(layerId, "")}
-                  >
-                    Reset to Default
-                  </Button>
-                )}
-              </div>
+              <button
+                onClick={handleReset}
+                className="w-full px-2 py-1 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors mt-2"
+              >
+                Reset to Default
+              </button>
             </div>
-            {layerData.length > 0 && (
-              <div className="text-xs text-muted-foreground pt-2 border-t">
-                {layerData.length} {layerData.length === 1 ? "node" : "nodes"}{" "}
-                in this layer
-              </div>
-            )}
           </div>
         </div>
       </PopoverContent>

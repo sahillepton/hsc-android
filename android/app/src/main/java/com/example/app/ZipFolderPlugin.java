@@ -19,11 +19,14 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -480,6 +483,42 @@ public class ZipFolderPlugin extends Plugin {
                 } else {
                     // Extract regular file
                     String fileName = new File(entryName).getName();
+                    
+                    // Check if file extension is allowed
+                    String lowerName = fileName.toLowerCase();
+                    int lastDot = lowerName.lastIndexOf('.');
+                    if (lastDot > 0 && lastDot < lowerName.length() - 1) {
+                        String extension = lowerName.substring(lastDot + 1);
+                        Set<String> allowedExtensions = new HashSet<>(Arrays.asList(
+                            // Raster/DEM formats
+                            "tif",
+                            "tiff",
+                            "hgt",
+                            "dett",
+                            // Vector formats
+                            "geojson",
+                            "json",
+                            "csv",
+                            "gpx",
+                            "kml",
+                            "kmz",
+                            "wkt",
+                            // Shapefile components (will be grouped into ZIP)
+                            "shp",
+                            "shx",
+                            "dbf",
+                            "prj",
+                            // Archive format (for containing the above formats)
+                            "zip"
+                        ));
+                        
+                        if (!allowedExtensions.contains(extension)) {
+                            // Skip this file - don't extract it
+                            zis.closeEntry();
+                            continue;
+                        }
+                    }
+                    
                     File outputFile = new File(destDir, fileName);
                     
                     // Handle duplicate names
@@ -508,7 +547,7 @@ public class ZipFolderPlugin extends Plugin {
                     }
                     
                     // Determine file type
-                    String lowerName = outputFile.getName().toLowerCase();
+                    lowerName = outputFile.getName().toLowerCase();
                     String fileType = "vector"; // default
                     
                     if (lowerName.endsWith(".tif") || lowerName.endsWith(".tiff") || 

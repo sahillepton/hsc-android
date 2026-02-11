@@ -24,6 +24,7 @@ import {
   TooltipProperties,
   TooltipDivider,
 } from "@/lib/tooltip-components";
+import MemberAction from "@/plugins/member-action";
 
 const Tooltip = () => {
   const { hoverInfo } = useHoverInfo();
@@ -263,7 +264,7 @@ const Tooltip = () => {
       const igrs = calculateIgrs(point[0], point[1]);
       if (igrs) return igrs;
     }
-    return `[${point[1]?.toFixed(4)}, ${point[0]?.toFixed(4)}]`;
+    return `[${point[1]?.toFixed(4)}°, ${point[0]?.toFixed(4)}°]`;
   };
   const coordinateLabel = useIgrs ? "IGRS" : "lat, lng";
 
@@ -418,7 +419,8 @@ const Tooltip = () => {
     // Handle UDP layers
     if (
       layer?.id === "udp-network-members-layer" ||
-      layer?.id === "udp-targets-layer"
+      layer?.id === "udp-targets-layer" ||
+      layer?.id === "udp-topology-nodes-layer"
     ) {
       const importantKeys = [
         "globalId",
@@ -431,6 +433,8 @@ const Tooltip = () => {
         "displayId",
         "role",
         "controllingNodeId",
+        "id",
+        "neighborCount",
       ];
 
       const displayProperties = Object.entries(object)
@@ -457,8 +461,12 @@ const Tooltip = () => {
           label: "Location",
           value: useIgrs
             ? calculateIgrs(object.longitude, object.latitude) ||
-              `[${object.latitude.toFixed(3)}, ${object.longitude.toFixed(3)}]`
-            : `[${object.latitude.toFixed(3)}, ${object.longitude.toFixed(3)}]`,
+              `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(
+                4
+              )}°]`
+            : `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(
+                4
+              )}°]`,
         });
       }
 
@@ -471,6 +479,8 @@ const Tooltip = () => {
             title={
               layer.id === "udp-network-members-layer"
                 ? "Network Member"
+                : layer.id === "udp-topology-nodes-layer"
+                ? "Topology Node"
                 : "Target"
             }
           />
@@ -487,9 +497,24 @@ const Tooltip = () => {
           <TooltipDivider />
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                alert("Video call initiated");
+                const memberId =
+                  (object as any)?.globalId ||
+                  (object as any)?.displayId ||
+                  "Unknown";
+                const memberName = (object as any)?.callsign || memberId;
+                try {
+                  await MemberAction.notifyAction({
+                    memberId: String(memberId),
+                    action: "call",
+                    memberName: String(memberName),
+                    metadata: JSON.stringify({ type: "video" }),
+                  });
+                } catch (err) {
+                  console.warn("[MemberAction] Plugin not available:", err);
+                  alert("Video call initiated");
+                }
               }}
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
               style={{ backgroundColor: "#7F1D1D" }}
@@ -499,9 +524,24 @@ const Tooltip = () => {
               <span>Video</span>
             </button>
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                alert("FTP connection initiated");
+                const memberId =
+                  (object as any)?.globalId ||
+                  (object as any)?.displayId ||
+                  "Unknown";
+                const memberName = (object as any)?.callsign || memberId;
+                try {
+                  await MemberAction.notifyAction({
+                    memberId: String(memberId),
+                    action: "info",
+                    memberName: String(memberName),
+                    metadata: JSON.stringify({ type: "ftp" }),
+                  });
+                } catch (err) {
+                  console.warn("[MemberAction] Plugin not available:", err);
+                  alert("FTP connection initiated");
+                }
               }}
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
               style={{ backgroundColor: "#3F6212" }}
@@ -511,9 +551,24 @@ const Tooltip = () => {
               <span>FTP</span>
             </button>
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                alert("Phone call initiated");
+                const memberId =
+                  (object as any)?.globalId ||
+                  (object as any)?.displayId ||
+                  "Unknown";
+                const memberName = (object as any)?.callsign || memberId;
+                try {
+                  await MemberAction.notifyAction({
+                    memberId: String(memberId),
+                    action: "call",
+                    memberName: String(memberName),
+                    metadata: JSON.stringify({ type: "voice" }),
+                  });
+                } catch (err) {
+                  console.warn("[MemberAction] Plugin not available:", err);
+                  alert("Phone call initiated");
+                }
               }}
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
               style={{ backgroundColor: "#1E3A8A" }}
@@ -523,9 +578,23 @@ const Tooltip = () => {
               <span>Call</span>
             </button>
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                alert("Message sent");
+                const memberId =
+                  (object as any)?.globalId ||
+                  (object as any)?.displayId ||
+                  "Unknown";
+                const memberName = (object as any)?.callsign || memberId;
+                try {
+                  await MemberAction.notifyAction({
+                    memberId: String(memberId),
+                    action: "message",
+                    memberName: String(memberName),
+                  });
+                } catch (err) {
+                  console.warn("[MemberAction] Plugin not available:", err);
+                  alert("Message sent");
+                }
               }}
               className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
               style={{ backgroundColor: "#A16207" }}
@@ -946,7 +1015,7 @@ const Tooltip = () => {
       const properties = [
         { label: "Area", value: formatArea(areaMeters) },
         { label: "Perimeter", value: formatDistance(perimeterMeters / 1000) },
-        { label: "Vertices", value: String(vertexCount) },
+        { label: "Vertices Drawn", value: String(vertexCount) },
       ];
 
       return (
@@ -990,7 +1059,7 @@ const Tooltip = () => {
           label: "Perimeter",
           value: formatDistance(perimeterMeters / 1000),
         },
-        { label: "Vertices", value: String(vertexCount) },
+        { label: "Drawn Points", value: String(vertexCount) },
       ];
 
       return (
@@ -1019,7 +1088,8 @@ const Tooltip = () => {
         top: y - 10,
         pointerEvents:
           layer?.id === "udp-network-members-layer" ||
-          layer?.id === "udp-targets-layer"
+          layer?.id === "udp-targets-layer" ||
+          layer?.id === "udp-topology-nodes-layer"
             ? "auto"
             : "none",
         zIndex: 5,

@@ -19,6 +19,9 @@ export async function findAllValidFilesInZip(
 
   try {
     const JSZip = (await import("jszip")).default;
+    const { isFileExtensionAllowed } = await import(
+      "@/lib/allowed-file-extensions"
+    );
     const zip = await JSZip.loadAsync(zipFile);
     const validFiles: ValidFile[] = [];
 
@@ -47,10 +50,11 @@ export async function findAllValidFilesInZip(
       }
     }
 
-    // Find all TIFF files
+    // Find all TIFF files (only allowed extensions)
     const tiffFiles = Object.keys(zip.files).filter((name) => {
       const lowerName = name.toLowerCase();
       if (zip.files[name].dir) return false;
+      if (!isFileExtensionAllowed(name)) return false; // Skip non-allowed files
       return (
         lowerName.endsWith(".tif") ||
         lowerName.endsWith(".tiff") ||
@@ -81,12 +85,14 @@ export async function findAllValidFilesInZip(
       }
     }
 
-    // Find all vector files
+    // Find all vector files (only allowed extensions)
     const vectorFiles = Object.keys(zip.files).filter((name) => {
       const lowerName = name.toLowerCase();
       if (zip.files[name].dir) return false;
       // Skip ZIP files (already processed above)
       if (lowerName.endsWith(".zip")) return false;
+      // Skip non-allowed file extensions
+      if (!isFileExtensionAllowed(name)) return false;
       const isOldExportFormat =
         lowerName.includes("layers_export") &&
         lowerName.endsWith(".json") &&
@@ -133,10 +139,11 @@ export async function findAllValidFilesInZip(
       }
     }
 
-    // Find shapefile components and group them
+    // Find shapefile components and group them (only allowed extensions)
     const shapefileComponents = Object.keys(zip.files).filter((name) => {
       const lowerName = name.toLowerCase();
       if (zip.files[name].dir) return false;
+      if (!isFileExtensionAllowed(name)) return false; // Skip non-allowed files
       return (
         lowerName.endsWith(".shp") ||
         lowerName.endsWith(".shx") ||
@@ -147,9 +154,7 @@ export async function findAllValidFilesInZip(
     if (shapefileComponents.length > 0) {
       const shapefileGroups = new Map<string, string[]>();
       for (const fileName of shapefileComponents) {
-        const baseName = fileName
-          .toLowerCase()
-          .replace(/\.(shp|shx|dbf)$/, "");
+        const baseName = fileName.toLowerCase().replace(/\.(shp|shx|dbf)$/, "");
         if (!shapefileGroups.has(baseName)) {
           shapefileGroups.set(baseName, []);
         }
@@ -197,4 +202,3 @@ export async function findAllValidFilesInZip(
     return [];
   }
 }
-

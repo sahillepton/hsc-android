@@ -115,18 +115,6 @@ export const generateLayerId = () => {
   return `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 };
 
-export const isPointNearFirstPoint = (
-  point: [number, number],
-  firstPoint: [number, number],
-  threshold = 0.01
-) => {
-  const distance = Math.sqrt(
-    Math.pow(point[0] - firstPoint[0], 2) +
-      Math.pow(point[1] - firstPoint[1], 2)
-  );
-  return distance < threshold;
-};
-
 export const toRadians = (deg: number) => (deg * Math.PI) / 180;
 export const toDegrees = (rad: number) => (rad * 180) / Math.PI;
 
@@ -144,6 +132,41 @@ export const calculateDistanceMeters = (
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
   return R * c;
+};
+
+/**
+ * Calculate threshold in meters based on zoom level
+ * At zoom 18: ~5 meters (very zoomed in, precise closing)
+ * At zoom 10: ~20 meters (medium zoom)
+ * At zoom 5: ~50 meters (zoomed out)
+ */
+export const getPolygonCloseThreshold = (zoom: number): number => {
+  // Scale threshold based on zoom level
+  // At zoom 18, use ~5 meters (approximately 8-10 pixels)
+  // Formula: threshold decreases as zoom increases
+  if (zoom >= 18) {
+    return 5; // Very zoomed in - precise closing
+  } else if (zoom >= 15) {
+    return 10; // High zoom
+  } else if (zoom >= 12) {
+    return 15; // Medium-high zoom
+  } else if (zoom >= 10) {
+    return 20; // Medium zoom
+  } else if (zoom >= 7) {
+    return 30; // Medium-low zoom
+  } else {
+    return 50; // Low zoom - more forgiving
+  }
+};
+
+export const isPointNearFirstPoint = (
+  point: [number, number],
+  firstPoint: [number, number],
+  thresholdMeters?: number // Optional - if not provided, will use default based on zoom
+) => {
+  // Use actual distance in meters instead of degrees to avoid premature closure
+  const threshold = thresholdMeters ?? 20; // Default fallback
+  return calculateDistanceMeters(point, firstPoint) <= threshold;
 };
 
 export const calculateBearingDegrees = (
@@ -413,7 +436,7 @@ export const formatLayerMeasurements = (
     }
 
     if (layer.polygon[0]?.length) {
-      pushMeasurement("Vertices", `${layer.polygon[0].length - 1}`);
+      pushMeasurement("Vertices Drawn", `${layer.polygon[0].length - 1}`);
     }
 
     if (typeof layer.sectorAngleDeg === "number") {
@@ -454,16 +477,16 @@ export const formatLayerMeasurements = (
 };
 
 export const availableIcons = [
-  "alert",
-  "command_post",
-  "friendly_aircraft",
-  "ground_unit",
-  "hostile_aircraft",
-  "mother-aircraft",
-  "naval_unit",
-  "neutral_aircraft",
-  "sam_site",
-  "unknown_aircraft",
+  "fighter1",
+  "fighter2",
+  "fighter3",
+  "fighter4",
+  "fighter5",
+  "fighter6",
+  "fighter7",
+  "fighter8",
+  "fighter9",
+  "fighter10",
 ];
 
 /**

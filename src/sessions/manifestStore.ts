@@ -316,36 +316,41 @@ export function removeFromTempManifest(layerId: string): void {
  * - If status is "staged_delete", delete immediately
  */
 export async function markLayerStagedDelete(layerId: string): Promise<void> {
+  // First, check if this layer is "saved" in stored manifest
+  // If it's saved, we should NEVER delete it immediately, only mark as staged_delete
+  const stored = await loadStoredManifest();
+  const storedEntry = stored.find((x) => x.layerId === layerId);
+  const isSavedInStored = storedEntry && storedEntry.status === "saved";
+
   // Find entry in temp manifest
   const entry = tempManifest.find((x) => x.layerId === layerId);
+
   if (!entry) {
-    // Also check stored manifest for saved layers
-    const stored = await loadStoredManifest();
-    const storedEntry = stored.find((x) => x.layerId === layerId);
-    if (storedEntry && storedEntry.status === "saved") {
-      // Add to temp manifest with staged_delete status
+    // Not in temp manifest
+    if (isSavedInStored) {
+      // Saved layer not in temp - add to temp with staged_delete status
       upsertTempManifestEntry({
         ...storedEntry,
         status: "staged_delete",
       });
-      return;
     }
     return;
   }
 
-  // If already staged_delete, delete immediately
-  if (entry.status === "staged_delete") {
-    const { deleteFileByAbsolutePath } = await import("./nativeFile");
-    try {
-      await deleteFileByAbsolutePath(entry.absolutePath);
-    } catch (error) {
-      console.error(
-        `[Manifest] Error deleting file for layer ${layerId}:`,
-        error
-      );
-    }
-    removeFromTempManifest(layerId);
+  // Entry found in temp manifest
+  // If it's saved in stored manifest, ALWAYS mark as staged_delete (never delete immediately)
+  if (isSavedInStored) {
+    upsertTempManifestEntry({
+      ...entry,
+      status: "staged_delete",
+    });
     return;
+  }
+
+  // Not saved in stored - handle based on temp manifest status
+  // If already staged_delete, do nothing (it's already marked for deletion)
+  if (entry.status === "staged_delete") {
+    return; // Already marked for deletion, no action needed
   }
 
   // If status is "staged", delete immediately and remove from untracked.json
@@ -365,7 +370,7 @@ export async function markLayerStagedDelete(layerId: string): Promise<void> {
     return;
   }
 
-  // If status is "saved", mark as staged_delete (don't delete yet)
+  // If status is "saved" (in temp but not in stored - edge case, but handle it)
   if (entry.status === "saved") {
     upsertTempManifestEntry({
       ...entry,
@@ -464,37 +469,22 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
 }
 
 /**
- * Restore: Merge temp manifest with stored manifest
- * - Load stored manifest from disk
- * - Merge with temp manifest ensuring unique layer_id objects only
- * - Return merged manifest
+ * Restore: Load stored manifest from disk and restore exactly what was saved
+ * - Load stored manifest from disk (what was saved)
+ * - Filter to only "saved" entries
+ * - Replace temp manifest with restored entries (ignore current temp changes)
+ * - Return restored entries
  */
 export async function restoreManifest(): Promise<ManifestEntry[]> {
-  // Load stored manifest
+  // Load stored manifest from disk (what was saved)
   const stored = await loadStoredManifest();
 
-  // Create a map to ensure unique layer_id objects
-  const layerIdMap = new Map<string, ManifestEntry>();
+  // Filter to only "saved" entries (ignore any staged_delete that might be in stored)
+  const savedEntries = stored.filter((entry) => entry.status === "saved");
 
-  // First, add all stored entries (excluding staged_delete)
-  for (const entry of stored) {
-    if (entry.status !== "staged_delete") {
-      layerIdMap.set(entry.layerId, entry);
-    }
-  }
+  // Update temp manifest with restored entries (for current session)
+  // This replaces temp manifest completely with what was saved, ignoring any current temp changes
+  tempManifest = savedEntries;
 
-  // Then, add/override with temp entries (excluding staged_delete)
-  for (const tempEntry of tempManifest) {
-    if (tempEntry.status !== "staged_delete") {
-      layerIdMap.set(tempEntry.layerId, tempEntry); // Temp overrides stored
-    }
-  }
-
-  // Convert map back to array
-  const merged: ManifestEntry[] = Array.from(layerIdMap.values());
-
-  // Update temp manifest with merged result
-  tempManifest = merged;
-
-  return merged;
+  return savedEntries;
 }
