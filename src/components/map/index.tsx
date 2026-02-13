@@ -70,6 +70,8 @@ import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
 import { Geolocation } from "@capacitor/geolocation";
 import { ZipFolder } from "@/plugins/zip-folder";
+import { Screenshot } from "@/plugins/screenshot";
+import { Capacitor } from "@capacitor/core";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
 import { MAX_UPLOAD_FILES, HSC_FILES_DIR } from "@/sessions/constants";
 import {
@@ -1582,6 +1584,30 @@ const MapComponent = ({
         bearing: 0,
         duration: 1000,
       });
+    }
+  };
+
+  // Capture screenshot and save to gallery
+  const handleCaptureScreenshot = async () => {
+    // Only work on native platform
+    if (!Capacitor.isNativePlatform()) {
+      toast.error("Screenshot is only available on native platforms");
+      return;
+    }
+
+    try {
+      const toastId = toast.loading("Capturing screenshot...");
+      const result = await Screenshot.captureAndSave();
+      toast.dismiss(toastId);
+
+      if (result.success) {
+        toast.success("Screenshot saved to gallery!");
+      } else {
+        toast.error(result.error || "Failed to save screenshot");
+      }
+    } catch (error) {
+      console.error("Screenshot error:", error);
+      toast.error("Failed to capture screenshot");
     }
   };
 
@@ -4298,6 +4324,7 @@ const MapComponent = ({
         onRestoreSession={handleRestoreSession}
         onToggleUserLocation={handleToggleUserLocation}
         onResetHome={handleResetHome}
+        onCaptureScreenshot={handleCaptureScreenshot}
         showUserLocation={showUserLocation}
         onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
         isProcessingFiles={isProcessingFiles}
