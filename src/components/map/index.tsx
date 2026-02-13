@@ -39,7 +39,6 @@ import {
   useLayers,
   useMousePosition,
   useNetworkLayersVisible,
-  useNodeIconMappings,
   useHoverInfo,
   usePendingPolygon,
   useIgrsPreference,
@@ -56,6 +55,7 @@ import {
   normalizeAngleSigned,
   computePolygonAreaMeters,
   computePolygonPerimeterMeters,
+  calculateLayerZoomRange,
 } from "@/lib/layers";
 import {
   formatArea,
@@ -65,11 +65,13 @@ import {
   // fileToDEMRaster,
   // generateRandomColor,
 } from "@/lib/utils";
-import type { LayerProps, Node } from "@/lib/definitions";
+import type { LayerProps } from "@/lib/definitions";
 import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
 import { Geolocation } from "@capacitor/geolocation";
 import { ZipFolder } from "@/plugins/zip-folder";
+import { Screenshot } from "@/plugins/screenshot";
+import { Capacitor } from "@capacitor/core";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
 import { MAX_UPLOAD_FILES, HSC_FILES_DIR } from "@/sessions/constants";
 import {
@@ -120,14 +122,18 @@ const MapComponent = ({
 
   const mapRef = useRef<any>(null);
   const zoomUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const zoomDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     (window as any).mapRef = mapRef;
 
-    // Cleanup timeout on unmount
+    // Cleanup timeouts on unmount
     return () => {
       if (zoomUpdateTimeoutRef.current) {
         clearTimeout(zoomUpdateTimeoutRef.current);
+      }
+      if (zoomDebounceTimeoutRef.current) {
+        clearTimeout(zoomDebounceTimeoutRef.current);
       }
     };
   }, []);
@@ -253,7 +259,6 @@ const MapComponent = ({
   const { drawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
-  const { nodeIconMappings } = useNodeIconMappings();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const useIgrs = useIgrsPreference();
@@ -1582,6 +1587,30 @@ const MapComponent = ({
     }
   };
 
+  // Capture screenshot and save to gallery
+  const handleCaptureScreenshot = async () => {
+    // Only work on native platform
+    if (!Capacitor.isNativePlatform()) {
+      toast.error("Screenshot is only available on native platforms");
+      return;
+    }
+
+    try {
+      const toastId = toast.loading("Capturing screenshot...");
+      const result = await Screenshot.captureAndSave();
+      toast.dismiss(toastId);
+
+      if (result.success) {
+        toast.success("Screenshot saved to gallery!");
+      } else {
+        toast.error(result.error || "Failed to save screenshot");
+      }
+    } catch (error) {
+      console.error("Screenshot error:", error);
+      toast.error("Failed to capture screenshot");
+    }
+  };
+
   // Toggle user location visibility and focus to location when enabling
   const handleToggleUserLocation = async () => {
     const willShow = !showUserLocation;
@@ -2740,21 +2769,57 @@ const MapComponent = ({
     networkLayersVisible && (connectionError || noDataWarning);
   const { host, port } = useUdpConfigStore();
 
-  const handleNodeIconClick = useCallback(
-    (info: PickingInfo<unknown>) => {
-      if (!info || !info.object) {
-        return;
+  // Debounced zoom: only updates 1 second after user stops zooming
+  // This prevents visibility updates during active zooming
+  const [debouncedZoom, setDebouncedZoom] = useState(mapZoom);
+  
+  useEffect(() => {
+    // Clear any existing debounce timeout
+    if (zoomDebounceTimeoutRef.current) {
+      clearTimeout(zoomDebounceTimeoutRef.current);
+    }
+    
+    // Set new timeout to update debouncedZoom after 1 second of no zoom changes
+    zoomDebounceTimeoutRef.current = setTimeout(() => {
+      setDebouncedZoom(mapZoom);
+    }, 1000); // 1 second debounce
+    
+    // Cleanup on unmount or when mapZoom changes
+    return () => {
+      if (zoomDebounceTimeoutRef.current) {
+        clearTimeout(zoomDebounceTimeoutRef.current);
       }
+    };
+  }, [mapZoom]);
 
-      const node = info.object as Node;
-      const nodeId = node?.userId?.toString();
-      if (nodeId) {
-        setSelectedNodeForIcon(nodeId);
+  // Round debounced zoom to nearest 0.5 to reduce visibility update frequency
+  // Only update visibility when crossing 0.5, 1.0, 1.5, 2.0, etc. thresholds
+  const roundedZoom = useMemo(() => {
+    return Math.round(debouncedZoom * 2) / 2; // Round to nearest 0.5
+  }, [debouncedZoom]);
+
+  // Helper to compute zoom-based visibility (cheap check, no side effects)
+  // Uses roundedZoom (from debouncedZoom) to only update after user stops zooming
+  const getZoomVisibility = useCallback((layer: LayerProps): boolean => {
+    let minZoom: number | undefined = layer.minzoom;
+    let maxZoom = layer.maxzoom ?? 20;
+    
+    if (minZoom === undefined) {
+      const zoomRange = calculateLayerZoomRange(layer);
+      if (zoomRange) {
+        minZoom = zoomRange.minZoom;
+        maxZoom = zoomRange.maxZoom;
+      } else {
+        return true; // Show if can't calculate
       }
-      setHoverInfo(undefined);
-    },
-    [setHoverInfo]
-  );
+    }
+    
+    // minZoom is guaranteed to be defined here
+    // Use roundedZoom (from debouncedZoom) to reduce update frequency
+    return roundedZoom >= minZoom && roundedZoom <= maxZoom;
+  }, [roundedZoom]);
+
+
 
   const deckGlLayers = useMemo(() => {
     const isLayerVisible = (layer: LayerProps) => {
@@ -2774,18 +2839,14 @@ const MapComponent = ({
       color.length === 4 ? color : [...color, 255];
 
 
+    // Don't filter by zoom here - we'll use Deck.gl's visible prop instead
+    // This prevents layer recreation on zoom changes
     const visibleLayers = layers
       .filter(isLayerVisible)
       .filter(
         (layer) =>
           !(layer.type === "point" && layer.name?.startsWith("Polygon Point"))
-      )
-      .filter((layer) => {
-        const minZoomCheck =
-          layer.minzoom === undefined || mapZoom >= layer.minzoom;
-        const maxZoomCheck = mapZoom <= (layer.maxzoom ?? 20);
-        return minZoomCheck && maxZoomCheck;
-      });
+      );
     const pointLayers = visibleLayers.filter((l) => l.type === "point");
     const lineLayers = visibleLayers.filter(
       (l) => l.type === "line" && !(l.name || "").includes("Connection")
@@ -2845,15 +2906,19 @@ const MapComponent = ({
         return;
       }
 
+      const isVisible = layer.visible !== false && getZoomVisibility(layer);
+      
       deckLayers.push(
         new BitmapLayer({
           id: `${layer.id}-bitmap`,
           image,
           bounds: [minLng, minLat, maxLng, maxLat],
           pickable: true,
-          visible: layer.visible !== false,
-          minZoom: layer.minzoom,
+          visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
           onHover: handleLayerHover,
+          updateTriggers: {
+            visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
+          },
         })
       );
     });
@@ -2864,10 +2929,16 @@ const MapComponent = ({
         .map((l) => `${l.id}:${l.radius ?? 5}`)
         .join("|");
 
+      // Compute visibility: layer must be visible AND pass zoom check
+      const isVisible = pointLayers.some(l => 
+        l.visible !== false && getZoomVisibility(l)
+      );
+      
       deckLayers.push(
         new ScatterplotLayer({
           id: "point-layer",
           data: pointLayers,
+          visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
           getPosition: (d: LayerProps) => d.position!,
           getRadius: (d: LayerProps) => d.radius ?? 5, // Use radius for point layers
           radiusUnits: "pixels", // Use pixels instead of meters
@@ -2900,6 +2971,7 @@ const MapComponent = ({
             getFillColor: [
               pointLayers.map((l) => l.color?.join(",")).join("|"),
             ],
+            visible: [roundedZoom, pointLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
           },
         })
       );
@@ -2908,51 +2980,47 @@ const MapComponent = ({
     // User location layers will be added at the end to render on top
 
     if (lineLayers.length) {
-      const pathData = lineLayers.flatMap((layer) => {
-        const path = layer.path ?? [];
-        if (path.length < 2) return []; // Need at least 2 points for a line
+      const pathData = lineLayers
+        .map((layer) => {
+          const path = layer.path ?? [];
+          if (path.length < 2) return null; // Need at least 2 points for a line
 
-        return path
-          .slice(0, -1)
-          .map((point, index) => {
-            const nextPoint = path[index + 1];
-            // Validate coordinates are valid numbers
-            if (
-              !Array.isArray(point) ||
-              point.length < 2 ||
-              !Array.isArray(nextPoint) ||
-              nextPoint.length < 2 ||
-              typeof point[0] !== "number" ||
-              typeof point[1] !== "number" ||
-              typeof nextPoint[0] !== "number" ||
-              typeof nextPoint[1] !== "number" ||
-              isNaN(point[0]) ||
-              isNaN(point[1]) ||
-              isNaN(nextPoint[0]) ||
-              isNaN(nextPoint[1])
-            ) {
-              return null;
-            }
-            return {
-              sourcePosition: point,
-              targetPosition: nextPoint,
-              color: layer.color ? [...layer.color] : [0, 0, 0], // Black default
-              width: layer.lineWidth ?? 5,
-              layerId: layer.id,
-              layer: layer,
-              bearing: layer.bearing, // Include bearing for azimuthal lines
-            };
-          })
-          .filter((item): item is NonNullable<typeof item> => item !== null);
-      });
+          // Validate coordinates and filter out invalid points
+          const validPath = path.filter((point) => {
+            return (
+              Array.isArray(point) &&
+              point.length >= 2 &&
+              typeof point[0] === "number" &&
+              typeof point[1] === "number" &&
+              !isNaN(point[0]) &&
+              !isNaN(point[1])
+            );
+          }) as [number, number][];
+
+          if (validPath.length < 2) return null;
+
+          return {
+            path: validPath,
+            color: layer.color ? [...layer.color] : [0, 0, 0], // Black default
+            width: layer.lineWidth ?? 5,
+            layerId: layer.id,
+            layer,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null);
 
       if (pathData.length > 0) {
+        // Compute visibility: at least one layer must be visible AND pass zoom check
+        const isVisible = lineLayers.some(
+          (l) => l.visible !== false && getZoomVisibility(l)
+        );
+
         deckLayers.push(
-          new LineLayer({
+          new PathLayer({
             id: "line-layer",
             data: pathData,
-            getSourcePosition: (d: any) => d.sourcePosition,
-            getTargetPosition: (d: any) => d.targetPosition,
+            visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
+            getPath: (d: any) => d.path,
             getColor: (d: any) => {
               const color = d.color || [0, 0, 0]; // Black default
               return color.length === 3 ? [...color, 255] : color;
@@ -2964,6 +3032,12 @@ const MapComponent = ({
             pickable: true,
             pickingRadius: 20, // Larger picking radius for touch devices
             onHover: handleLayerHover,
+            updateTriggers: {
+              visible: [
+                roundedZoom,
+                lineLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom
+            },
           })
         );
       }
@@ -3006,10 +3080,16 @@ const MapComponent = ({
       });
 
       if (connectionPathData.length > 0) {
+        // Compute visibility: at least one layer must be visible AND pass zoom check
+        const isVisible = connectionLayers.some(l => 
+          l.visible !== false && getZoomVisibility(l)
+        );
+        
         deckLayers.push(
           new LineLayer({
             id: "connection-line-layer",
             data: connectionPathData,
+            visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
             getSourcePosition: (d: any) => d.sourcePosition,
             getTargetPosition: (d: any) => d.targetPosition,
             getColor: (d: any) => d.color,
@@ -3020,6 +3100,9 @@ const MapComponent = ({
             pickable: true,
             pickingRadius: 20, // Larger picking radius for touch devices
             onHover: handleLayerHover,
+            updateTriggers: {
+              visible: [roundedZoom, connectionLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            },
           })
         );
       }
@@ -3049,10 +3132,16 @@ const MapComponent = ({
         }));
       });
 
+      // Compute visibility: at least one layer must be visible AND pass zoom check
+      const isVisible = polygonLayers.some(l => 
+        l.visible !== false && getZoomVisibility(l)
+      );
+      
       deckLayers.push(
         new PolygonLayer({
           id: "polygon-layer",
           data: polygonData,
+          visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
           fp64: true, // Use 64-bit precision for Samsung devices
           parameters: { depthTest: false },
           getPolygon: (d: any) => d.ring,
@@ -3071,7 +3160,9 @@ const MapComponent = ({
           pickable: true,
           pickingRadius: 20, // Larger picking radius for touch devices
           onHover: handleLayerHover,
-
+          updateTriggers: {
+            visible: [roundedZoom, polygonLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+          },
         })
       );
 
@@ -3084,10 +3175,16 @@ const MapComponent = ({
       }));
 
       if (polygonOutlines.length) {
+        // Use same visibility as polygon layer
+        const isVisible = polygonLayers.some(l => 
+          l.visible !== false && getZoomVisibility(l)
+        );
+        
         deckLayers.push(
           new PathLayer({
             id: "polygon-outline-layer",
             data: polygonOutlines,
+            visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
             getPath: (d: any) => d.path,
             getColor: (d: any) => d.color,
             getWidth: (d: any) => d.width,
@@ -3098,6 +3195,9 @@ const MapComponent = ({
             pickable: true,
             pickingRadius: 20,
             onHover: handleLayerHover,
+            updateTriggers: {
+              visible: [roundedZoom, polygonLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            },
           })
         );
       }
@@ -3147,10 +3247,16 @@ const MapComponent = ({
       });
 
       if (pathData.length > 0) {
+        // Compute visibility: at least one layer must be visible AND pass zoom check
+        const isVisible = lineLayers.some(l => 
+          l.visible !== false && getZoomVisibility(l)
+        );
+        
         deckLayers.push(
           new LineLayer({
             id: "line-layer-vertices",
             data: pathData,
+            visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
             getSourcePosition: (d: any) => d.sourcePosition,
             getTargetPosition: (d: any) => d.targetPosition,
             getColor: (d: any) => {
@@ -3167,6 +3273,9 @@ const MapComponent = ({
             capRounded: true,
             jointRounded: true,
             parameters: { depthTest: false },
+            updateTriggers: {
+              visible: [roundedZoom, lineLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            },
           })
         );
 
@@ -3196,10 +3305,16 @@ const MapComponent = ({
         });
 
         if (vertexData.length > 0) {
+          // Use same visibility as line layer
+          const isVisible = lineLayers.some(l => 
+            l.visible !== false && getZoomVisibility(l)
+          );
+          
           deckLayers.push(
             new ScatterplotLayer({
               id: "line-vertex-layer",
               data: vertexData,
+              visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
               getPosition: (d: any) => d.position,
               getRadius: (d: any) => d.radius,
               radiusUnits: "meters",
@@ -3211,6 +3326,9 @@ const MapComponent = ({
               radiusMinPixels: 4,
               radiusMaxPixels: 10,
               parameters: { depthTest: false },
+              updateTriggers: {
+                visible: [roundedZoom, lineLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              },
             })
           );
         }
@@ -3272,11 +3390,17 @@ const MapComponent = ({
         })
         .filter(Boolean);
 
+      // Compute visibility: at least one layer must be visible AND pass zoom check
+      const isAzimuthVisible = azimuthLayers.some(l => 
+        l.visible !== false && getZoomVisibility(l)
+      );
+      
       if (azimuthLineData.length) {
         deckLayers.push(
           new LineLayer({
             id: "azimuth-lines-layer",
             data: azimuthLineData,
+            visible: isAzimuthVisible, // Use Deck.gl's visible prop - handled on GPU
             pickable: true,
             pickingRadius: 20,
             onHover: handleLayerHover,
@@ -3286,6 +3410,9 @@ const MapComponent = ({
             getWidth: (d: any) => d.width,
             getDashArray: (d: any) => d.dashArray ?? [0, 0],
             dashJustified: true,
+            updateTriggers: {
+              visible: [roundedZoom, azimuthLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            },
           })
         );
       }
@@ -3298,6 +3425,7 @@ const MapComponent = ({
               position: [number, number];
               text: string;
             }>,
+            visible: isAzimuthVisible, // Use Deck.gl's visible prop - handled on GPU
             pickable: false,
             getPosition: (d) => d.position,
             getText: (d) => d.text,
@@ -3310,6 +3438,9 @@ const MapComponent = ({
             getBackgroundColor: [255, 255, 255, 200],
             padding: [2, 4],
             characterSet: measurementCharacterSet,
+            updateTriggers: {
+              visible: [roundedZoom, azimuthLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            },
           })
         );
       }
@@ -3318,10 +3449,13 @@ const MapComponent = ({
     geoJsonLayers.forEach((layer) => {
       if (!layer.geojson) return;
       const lineWidth = layer.lineWidth ?? 5;
+      const isVisible = layer.visible !== false && getZoomVisibility(layer);
+      
       deckLayers.push(
         new GeoJsonLayer({
           id: layer.id,
           data: layer.geojson,
+          visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
           fp64: true, // Use 64-bit precision for Samsung devices
           parameters: { depthTest: false },
           pickable: true,
@@ -3348,6 +3482,7 @@ const MapComponent = ({
             getLineColor: [layer.color],
             getPointRadius: [layer.pointRadius],
             getLineWidth: [layer.lineWidth],
+            visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
           },
           onHover: handleLayerHover,
         })
@@ -3356,10 +3491,13 @@ const MapComponent = ({
 
     annotationLayers.forEach((layer) => {
       if (!layer.annotations?.length) return;
+      const isVisible = layer.visible !== false && getZoomVisibility(layer);
+      
       deckLayers.push(
         new TextLayer({
           id: layer.id,
           data: layer.annotations,
+          visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
           getPosition: (d: any) => d.position,
           getText: (d: any) => d.text,
           getColor: (d: any) => d.color ?? layer.color ?? [0, 0, 0],
@@ -3373,6 +3511,9 @@ const MapComponent = ({
           fontFamily: "Arial, sans-serif",
           fontWeight: "normal",
           onHover: handleLayerHover,
+          updateTriggers: {
+            visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
+          },
         })
       );
     });
@@ -3612,18 +3753,16 @@ const MapComponent = ({
   }, [
     layers,
     networkLayersVisible,
-    nodeIconMappings,
     isDrawing,
     drawingMode,
     currentPath,
     mousePosition,
     handleLayerHover,
-    handleNodeIconClick,
     udpLayers,
-    userLocation,
-    showUserLocation,
-    mapZoom,
-    tileServerUrl,
+    getUnkinkedRings,
+    closeRing,
+    roundedZoom, // Use roundedZoom (0.5 intervals) to reduce update frequency
+    getZoomVisibility, // Include zoom visibility helper
   ]);
 
   return (
@@ -4185,6 +4324,7 @@ const MapComponent = ({
         onRestoreSession={handleRestoreSession}
         onToggleUserLocation={handleToggleUserLocation}
         onResetHome={handleResetHome}
+        onCaptureScreenshot={handleCaptureScreenshot}
         showUserLocation={showUserLocation}
         onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
         isProcessingFiles={isProcessingFiles}

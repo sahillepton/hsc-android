@@ -17,6 +17,7 @@ import {
   Home,
   MapPin,
   Crop,
+  Camera,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -59,6 +60,7 @@ const ZoomControls = ({
   onRestoreSession,
   onToggleUserLocation,
   onResetHome,
+  onCaptureScreenshot,
   showUserLocation,
   isLayersBoxOpen,
   isMeasurementBoxOpen,
@@ -83,6 +85,7 @@ const ZoomControls = ({
   onRestoreSession?: () => void;
   onToggleUserLocation?: () => void;
   onResetHome?: () => void;
+  onCaptureScreenshot?: () => void;
   showUserLocation?: boolean;
   isLayersBoxOpen?: boolean;
   isMeasurementBoxOpen?: boolean;
@@ -120,9 +123,8 @@ const ZoomControls = ({
       return;
     }
 
-    // Use setInterval for more reliable timing on tablets
-    autoSaveIntervalRef.current = setInterval(async () => {
-      // Check if still enabled before saving
+    // Immediate save when auto-save is enabled, then start interval
+    const performSave = async () => {
       if (onSaveSessionRef.current) {
         setIsSaving(true);
         try {
@@ -133,7 +135,13 @@ const ZoomControls = ({
           setIsSaving(false);
         }
       }
-    }, 60000); // 30 seconds
+    };
+
+    // Trigger immediate save
+    performSave();
+
+    // Then set up interval for subsequent saves (30 seconds)
+    autoSaveIntervalRef.current = setInterval(performSave, 30000); // Fixed: 30 seconds
 
     // Cleanup on unmount or when disabled
     return () => {
@@ -503,6 +511,17 @@ const ZoomControls = ({
                 <Home className="h-4 w-4" />
               </Button>
             </div>
+          )}
+          {onCaptureScreenshot && (
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={onCaptureScreenshot}
+              className="h-10 w-10 hover:bg-white cursor-pointer"
+              title="Capture Screenshot"
+            >
+              <Camera className="h-4 w-4" />
+            </Button>
           )}
           {igrsToggleProps && (
             <div className="flex items-center gap-2 px-3 border-l border-slate-200">
