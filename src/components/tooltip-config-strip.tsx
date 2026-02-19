@@ -42,7 +42,7 @@ const TooltipConfigStrip = () => {
   return (
     <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40 bg-zinc-50/60">
       <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider shrink-0">
-        Annotations
+        Tooltip
       </span>
 
       {/* Font family dropdown */}
