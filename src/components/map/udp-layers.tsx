@@ -621,22 +621,71 @@ const parseTopologyBinary = (
 };
 
 /**
- * Convert SNR value to color gradient (red → yellow → green)
+ * Parse a hex color string (#RRGGBB) into [R, G, B]
+ */
+const hexToRgb = (hex: string): [number, number, number] => {
+  const h = hex.replace("#", "");
+  return [
+    parseInt(h.substring(0, 2), 16),
+    parseInt(h.substring(2, 4), 16),
+    parseInt(h.substring(4, 6), 16),
+  ];
+};
+
+/**
+ * Convert SNR value to color gradient using three configurable stops.
  * @param snr Signal-to-Noise Ratio (0-100)
+ * @param colors Tuple of 3 hex color strings [low, mid, high]
  * @returns RGBA color array [R, G, B, A]
  */
-const getSnrColor = (snr: number): [number, number, number, number] => {
-  // Normalize SNR to 0-1 range (max SNR = 100)
+const getSnrColor = (
+  snr: number,
+  colors: [string, string, string] = ["#FF0000", "#FFFF00", "#00FF00"]
+): [number, number, number, number] => {
   const normalized = Math.max(0, Math.min(1, snr / 100));
 
+  const low = hexToRgb(colors[0]);
+  const mid = hexToRgb(colors[1]);
+  const high = hexToRgb(colors[2]);
+
   if (normalized < 0.5) {
-    // Red to Yellow
-    const t = normalized * 2; // 0 to 1
-    return [255, Math.round(255 * t), 0, 200];
+    // Lerp low → mid
+    const t = normalized * 2;
+    return [
+      Math.round(low[0] + (mid[0] - low[0]) * t),
+      Math.round(low[1] + (mid[1] - low[1]) * t),
+      Math.round(low[2] + (mid[2] - low[2]) * t),
+      200,
+    ];
   } else {
-    // Yellow to Green
-    const t = (normalized - 0.5) * 2; // 0 to 1
-    return [Math.round(255 * (1 - t)), 255, 0, 200];
+    // Lerp mid → high
+    const t = (normalized - 0.5) * 2;
+    return [
+      Math.round(mid[0] + (high[0] - mid[0]) * t),
+      Math.round(mid[1] + (high[1] - mid[1]) * t),
+      Math.round(mid[2] + (high[2] - mid[2]) * t),
+      200,
+    ];
+  }
+};
+
+/**
+ * Interpolate line width from 3 breakpoints based on SNR value.
+ * @param snr Signal-to-Noise Ratio (0-100)
+ * @param widths [lowWidth, midWidth, highWidth]
+ * @returns interpolated pixel width
+ */
+const getSnrWidth = (
+  snr: number,
+  widths: [number, number, number] = [1, 3, 5]
+): number => {
+  const normalized = Math.max(0, Math.min(1, snr / 100));
+  if (normalized < 0.5) {
+    const t = normalized * 2;
+    return widths[0] + (widths[1] - widths[0]) * t;
+  } else {
+    const t = (normalized - 0.5) * 2;
+    return widths[1] + (widths[2] - widths[1]) * t;
   }
 };
 
@@ -657,37 +706,13 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     (state) => state.resetConnectionState
   );
   const { networkLayersVisible } = useNetworkLayersVisible();
-  const { getNodeSymbol, getLayerSymbol, getGroupSymbol, nodeSymbols, motherNodeSymbol } =
+  const { getNodeSymbol, getLayerSymbol, getGroupSymbol, nodeSymbols, motherNodeSymbol, snrColors, snrLineWidths } =
     useUdpSymbolsStore();
   const groupSymbols = useUdpSymbolsStore((state) => state.groupSymbols);
 
   useEffect(() => {
-    if (!networkLayersVisible) {
-      // Only cleanup if this is the last instance and connection exists
-      if (globalConnectionState.isConnected) {
-        // Clear global state
-        if (globalConnectionState.noDataTimeout) {
-          clearTimeout(globalConnectionState.noDataTimeout);
-          globalConnectionState.noDataTimeout = null;
-        }
-        if (globalConnectionState.staleCheckInterval) {
-          clearInterval(globalConnectionState.staleCheckInterval);
-          globalConnectionState.staleCheckInterval = null;
-        }
-        globalConnectionState.lastMessageTime = null;
-        if (globalConnectionState.listener) {
-          globalConnectionState.listener.remove();
-          globalConnectionState.listener = null;
-        }
-        Udp.closeAllSockets().catch(console.error);
-        globalConnectionState.isConnected = false;
-        globalConnectionState.isConnecting = false;
-      }
-
-      // Only reset connection state, preserve data so it comes back when toggled on
-      resetConnectionState();
-      return;
-    }
+    // UDP connection stays alive regardless of networkLayersVisible toggle.
+    // The toggle only controls rendering (handled in useMemo below).
 
     // If connection already exists, don't create a new one
     if (globalConnectionState.isConnected) {
@@ -951,7 +976,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         resetConnectionState();
       }
     };
-  }, [networkLayersVisible]);
+  }, []); // Connection lifecycle is independent of toggle — runs once on mount
 
   const udpLayers = useMemo(() => {
     if (!networkLayersVisible) {
@@ -1195,7 +1220,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             from: { longitude: fromNode.long, latitude: fromNode.lat },
             to: { longitude: toNode.long, latitude: toNode.lat },
             snr,
-            color: getSnrColor(snr),
+            color: getSnrColor(snr, snrColors),
+            width: getSnrWidth(snr, snrLineWidths),
           });
         }
       });
@@ -1210,10 +1236,10 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             getSourcePosition: (d: any) => [d.from.longitude, d.from.latitude],
             getTargetPosition: (d: any) => [d.to.longitude, d.to.latitude],
             getColor: (d: any) => d.color,
-            getWidth: 3,
+            getWidth: (d: any) => d.width,
             widthUnits: "pixels",
-            widthMinPixels: 2,
-            widthMaxPixels: 6,
+            widthMinPixels: 1,
+            widthMaxPixels: 12,
           })
         );
       }
@@ -1390,6 +1416,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     nodeSymbols,
     groupSymbols,
     motherNodeSymbol,
+    snrColors,
+    snrLineWidths,
   ]);
 
   return { udpLayers, connectionError, noDataWarning, isConnected };

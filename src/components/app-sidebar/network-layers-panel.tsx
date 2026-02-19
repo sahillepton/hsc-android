@@ -58,7 +58,7 @@ const NetworkLayersPanel = ({
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const topologyData = useUdpDataStore((state) => state.udpData.topology);
-  const { motherNodeSymbol, setMotherNodeSymbol, groupSymbols } =
+  const { motherNodeSymbol, setMotherNodeSymbol, groupSymbols, snrColors, setSnrColors, snrLineWidths, setSnrLineWidths } =
     useUdpSymbolsStore();
   const [showMotherIconPicker, setShowMotherIconPicker] = useState(false);
 
@@ -412,8 +412,7 @@ const NetworkLayersPanel = ({
               <div
                 className="flex-1 h-3 rounded-full"
                 style={{
-                  background:
-                    "linear-gradient(to right, rgb(255,0,0), rgb(255,255,0), rgb(0,255,0))",
+                  background: `linear-gradient(to right, ${snrColors[0]}, ${snrColors[1]}, ${snrColors[2]})`,
                 }}
               />
               <span className="text-[10px] text-zinc-500">100</span>
@@ -422,6 +421,127 @@ const NetworkLayersPanel = ({
               <span className="text-[9px] text-zinc-400">Poor</span>
               <span className="text-[9px] text-zinc-400">Medium</span>
               <span className="text-[9px] text-zinc-400">Good</span>
+            </div>
+
+            {/* SNR Color Customization */}
+            <div className="mt-2 pt-2 border-t border-border/30">
+              <div className="flex items-center justify-between gap-2">
+                {(["Poor", "Medium", "Good"] as const).map((label, idx) => {
+                  const colorValue = snrColors[idx];
+                  return (
+                    <div
+                      key={label}
+                      className="flex flex-col items-center gap-1"
+                    >
+                      <span className="text-[9px] text-zinc-500">{label}</span>
+                      <label className="relative cursor-pointer group">
+                        <div
+                          className="w-6 h-6 rounded-md border-2 border-zinc-300 group-hover:border-zinc-500 transition-colors shadow-sm"
+                          style={{ backgroundColor: colorValue }}
+                        />
+                        <input
+                          type="color"
+                          value={colorValue}
+                          onChange={(e) => {
+                            const newColor = e.target.value.toUpperCase();
+                            // Check for duplicate colors
+                            const otherColors = snrColors.filter(
+                              (_, i) => i !== idx
+                            );
+                            if (otherColors.includes(newColor)) return;
+                            const updated = [...snrColors] as [
+                              string,
+                              string,
+                              string,
+                            ];
+                            updated[idx] = newColor;
+                            setSnrColors(updated);
+                          }}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                          title={`Change ${label.toLowerCase()} color`}
+                        />
+                      </label>
+                    </div>
+                  );
+                })}
+
+                {/* Reset button */}
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-[9px] text-zinc-500">&nbsp;</span>
+                  <button
+                    onClick={() => {
+                      setSnrColors(["#FF0000", "#FFFF00", "#00FF00"]);
+                      setSnrLineWidths([1, 3, 5]);
+                    }}
+                    className="text-[9px] text-zinc-400 hover:text-zinc-600 px-1.5 py-1 rounded hover:bg-zinc-100 transition-colors"
+                    title="Reset colors and thickness to defaults"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* SNR Line Thickness */}
+            <div className="mt-2 pt-2 border-t border-border/30">
+              <div className="text-[10px] font-medium text-zinc-500 mb-1.5">
+                Line Thickness (px)
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                {(["Poor", "Medium", "Good"] as const).map((label, idx) => {
+                  const widthValue = snrLineWidths[idx];
+                  return (
+                    <div
+                      key={label}
+                      className="flex flex-col items-center gap-1"
+                    >
+                      <span className="text-[9px] text-zinc-500">{label}</span>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          onClick={() => {
+                            if (widthValue <= 1) return;
+                            const updated = [...snrLineWidths] as [number, number, number];
+                            updated[idx] = widthValue - 1;
+                            setSnrLineWidths(updated);
+                          }}
+                          className="w-5 h-5 flex items-center justify-center rounded border border-zinc-300 hover:bg-zinc-100 text-[10px] text-zinc-600 transition-colors"
+                          title="Decrease"
+                        >
+                          −
+                        </button>
+                        <span className="w-5 text-center text-[10px] font-mono text-zinc-700 font-semibold">
+                          {widthValue}
+                        </span>
+                        <button
+                          onClick={() => {
+                            if (widthValue >= 12) return;
+                            const updated = [...snrLineWidths] as [number, number, number];
+                            updated[idx] = widthValue + 1;
+                            setSnrLineWidths(updated);
+                          }}
+                          className="w-5 h-5 flex items-center justify-center rounded border border-zinc-300 hover:bg-zinc-100 text-[10px] text-zinc-600 transition-colors"
+                          title="Increase"
+                        >
+                          +
+                        </button>
+                      </div>
+                      {/* Preview line */}
+                      <div
+                        className="rounded-full mt-0.5"
+                        style={{
+                          width: "32px",
+                          height: `${widthValue}px`,
+                          backgroundColor: snrColors[idx],
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-[9px] text-zinc-500">&nbsp;</span>
+                  <span className="text-[9px] text-zinc-400">&nbsp;</span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -631,6 +751,15 @@ const NetworkLayersPanel = ({
   };
 
   const renderList = () => {
+    // When network layers are toggled off, hide data from panel too
+    if (!networkLayersVisible) {
+      return (
+        <div className="text-center text-sm text-muted-foreground py-3">
+          Network layers are hidden
+        </div>
+      );
+    }
+
     const hasNetworkMembers = networkMembersData.length > 0;
     const hasTopologyData = topologyData.nodes.size > 0;
 

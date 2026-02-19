@@ -1,5 +1,6 @@
 import React from "react";
 import { cn } from "./utils";
+import { useTooltipConfigStore } from "@/store/tooltip-config-store";
 
 /**
  * Tooltip Heading Component
@@ -16,11 +17,19 @@ export const TooltipHeading = ({
 }) => {
   return (
     <div className={cn("mb-1.5 pb-1 border-b border-gray-200", className)}>
-      <div className="font-semibold text-sm text-blue-600 tracking-tight">
+      <div
+        className="font-semibold text-blue-600 tracking-tight"
+        style={{ fontSize: "1.1em" }}
+      >
         {title}
       </div>
       {subtitle && (
-        <div className="text-xs text-gray-500 mt-0.5">{subtitle}</div>
+        <div
+          className="text-gray-500 mt-0.5"
+          style={{ fontSize: "0.9em" }}
+        >
+          {subtitle}
+        </div>
       )}
     </div>
   );
@@ -45,11 +54,12 @@ export const TooltipProperty = ({
         "flex justify-between items-center gap-2 py-0.5",
         className
       )}
+      style={{ fontSize: "inherit", fontFamily: "inherit" }}
     >
-      <span className="text-gray-700 font-medium text-xs min-w-[80px]">
+      <span className="text-gray-700 font-medium min-w-[80px]">
         {label}:
       </span>
-      <span className="text-gray-900 text-xs text-right font-mono">
+      <span className="text-gray-900 text-right font-mono">
         {value}
       </span>
     </div>
@@ -113,6 +123,7 @@ export const TooltipBox = ({
   className?: string;
   style?: React.CSSProperties;
 }) => {
+  const { tooltipFontFamily, tooltipFontSize } = useTooltipConfigStore();
   return (
     <div
       className={cn(
@@ -120,7 +131,11 @@ export const TooltipBox = ({
         maxWidth,
         className
       )}
-      style={style}
+      style={{
+        fontFamily: tooltipFontFamily,
+        fontSize: `${tooltipFontSize}px`,
+        ...style,
+      }}
     >
       {children}
     </div>

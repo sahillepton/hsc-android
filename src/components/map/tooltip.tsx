@@ -692,7 +692,7 @@ const Tooltip = () => {
           <TooltipHeading title="Network Node" />
           <TooltipProperties properties={properties} />
           <TooltipDivider />
-          <div className="text-gray-600 text-xs">
+          <div className="text-gray-600" style={{ fontSize: "0.9em" }}>
             Click on the node to change its icon
           </div>
         </TooltipBox>
@@ -746,7 +746,7 @@ const Tooltip = () => {
             <TooltipHeading title="Network Node" />
             <TooltipProperties properties={nodeProperties} />
             <TooltipDivider />
-            <div className="text-gray-600 text-xs">
+            <div className="text-gray-600" style={{ fontSize: "0.9em" }}>
               Click on the node to change its icon
             </div>
           </TooltipBox>
@@ -1075,7 +1075,7 @@ const Tooltip = () => {
     return (
       <TooltipBox>
         <TooltipHeading title="Map Feature" />
-        <div className="text-gray-600 text-sm">Hover for details</div>
+        <div className="text-gray-600" style={{ fontSize: "0.95em" }}>Hover for details</div>
       </TooltipBox>
     );
   };

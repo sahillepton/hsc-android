@@ -1,5 +1,6 @@
 import { X, RulerDimensionLine } from "lucide-react";
 import SketchLayersPanel from "@/components/app-sidebar/sketch-layers-panel";
+import TooltipConfigStrip from "@/components/tooltip-config-strip";
 
 const MeasurementBox = ({ onClose }: { onClose: () => void }) => {
   return (
@@ -23,6 +24,7 @@ const MeasurementBox = ({ onClose }: { onClose: () => void }) => {
           <X className="h-4 w-4" />
         </button>
       </div>
+      <TooltipConfigStrip />
       <div className="p-2 pt-0 flex-1 overflow-hidden flex flex-col">
         <SketchLayersPanel
           isOpen={true}
