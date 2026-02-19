@@ -11,14 +11,13 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.net.InetAddress;
+import java.net.InetSocketAddress;
 
 @CapacitorPlugin(name = "Udp")
 public class UdpPlugin extends Plugin {
 
     private DatagramSocket socket;
-    private InetAddress serverAddress;
-    private int serverPort;
+    private static final int LISTEN_PORT = 40074; // Fixed port for receiving topology data from intranet
     private boolean listening = false;
 
     // Optional: test event from MainActivity
@@ -31,76 +30,39 @@ public class UdpPlugin extends Plugin {
     @PluginMethod
     public void create(PluginCall call) {
         try {
-            // Match your JS: { address, port }
-            String host = call.getString("address");
-            if (host == null) host = call.getString("host");  // fallback
-            Integer port = call.getInt("port");
-            if (port == null) port = call.getInt("remotePort");
-
-            if (host == null || port == null) {
-                JSObject data = call.getData();
-                Log.e("UdpPlugin", "Host or port missing. Got: " + data.toString());
-                call.reject("Host or port missing");
-                return;
+            // Close existing socket if any
+            if (socket != null && !socket.isClosed()) {
+                listening = false;
+                socket.close();
+                socket = null;
             }
 
-            serverAddress = InetAddress.getByName(host);
-            serverPort = port;
+            // Bind to fixed port 40074 to receive data from intranet
+            socket = new DatagramSocket(null);
+            socket.setReuseAddress(true);
+            socket.bind(new InetSocketAddress(LISTEN_PORT));
 
-            socket = new DatagramSocket(); // UDP client socket
+            Log.d("UdpPlugin", "UDP socket bound to port " + LISTEN_PORT);
 
             startListening();
 
             JSObject ret = new JSObject();
             ret.put("ok", true);
-            ret.put("host", host);
-            ret.put("port", port);
+            ret.put("port", LISTEN_PORT);
             call.resolve(ret);
 
         } catch (Exception e) {
+            Log.e("UdpPlugin", "UDP create failed: " + e.getMessage(), e);
             call.reject("UDP create failed: " + e.getMessage());
         }
     }
 
     @PluginMethod
     public void send(PluginCall call) {
-        try {
-            String msg = call.getString("data");
-            if (msg == null) {
-                call.reject("No data");
-                return;
-            }
-
-            // Allow overriding address/port per send (since JS passes them)
-            String host = call.getString("address");
-            Integer port = call.getInt("port");
-            InetAddress addr = serverAddress;
-            int p = serverPort;
-
-            if (host != null) {
-                addr = InetAddress.getByName(host);
-            }
-            if (port != null) {
-                p = port;
-            }
-
-            if (socket == null || addr == null) {
-                call.reject("Socket not created. Call create() first.");
-                return;
-            }
-
-            byte[] buf = msg.getBytes();
-            DatagramPacket packet = new DatagramPacket(buf, buf.length, addr, p);
-            socket.send(packet);
-
-            JSObject ret = new JSObject();
-            ret.put("ok", true);
-            ret.put("bytesSent", buf.length);
-            call.resolve(ret);
-
-        } catch (Exception e) {
-            call.reject("UDP send failed: " + e.getMessage());
-        }
+        // No longer needed - receive-only socket on port 40074
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
+        call.resolve(ret);
     }
 
     private void startListening() {
@@ -127,14 +89,14 @@ public class UdpPlugin extends Plugin {
                     }
 
                     JSObject data = new JSObject();
-                    data.put("buffer", jsBytes);    // 👈 your JS will see event.buffer
+                    data.put("buffer", jsBytes);    // your JS will see event.buffer
                     data.put("byteLength", len);    // helper if needed
 
                     notifyListeners("udpMessage", data, true);
                 }
 
             } catch (Exception e) {
-                Log.e("UdpPlugin", "Error in UDP listen loop: " + e.getMessage());
+                Log.e("UdpPlugin", "Error in UDP listen loop: " + e.getMessage(), e);
             }
         }).start();
     }
@@ -146,6 +108,7 @@ public class UdpPlugin extends Plugin {
         if (socket != null && !socket.isClosed()) {
             socket.close();
         }
+        socket = null;
 
         JSObject ret = new JSObject();
         ret.put("ok", true);

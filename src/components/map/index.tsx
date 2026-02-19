@@ -20,7 +20,7 @@ import NetworkBox from "./network-box";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
-import UdpConfigDialog from "./udp-config-dialog";
+// import UdpConfigDialog from "./udp-config-dialog"; // Removed: port is now fixed at 40074
 import OfflineLocationTracker from "./offline-location-tracker";
 import { initializeTileServer } from "./tile-folder-dialog";
 import {
@@ -28,7 +28,7 @@ import {
   useRubberBandOverlay,
   calculateRectangleBounds,
 } from "./rubber-band-overlay";
-import { useUdpConfigStore } from "@/store/udp-config-store";
+// import { useUdpConfigStore } from "@/store/udp-config-store"; // Removed: port is now fixed at 40074
 // import { useDefaultLayers } from "@/hooks/use-default-layers";
 import {
   useCurrentPath,
@@ -73,7 +73,7 @@ import { ZipFolder } from "@/plugins/zip-folder";
 import { Screenshot } from "@/plugins/screenshot";
 import { Capacitor } from "@capacitor/core";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
-import { MAX_UPLOAD_FILES, HSC_FILES_DIR } from "@/sessions/constants";
+import { MAX_UPLOAD_FILES, HSC_FILES_DIR, HSC_BASE_DIR } from "@/sessions/constants";
 import {
   upsertManifestEntry,
   finalizeSaveManifest,
@@ -86,6 +86,127 @@ import {
   createVectorLayer,
 } from "@/utils/parser";
 import { generateRandomColor } from "@/lib/utils";
+import { Settings } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+
+// Settings Button Component
+function SettingsButton() {
+  const [isOpen, setIsOpen] = useState(false);
+
+  // Get storage paths
+  const getStoragePaths = () => {
+    if (!Capacitor.isNativePlatform()) {
+      return {
+        tiles: "Internal storage/Documents/tiles",
+        screenshots: "Internal storage/Pictures/HSC Maps",
+        sessions: `Internal storage/documents/${HSC_BASE_DIR}`,
+        layers: `Internal storage/Android/data/org.deal.mcsa/files/documents/${HSC_FILES_DIR}`,
+      };
+    }
+
+    // Get app ID to determine the correct package path
+    const appId = Capacitor.getPlatform() === "android" 
+      ? "org.deal.mcsa" // MCSA app package
+      : "com.example.app"; // hsc-android package (fallback)
+
+    return {
+      tiles: "Documents/tiles",
+      screenshots: "Pictures/HSC Maps",
+      sessions: `Android/data/${appId}/files/documents/${HSC_BASE_DIR}`,
+      layers: `Android/data/${appId}/files/documents/${HSC_FILES_DIR}`,
+    };
+  };
+
+  const paths = getStoragePaths();
+
+  return (
+    <div className="absolute top-2 right-2 z-50 pointer-events-none">
+      <Popover open={isOpen} onOpenChange={setIsOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-10 w-10 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm hover:bg-white pointer-events-auto"
+            title="Storage Paths"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          className="w-80 p-4 bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm"
+          align="end"
+          side="bottom"
+          sideOffset={8}
+          onOpenAutoFocus={(e) => e.preventDefault()}
+        >
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+              <Settings className="h-4 w-4 text-slate-700" />
+              <h3 className="text-sm font-semibold text-slate-800">
+                Storage Paths
+              </h3>
+            </div>
+
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-blue-500"></div>
+                  <span className="text-xs font-semibold text-slate-700 uppercase">
+                    Map Tiles
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 pl-4 font-mono break-all">
+                  {paths.tiles}
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-green-500"></div>
+                  <span className="text-xs font-semibold text-slate-700 uppercase">
+                    Screenshots
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 pl-4 font-mono break-all">
+                  {paths.screenshots}
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-purple-500"></div>
+                  <span className="text-xs font-semibold text-slate-700 uppercase">
+                    Session Files
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 pl-4 font-mono break-all">
+                  {paths.sessions}
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-orange-500"></div>
+                  <span className="text-xs font-semibold text-slate-700 uppercase">
+                    Layer Files
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 pl-4 font-mono break-all">
+                  {paths.layers}
+                </p>
+              </div>
+            </div>
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
 
 function DeckGLOverlay({ layers }: { layers: any[] }) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
@@ -239,16 +360,7 @@ const MapComponent = ({
     };
   }, []);
 
-  // Show UDP config dialog on app start (only once) if no config exists
-  useEffect(() => {
-    const hasShownConfig = sessionStorage.getItem("udp-config-shown");
-    const { host, port } = useUdpConfigStore.getState();
-    // Only auto-show if we haven't shown it before AND no config is set
-    if (!hasShownConfig && (!host || !host.trim() || !port || port <= 0)) {
-      setIsUdpConfigDialogOpen(true);
-      sessionStorage.setItem("udp-config-shown", "true");
-    }
-  }, []);
+  // UDP config dialog removed - port is now fixed at 40074, data arrives automatically from intranet
 
   const { networkLayersVisible } = useNetworkLayersVisible();
   const { dragStart, setDragStart } = useDragStart();
@@ -294,8 +406,7 @@ const MapComponent = ({
   );
   const [mapZoom, setMapZoom] = useState(4);
   const [mapBearing, setMapBearing] = useState(0);
-  const [isUdpConfigDialogOpen, setIsUdpConfigDialogOpen] = useState(false);
-  const [configKey, setConfigKey] = useState(0);
+  // UDP config dialog state removed - port is now fixed at 40074
   const [showConnectionError, setShowConnectionError] = useState(false);
   const [isCameraPopoverOpen, setIsCameraPopoverOpen] = useState(false);
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
@@ -329,9 +440,7 @@ const MapComponent = ({
                 console.error(
                   `CAPACITOR_HAHA [Tile Request] FAILED: z=${z}, x=${x}, y=${y} - Status: ${response.status} ${response.statusText}`
                 );
-              } else {
-                
-              }
+              } 
               return response;
             } catch (error) {
               console.error(
@@ -2767,7 +2876,7 @@ const MapComponent = ({
 
   const notificationsActive =
     networkLayersVisible && (connectionError || noDataWarning);
-  const { host, port } = useUdpConfigStore();
+  // UDP config store removed - port is now fixed at 40074
 
   // Debounced zoom: only updates 1 second after user stops zooming
   // This prevents visibility updates during active zooming
@@ -3873,12 +3982,12 @@ const MapComponent = ({
               <div className="text-xs space-y-1 text-gray-700">
                 <div>Failed to connect to UDP server</div>
                 <div className="text-gray-600">
-                  Host: {host}:{port}
+                  Port: 40074 (fixed)
                 </div>
                 <div className="text-gray-500 text-[10px] mt-1">
                   {connectionError.includes("Error:")
                     ? connectionError.split("Error:")[1]?.trim()
-                    : "Please check your configuration"}
+                    : "Please check network connectivity"}
                 </div>
               </div>
             </div>
@@ -3916,7 +4025,7 @@ const MapComponent = ({
               <div className="text-xs space-y-1 text-gray-700">
                 <div>{noDataWarning}</div>
                 <div className="text-gray-600">
-                  Host: {host}:{port}
+                  Port: 40074 (fixed)
                 </div>
               </div>
             </div>
@@ -3957,7 +4066,7 @@ const MapComponent = ({
             className="text-[10px] md:text-xs font-mono text-gray-700 font-bold capitalize "
             style={{ color: "rgb(255, 255, 255)", letterSpacing: "0.08em" }}
           >
-            {host}:{port}
+            UDP:40074
           </span>
         </div>
       )}
@@ -4283,6 +4392,8 @@ const MapComponent = ({
       </Map>
 
       <Tooltip />
+      {/* Settings Button with Paths Info */}
+      <SettingsButton />
       {/* COMMENTED OUT: HTML file input - using NativeUploader directly to avoid double picker */}
       <ZoomControls
         mapRef={mapRef}
@@ -4326,7 +4437,6 @@ const MapComponent = ({
         onResetHome={handleResetHome}
         onCaptureScreenshot={handleCaptureScreenshot}
         showUserLocation={showUserLocation}
-        onOpenConnectionConfig={() => setIsUdpConfigDialogOpen(true)}
         isProcessingFiles={isProcessingFiles}
         isExporting={isExporting}
         cameraPopoverProps={{
@@ -4354,16 +4464,7 @@ const MapComponent = ({
         onToggleRubberBand={() => setRubberBandMode((prev) => !prev)}
       />
 
-      {/* UDP Config Dialog */}
-      <UdpConfigDialog
-        key={configKey}
-        isOpen={isUdpConfigDialogOpen}
-        onClose={() => setIsUdpConfigDialogOpen(false)}
-        onConfigSet={() => {
-          // Trigger reconnection by updating key
-          setConfigKey((prev) => prev + 1);
-        }}
-      />
+      {/* UDP Config Dialog removed - port is now fixed at 40074, data arrives automatically */}
     </div>
   );
 };

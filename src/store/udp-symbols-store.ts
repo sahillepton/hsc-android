@@ -16,6 +16,9 @@ interface UdpSymbolsState {
   setGroupSymbol: (groupId: string, symbol: string) => void;
   getGroupSymbol: (groupId: string) => string | undefined;
   clearGroupSymbol: (groupId: string) => void;
+  // Mother node symbol
+  motherNodeSymbol: string; // Default: "mother-fighter"
+  setMotherNodeSymbol: (symbol: string) => void;
 }
 
 export const useUdpSymbolsStore = create<UdpSymbolsState>()(
@@ -90,6 +93,10 @@ export const useUdpSymbolsStore = create<UdpSymbolsState>()(
           delete newSymbols[key];
           return { groupSymbols: newSymbols };
         }),
+      // Mother node symbol
+      motherNodeSymbol: "mother-fighter",
+      setMotherNodeSymbol: (symbol: string) =>
+        set({ motherNodeSymbol: symbol || "mother-fighter" }),
     }),
     {
       name: "udp-symbols-storage", // localStorage key

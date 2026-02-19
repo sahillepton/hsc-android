@@ -6,7 +6,6 @@ import {
   ZoomIn,
   Waypoints,
   LayersIcon,
-  WifiPen,
   WifiOff,
   Ruler,
   Network,
@@ -51,7 +50,6 @@ const ZoomControls = ({
   zoom,
   bearing = 0,
   onToggleLayersBox,
-  onOpenConnectionConfig,
   onToggleMeasurementBox,
   onToggleNetworkBox,
   onUpload,
@@ -76,7 +74,6 @@ const ZoomControls = ({
   zoom: number;
   bearing?: number;
   onToggleLayersBox?: () => void;
-  onOpenConnectionConfig?: () => void;
   onToggleMeasurementBox?: () => void;
   onToggleNetworkBox?: () => void;
   onUpload?: () => void;
@@ -488,17 +485,6 @@ const ZoomControls = ({
           </div>
         </div>
         <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
-          {onOpenConnectionConfig && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-10 w-10 text-slate-800 hover:text-foreground  rounded-none"
-              title="Connection Settings"
-              onClick={onOpenConnectionConfig}
-            >
-              <WifiPen className="h-4 w-4" />
-            </Button>
-          )}
           {onResetHome && (
             <div>
               <Button

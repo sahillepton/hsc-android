@@ -2,24 +2,17 @@ import { useEffect, useMemo } from "react";
 import { IconLayer, LineLayer } from "@deck.gl/layers";
 import { useNetworkLayersVisible } from "@/store/layers-store";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
-import { useUdpConfigStore } from "@/store/udp-config-store";
 import { useUdpDataStore } from "@/store/udp-data-store";
 import { Udp } from "../../plugins/udp";
 
-// Test mode configuration - set to true to use WebSocket instead of UDP
-const IS_TEST = false;
-const WS_IP = "192.168.1.213";
-const WS_PORT = 8080;
-
 // Shared connection state to prevent multiple instances from creating duplicate connections
-let globalConnectionState = {
+const globalConnectionState = {
   isConnected: false,
   isConnecting: false,
-  host: null as string | null,
-  port: null as number | null,
-  websocket: null as WebSocket | null,
   listener: null as { remove: () => void } | null,
   noDataTimeout: null as NodeJS.Timeout | null,
+  staleCheckInterval: null as NodeJS.Timeout | null,
+  lastMessageTime: null as number | null,
 };
 
 // UdpLayerData interface is now defined in udp-data-store.ts
@@ -35,7 +28,7 @@ const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
     parseInt(bin.slice(start, start + len), 2);
 
   const readI16 = (start: number) => {
-    let v = readBits(start, 16);
+    const v = readBits(start, 16);
     return v & 0x8000 ? v - 0x10000 : v;
   };
 
@@ -422,24 +415,41 @@ const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
 };
 
 /**
- * Parse topology binary data from UDP server
- * Format: currentNodeId (UINT8, skip), numFusedNodes (UINT8), then for each node:
- *   - node.id (UINT8)
- *   - neighbor count (UINT8)
- *   - neighbors: neighbor.id (UINT8), neighbor.snr (UINT8) [repeated]
- *   - latitude (INT32 big-endian, microdegrees)
- *   - longitude (INT32 big-endian, microdegrees)
- *   - altitude (UINT16 big-endian, skip but read)
+ * Parse topology binary data from UDP server (NEW FORMAT)
+ *
+ * Structure:
+ * - ExtMsgType ext_msg_type (1 byte)
+ * - uint16_t payload_length (2 bytes, big-endian)
+ * - topoForMcsa:
+ *   - UINT8 node_id (1 byte)
+ *   - UINT8 numFusedNodes (1 byte)
+ *   - topoWithNodeIP[] (numFusedNodes entries):
+ *     - UINT8 IP[4] (4 bytes, big-endian / network byte order)
+ *     - topology:
+ *       - UINT8 id (1 byte)
+ *       - UINT8 numNeighbors (1 byte)
+ *       - entries[] (numNeighbors entries):
+ *         - UINT8 id (1 byte)
+ *         - UINT8 snr (1 byte)
+ *     - positional:
+ *       - INT32 latitude (4 bytes, big-endian, microdegrees)
+ *       - INT32 longitude (4 bytes, big-endian, microdegrees)
+ *       - UINT16 altitude (2 bytes, big-endian)
+ *     - int8_t RSSI (1 byte, signed, -128 to 127)
  */
 const parseTopologyBinary = (
   buffer: ArrayBuffer
 ): {
+  motherNodeId: number | null;
   nodes: Map<
     number,
     {
       id: number;
+      ip: string;
       lat: number;
       long: number;
+      altitude: number;
+      rssi: number;
       neighbors: Array<{ id: number; snr: number }>;
     }
   >;
@@ -449,79 +459,106 @@ const parseTopologyBinary = (
   const bufferLength = buffer.byteLength;
   let offset = 0;
 
-  // Helper function to check if we have enough bytes remaining
   const hasEnoughBytes = (bytesNeeded: number): boolean => {
     return offset + bytesNeeded <= bufferLength;
   };
 
-  // Skip first byte (currentNodeId - we don't need it)
+  const emptyResult = { motherNodeId: null as number | null, nodes: new Map() as Map<number, any>, connections: new Map() as Map<string, number> };
+
+  // --- Header ---
+
+  // ExtMsgType (1 byte)
   if (!hasEnoughBytes(1)) {
     console.warn(
-      "[Topology Parser] Buffer too small: cannot read currentNodeId"
+      "[Topology Parser] Buffer too small: cannot read ext_msg_type"
     );
-    return { nodes: new Map(), connections: new Map() };
+    return emptyResult;
   }
   offset += 1;
 
-  // Read number of fused nodes (UINT8)
-  if (!hasEnoughBytes(1)) {
-    console.warn("[Topology Parser] Buffer too small: cannot read numNodes");
-    return { nodes: new Map(), connections: new Map() };
+  // payload_length (2 bytes, big-endian)
+  if (!hasEnoughBytes(2)) {
+    console.warn(
+      "[Topology Parser] Buffer too small: cannot read payload_length"
+    );
+    return emptyResult;
   }
-  const numNodes = view.getUint8(offset);
+  offset += 2;
+
+  // --- topoForMcsa ---
+
+  // node_id (1 byte) — the mother node's ID
+  if (!hasEnoughBytes(1)) {
+    console.warn("[Topology Parser] Buffer too small: cannot read node_id");
+    return emptyResult;
+  }
+  const motherNodeId = view.getUint8(offset);
+  offset += 1;
+
+  // numFusedNodes (1 byte)
+  if (!hasEnoughBytes(1)) {
+    console.warn(
+      "[Topology Parser] Buffer too small: cannot read numFusedNodes"
+    );
+    return emptyResult;
+  }
+  const numFusedNodes = view.getUint8(offset);
   offset += 1;
 
   const nodes = new Map<
     number,
     {
       id: number;
+      ip: string;
       lat: number;
       long: number;
+      altitude: number;
+      rssi: number;
       neighbors: Array<{ id: number; snr: number }>;
     }
   >();
-
   const connections = new Map<string, number>();
 
-  // Parse each node
-  for (let i = 0; i < numNodes; i++) {
-    // Check if we have enough bytes for node ID (1 byte)
+  // --- topoWithNodeIP[] ---
+  for (let i = 0; i < numFusedNodes; i++) {
+    // IP[4] (4 bytes, big-endian / network byte order)
+    if (!hasEnoughBytes(4)) {
+      console.warn(
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read IP`
+      );
+      break;
+    }
+    const ip = `${view.getUint8(offset)}.${view.getUint8(offset + 1)}.${view.getUint8(offset + 2)}.${view.getUint8(offset + 3)}`;
+    offset += 4;
+
+    // topology.id (1 byte)
     if (!hasEnoughBytes(1)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${
-          i + 1
-        }/${numNodes}: cannot read node ID. Parsed ${
-          nodes.size
-        } nodes successfully.`
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read topology id`
       );
-      break; // Stop parsing, return what we have
+      break;
     }
     const nodeId = view.getUint8(offset);
     offset += 1;
 
-    // Check if we have enough bytes for neighbor count (1 byte)
+    // topology.numNeighbors (1 byte)
     if (!hasEnoughBytes(1)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read neighbor count. Parsed ${nodes.size} nodes successfully.`
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read numNeighbors`
       );
       break;
     }
-    const neighborCount = view.getUint8(offset);
+    const numNeighbors = view.getUint8(offset);
     offset += 1;
 
-    // Read neighbors
+    // entries[] (numNeighbors × 2 bytes)
     const neighbors: Array<{ id: number; snr: number }> = [];
-    for (let j = 0; j < neighborCount; j++) {
-      // Check if we have enough bytes for neighbor (2 bytes: id + snr)
+    for (let j = 0; j < numNeighbors; j++) {
       if (!hasEnoughBytes(2)) {
         console.warn(
-          `[Topology Parser] Buffer too small at node ${nodeId}, neighbor ${
-            j + 1
-          }/${neighborCount}: cannot read neighbor data. Parsed ${
-            nodes.size
-          } nodes successfully.`
+          `[Topology Parser] Buffer too small at node ${nodeId}, neighbor ${j + 1}/${numNeighbors}`
         );
-        break; // Break out of neighbor loop, continue to next node if possible
+        break;
       }
       const neighborId = view.getUint8(offset);
       offset += 1;
@@ -529,51 +566,58 @@ const parseTopologyBinary = (
       offset += 1;
       neighbors.push({ id: neighborId, snr });
 
-      // Create connection key (always smaller ID first to avoid duplicates)
+      // Connection key (smaller ID first to avoid duplicates)
       const smallerId = Math.min(nodeId, neighborId);
       const largerId = Math.max(nodeId, neighborId);
-      const connectionKey = `${smallerId}_${largerId}`;
-
-      // Store connection (overwrite if exists, use latest SNR)
-      connections.set(connectionKey, snr);
+      connections.set(`${smallerId}_${largerId}`, snr);
     }
 
-    // Check if we have enough bytes for latitude (4 bytes INT32)
+    // positional.latitude (INT32, big-endian, microdegrees)
     if (!hasEnoughBytes(4)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read latitude. Parsed ${nodes.size} nodes successfully.`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read latitude`
       );
       break;
     }
-    const latMicroDegrees = view.getInt32(offset, false); // false = big-endian
-    const lat = latMicroDegrees / 1000000;
+    const lat = view.getInt32(offset, false) / 1000000;
     offset += 4;
 
-    // Check if we have enough bytes for longitude (4 bytes INT32)
+    // positional.longitude (INT32, big-endian, microdegrees)
     if (!hasEnoughBytes(4)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read longitude. Parsed ${nodes.size} nodes successfully.`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read longitude`
       );
       break;
     }
-    const longMicroDegrees = view.getInt32(offset, false); // false = big-endian
-    const long = longMicroDegrees / 1000000;
+    const long = view.getInt32(offset, false) / 1000000;
     offset += 4;
 
-    // Check if we have enough bytes for altitude (2 bytes UINT16)
+    // positional.altitude (UINT16, big-endian)
     if (!hasEnoughBytes(2)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read altitude. Parsed ${nodes.size} nodes successfully.`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read altitude`
       );
       break;
     }
-    // Skip altitude (UINT16, big-endian) - read but don't store
+    const altitude = view.getUint16(offset, false);
     offset += 2;
 
-    nodes.set(nodeId, { id: nodeId, lat, long, neighbors });
+    // RSSI (int8_t, signed, -128 to 127)
+    if (!hasEnoughBytes(1)) {
+      console.warn(
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read RSSI`
+      );
+      break;
+    }
+    const rssi = view.getInt8(offset);
+    offset += 1;
+
+    nodes.set(nodeId, { id: nodeId, ip, lat, long, altitude, rssi, neighbors });
   }
 
-  return { nodes, connections };
+  console.log("[Topology] Parsed nodes:", JSON.stringify(Array.from(nodes.values()), null, 2));
+
+  return { motherNodeId, nodes, connections };
 };
 
 /**
@@ -609,44 +653,35 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
   const setNoDataWarning = useUdpDataStore((state) => state.setNoDataWarning);
   const isConnected = useUdpDataStore((state) => state.isConnected);
   const setIsConnected = useUdpDataStore((state) => state.setIsConnected);
-  const reset = useUdpDataStore((state) => state.reset);
   const resetConnectionState = useUdpDataStore(
     (state) => state.resetConnectionState
   );
   const { networkLayersVisible } = useNetworkLayersVisible();
-  const { getNodeSymbol, getLayerSymbol, getGroupSymbol, nodeSymbols } =
+  const { getNodeSymbol, getLayerSymbol, getGroupSymbol, nodeSymbols, motherNodeSymbol } =
     useUdpSymbolsStore();
   const groupSymbols = useUdpSymbolsStore((state) => state.groupSymbols);
-  const { host, port } = useUdpConfigStore();
 
   useEffect(() => {
     if (!networkLayersVisible) {
       // Only cleanup if this is the last instance and connection exists
-      if (
-        globalConnectionState.isConnected &&
-        globalConnectionState.host === host &&
-        globalConnectionState.port === port
-      ) {
+      if (globalConnectionState.isConnected) {
         // Clear global state
         if (globalConnectionState.noDataTimeout) {
           clearTimeout(globalConnectionState.noDataTimeout);
           globalConnectionState.noDataTimeout = null;
         }
-        if (globalConnectionState.websocket) {
-          globalConnectionState.websocket.close();
-          globalConnectionState.websocket = null;
+        if (globalConnectionState.staleCheckInterval) {
+          clearInterval(globalConnectionState.staleCheckInterval);
+          globalConnectionState.staleCheckInterval = null;
         }
+        globalConnectionState.lastMessageTime = null;
         if (globalConnectionState.listener) {
           globalConnectionState.listener.remove();
           globalConnectionState.listener = null;
         }
-        if (!IS_TEST) {
-          Udp.closeAllSockets().catch(console.error);
-        }
+        Udp.closeAllSockets().catch(console.error);
         globalConnectionState.isConnected = false;
         globalConnectionState.isConnecting = false;
-        globalConnectionState.host = null;
-        globalConnectionState.port = null;
       }
 
       // Only reset connection state, preserve data so it comes back when toggled on
@@ -654,33 +689,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       return;
     }
 
-    // For test mode, use WebSocket; otherwise check UDP config
-    if (IS_TEST) {
-      // WebSocket mode - use hardcoded WS_IP and WS_PORT
-      if (!WS_IP || !WS_PORT || WS_PORT <= 0) {
-        reset();
-        return;
-      }
-    } else {
-      // UDP mode - check if host or port are configured
-      if (!host || !host.trim() || !port || port <= 0) {
-        reset();
-        return;
-      }
-    }
-
-    // Check if connection already exists for the same host/port
-    const connectionKey = `${host}:${port}`;
-    const existingConnectionKey =
-      globalConnectionState.host && globalConnectionState.port
-        ? `${globalConnectionState.host}:${globalConnectionState.port}`
-        : null;
-
-    // If connection already exists for same host/port, don't create a new one
-    if (
-      globalConnectionState.isConnected &&
-      existingConnectionKey === connectionKey
-    ) {
+    // If connection already exists, don't create a new one
+    if (globalConnectionState.isConnected) {
       // Connection already exists, just sync local state
       setIsConnected(true);
       setConnectionError(null);
@@ -689,200 +699,80 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     }
 
     // If already connecting, don't start another connection
-    if (
-      globalConnectionState.isConnecting &&
-      existingConnectionKey === connectionKey
-    ) {
+    if (globalConnectionState.isConnecting) {
       return;
     }
 
     // Mark as connecting
     globalConnectionState.isConnecting = true;
-    globalConnectionState.host = host;
-    globalConnectionState.port = port;
 
     let connectionEstablished = false;
     let noDataTimeout: NodeJS.Timeout | null = null;
-    let websocket: WebSocket | null = null;
     setConnectionError(null);
     setNoDataWarning(null);
 
     const connectUdp = async () => {
-      if (IS_TEST) {
-        // Use WebSocket for testing
-        try {
-          const wsUrl = `ws://${WS_IP}:${WS_PORT}`;
-          websocket = new WebSocket(wsUrl);
-          websocket.binaryType = "arraybuffer";
+      try {
+        // Create UDP socket bound to port 40074 (handled in native plugin)
+        await Udp.create({});
+        connectionEstablished = true;
+        globalConnectionState.isConnected = true;
+        globalConnectionState.isConnecting = false;
+        setIsConnected(true);
+        setConnectionError(null);
 
-          websocket.onopen = () => {
-            connectionEstablished = true;
-            globalConnectionState.isConnected = true;
-            globalConnectionState.isConnecting = false;
-            globalConnectionState.websocket = websocket;
-            setIsConnected(true);
-            setConnectionError(null);
-
-            // Send registration message
-            try {
-              websocket?.send("bridge-register");
-            } catch (sendError) {
-              console.warn(
-                "⚠️ Could not send registration message:",
-                sendError
-              );
-            }
-
-            // Check for no data after 15 seconds
-            noDataTimeout = setTimeout(() => {
-              setNoDataWarning(
-                "Please check the WebSocket server configurations. No data is coming!"
-              );
-              setIsConnected(false);
-              globalConnectionState.isConnected = false;
-            }, 15000);
-            globalConnectionState.noDataTimeout = noDataTimeout;
-          };
-
-          websocket.onmessage = (event: MessageEvent) => {
-            try {
-              setNoDataWarning(null);
-              setIsConnected(true);
-              if (noDataTimeout) {
-                clearTimeout(noDataTimeout);
-                noDataTimeout = null;
-              }
-
-              let buffer: ArrayBuffer;
-              if (event.data instanceof ArrayBuffer) {
-                buffer = event.data;
-                handleBinaryMessage(buffer);
-              } else if (event.data instanceof Blob) {
-                const reader = new FileReader();
-                reader.onload = () => {
-                  if (reader.result instanceof ArrayBuffer) {
-                    handleBinaryMessage(reader.result);
-                  }
-                };
-                reader.onerror = (error) => {
-                  console.error("❌ Error reading Blob:", error);
-                };
-                reader.readAsArrayBuffer(event.data);
-              } else if (typeof event.data === "string") {
-                // Handle JSON message directly (no binary conversion)
-                try {
-                  const jsonData = JSON.parse(event.data);
-                  // Check if it's already in the expected format (type, opcode, data)
-                  if (
-                    jsonData.type &&
-                    (jsonData.type === "networkMembers" ||
-                      jsonData.type === "targets")
-                  ) {
-                    handleJsonMessage(jsonData);
-                  } else {
-                    console.warn(
-                      "⚠️ Received JSON message with unexpected format:",
-                      jsonData
-                    );
-                  }
-                } catch (jsonError) {
-                  console.error(
-                    "❌ Could not parse WebSocket message as JSON:",
-                    jsonError
-                  );
-                }
-              } else {
-                console.warn(
-                  "⚠️ Received unsupported message type from WebSocket:",
-                  typeof event.data
-                );
-              }
-            } catch (e) {
-              console.error("❌ Error processing WebSocket message:", e);
-            }
-          };
-
-          websocket.onerror = (error) => {
-            console.error("❌ WebSocket error:", error);
-            setIsConnected(false);
-            globalConnectionState.isConnected = false;
-            globalConnectionState.isConnecting = false;
-            globalConnectionState.websocket = null;
-          };
-
-          websocket.onclose = (event) => {
-            setIsConnected(false);
-            globalConnectionState.isConnected = false;
-            globalConnectionState.isConnecting = false;
-            globalConnectionState.websocket = null;
-            if (event.code !== 1000) {
-              setConnectionError(
-                `WebSocket connection closed. Code: ${event.code}${
-                  event.reason ? `, Reason: ${event.reason}` : ""
-                }`
-              );
-            }
-          };
-        } catch (error: any) {
-          console.error("❌ WebSocket connection error:", error);
-          const errorMessage =
-            error?.message || error?.toString() || "Unknown error";
-          const fullErrorMessage = `Failed to connect to WebSocket server!\n\nHost: ${WS_IP}\nPort: ${WS_PORT}\n\nError: ${errorMessage}`;
-          setIsConnected(false);
-          setConnectionError(fullErrorMessage);
-          alert(fullErrorMessage);
-        }
-      } else {
-        // Use UDP (normal mode)
-        try {
-          await Udp.create({ address: host, port });
-          connectionEstablished = true;
-          globalConnectionState.isConnected = true;
-          globalConnectionState.isConnecting = false;
-          setIsConnected(true);
-          setConnectionError(null);
-
-          // Check for no data after 5 seconds
-          noDataTimeout = setTimeout(() => {
-            setNoDataWarning(
-              "Please check the UDP server configurations. No data is coming!"
-            );
-            setIsConnected(false);
-            globalConnectionState.isConnected = false;
-          }, 5000);
-          globalConnectionState.noDataTimeout = noDataTimeout;
-
-          // Send registration message to UDP server
-          try {
-            await Udp.send({
-              address: host,
-              port: port,
-              data: "bridge-register",
-            });
-          } catch (sendError) {
-            console.warn("⚠️ Could not send registration message:", sendError);
-            setConnectionError(
-              "Failed to send registration message. Connection may be unstable."
-            );
-          }
-        } catch (error: any) {
-          console.error("❌ UDP connection error:", error);
-          const errorMessage =
-            error?.message || error?.toString() || "Unknown error";
-          const fullErrorMessage = `Failed to connect to UDP server!\n\nHost: ${host}\nPort: ${port}\n\nError: ${errorMessage}\n\nPlease check your configuration.`;
+        // Check for no data after 5 seconds
+        noDataTimeout = setTimeout(() => {
+          setNoDataWarning(
+            "No data received on port 40074. Please check network connectivity."
+          );
           setIsConnected(false);
           globalConnectionState.isConnected = false;
-          globalConnectionState.isConnecting = false;
-          setConnectionError(fullErrorMessage);
-          alert(fullErrorMessage);
+        }, 5000);
+        globalConnectionState.noDataTimeout = noDataTimeout;
+
+        // No registration message needed - data arrives automatically from intranet
+
+        // Start stale data check — clear topology if no data for 10 seconds
+        if (globalConnectionState.staleCheckInterval) {
+          clearInterval(globalConnectionState.staleCheckInterval);
         }
+        globalConnectionState.staleCheckInterval = setInterval(() => {
+          if (globalConnectionState.lastMessageTime === null) return;
+          const now = Date.now();
+          if (now - globalConnectionState.lastMessageTime > 5000) {
+            console.log("[UDP] No data for 5s — clearing stale topology");
+            globalConnectionState.lastMessageTime = null;
+            setUdpData((prev) => ({
+              ...prev,
+              topology: {
+                motherNodeId: null,
+                nodes: new Map(),
+                connections: new Map(),
+              },
+            }));
+          }
+        }, 2000);
+      } catch (error: any) {
+        console.error("❌ UDP connection error:", error);
+        const errorMessage =
+          error?.message || error?.toString() || "Unknown error";
+        const fullErrorMessage = `Failed to bind UDP socket on port 40074!\n\nError: ${errorMessage}\n\nPlease check network permissions.`;
+        setIsConnected(false);
+        globalConnectionState.isConnected = false;
+        globalConnectionState.isConnecting = false;
+        setConnectionError(fullErrorMessage);
+        alert(fullErrorMessage);
       }
     };
 
-    // Helper function to handle binary messages (shared between UDP and WebSocket)
+    // Helper function to handle binary messages
     const handleBinaryMessage = (
       buffer: ArrayBuffer | number[] | Uint8Array
     ) => {
+      // Track last message time for stale detection
+      globalConnectionState.lastMessageTime = Date.now();
+
       // Convert buffer to ArrayBuffer if needed
       let arrayBuffer: ArrayBuffer;
       if (buffer instanceof ArrayBuffer) {
@@ -903,15 +793,18 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       try {
         const topologyData = parseTopologyBinary(arrayBuffer);
 
-        // If successful, update store and return early
-        setUdpData((prev) => ({
-          ...prev,
-          topology: {
-            nodes: topologyData.nodes,
-            connections: topologyData.connections,
-          },
-        }));
-        return; // Exit early, don't parse as regular binary
+        // If successful and we got nodes, update store and return early
+        if (topologyData.nodes.size > 0) {
+          setUdpData((prev) => ({
+            ...prev,
+            topology: {
+              motherNodeId: topologyData.motherNodeId,
+              nodes: topologyData.nodes,
+              connections: topologyData.connections,
+            },
+          }));
+          return; // Exit early, don't parse as regular binary
+        }
       } catch (e) {
         // Not topology format, continue to regular parser
         console.log("[Topology] Parse failed, trying regular parser:", e);
@@ -992,35 +885,15 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       }
     };
 
-    // Helper function to handle JSON messages directly (for WebSocket test mode)
-    const handleJsonMessage = (jsonData: any) => {
-      const enrichedData = {
-        ...jsonData,
-        timestamp: new Date().toISOString(),
-      };
-
-      if (enrichedData.type === "networkMembers") {
-        setUdpData((prev) => ({
-          ...prev,
-          networkMembers: enrichedData.data || [],
-        }));
-      } else if (enrichedData.type === "targets") {
-        setUdpData((prev) => ({
-          ...prev,
-          targets: enrichedData.data || [],
-        }));
-      }
-    };
-
     let listener: { remove: () => void } | null = null;
 
     const setupListener = async () => {
       await connectUdp();
 
-      if (connectionEstablished && !IS_TEST) {
+      if (connectionEstablished) {
         // Only set up listener if one doesn't already exist
         if (!globalConnectionState.listener) {
-          // Listen for UDP messages (only for UDP, WebSocket handles via onmessage)
+          // Listen for UDP messages
           listener = await Udp.addListener("udpMessage", (event: any) => {
             try {
               setNoDataWarning(null);
@@ -1052,58 +925,33 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     setupListener();
 
     return () => {
-      // Cleanup function runs when dependencies change or component unmounts
-      // When networkLayersVisible becomes false, the effect body already handles cleanup above
-      // This cleanup mainly handles component unmount or dependency changes
-      // Note: networkLayersVisible in this closure is the OLD value when deps change
-
-      // If the old value was true and we had a connection, cleanup when unmounting or when toggling off
-      // But since the effect body already handles the toggle-off case, we mainly handle unmount here
-      // We'll let the effect body handle the networkLayersVisible = false case
-
-      // Only cleanup connection if we're unmounting (not just toggling)
-      // The effect body at the top already handles the toggle-off case
-      const connectionKey = `${host}:${port}`;
-      const existingConnectionKey =
-        globalConnectionState.host && globalConnectionState.port
-          ? `${globalConnectionState.host}:${globalConnectionState.port}`
-          : null;
-
-      // Only cleanup if connection matches this instance and is still active
-      // The effect body already handled cleanup when networkLayersVisible became false
-      if (
-        existingConnectionKey === connectionKey &&
-        globalConnectionState.isConnected
-      ) {
+      // Cleanup on unmount
+      if (globalConnectionState.isConnected) {
         if (globalConnectionState.noDataTimeout) {
           clearTimeout(globalConnectionState.noDataTimeout);
           globalConnectionState.noDataTimeout = null;
         }
-
-        // Close WebSocket if open
-        if (globalConnectionState.websocket) {
-          globalConnectionState.websocket.close();
-          globalConnectionState.websocket = null;
+        if (globalConnectionState.staleCheckInterval) {
+          clearInterval(globalConnectionState.staleCheckInterval);
+          globalConnectionState.staleCheckInterval = null;
         }
+        globalConnectionState.lastMessageTime = null;
 
-        // Close UDP if open
-        if (!IS_TEST) {
-          Udp.closeAllSockets().catch(console.error);
-        }
+        // Close UDP socket
+        Udp.closeAllSockets().catch(console.error);
+
         if (globalConnectionState.listener) {
           globalConnectionState.listener.remove();
           globalConnectionState.listener = null;
         }
         globalConnectionState.isConnected = false;
         globalConnectionState.isConnecting = false;
-        globalConnectionState.host = null;
-        globalConnectionState.port = null;
 
         // Only reset connection state (not data) - preserve data for when toggle comes back on
         resetConnectionState();
       }
     };
-  }, [networkLayersVisible, host, port]);
+  }, [networkLayersVisible]);
 
   const udpLayers = useMemo(() => {
     if (!networkLayersVisible) {
@@ -1368,9 +1216,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             widthMaxPixels: 6,
           })
         );
-      } else {
       }
-    } else {
     }
 
     // Topology Nodes Layer
@@ -1463,11 +1309,14 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         };
 
         // Map topology nodes to include only properties needed for tooltip and rendering
+        const motherNodeId = udpData.topology.motherNodeId;
+
         const topologyNodesWithProps = topologyNodes.map((node) => ({
           globalId: node.id,
           longitude: node.long,
           latitude: node.lat,
           groupId: nodeToGroup.get(node.id) || "A", // Needed for icon selection
+          isMotherNode: node.id === motherNodeId,
         }));
 
         layers.push(
@@ -1478,6 +1327,18 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             onHover: onHover,
             parameters: { depthTest: false, depthMask: false },
             getIcon: (d: any) => {
+              // Mother node gets special icon (configurable via store)
+              if (d.isMotherNode) {
+                const mSymbol = motherNodeSymbol || "mother-fighter";
+                return {
+                  url: `/icons/${mSymbol}.svg`,
+                  width: 48,
+                  height: 48,
+                  anchorY: 24,
+                  anchorX: 24,
+                  mask: false,
+                };
+              }
               const groupId = d.groupId || "A";
               // Get group-specific icon, fallback to default for group, then fighter1
               const groupSymbol = getGroupSymbol(groupId);
@@ -1511,7 +1372,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             sizeMaxPixels: 64,
             updateTriggers: {
               getPosition: [udpData.topology.nodes.size],
-              getIcon: [udpData.topology.nodes.size, nodeSymbols, groupSymbols],
+              getIcon: [udpData.topology.nodes.size, nodeSymbols, groupSymbols, motherNodeSymbol],
             },
           })
         );
@@ -1528,6 +1389,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     getGroupSymbol,
     nodeSymbols,
     groupSymbols,
+    motherNodeSymbol,
   ]);
 
   return { udpLayers, connectionError, noDataWarning, isConnected };
