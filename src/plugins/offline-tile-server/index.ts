@@ -40,5 +40,34 @@ export interface OfflineTileServerPlugin {
   checkStoragePermission(): Promise<{ hasPermission: boolean }>;
 }
 
-export const OfflineTileServer =
-  registerPlugin<OfflineTileServerPlugin>("OfflineTileServer");
+// ── Platform detection ──
+function isElectron(): boolean {
+  return typeof window !== "undefined" && !!(window as any).electronAPI;
+}
+
+// ── Electron desktop implementation ──
+function createDesktopPlugin(): OfflineTileServerPlugin {
+  const api = () => (window as any).electronAPI;
+  return {
+    async selectTileFolder() {
+      return await api().tileServerSelectFolder();
+    },
+    async updateFolderPath(options: { uri: string; useTms?: boolean }) {
+      return await api().tileServerUpdateFolder(options.uri);
+    },
+    async getServerUrl() {
+      return await api().tileServerGetUrl();
+    },
+    async getSavedFolderUri() {
+      return await api().tileServerGetSavedFolder();
+    },
+    async checkStoragePermission() {
+      return await api().tileServerCheckPermission();
+    },
+  };
+}
+
+// ── Export: Electron uses IPC, Android uses Capacitor native plugin ──
+export const OfflineTileServer: OfflineTileServerPlugin = isElectron()
+  ? createDesktopPlugin()
+  : registerPlugin<OfflineTileServerPlugin>("OfflineTileServer");

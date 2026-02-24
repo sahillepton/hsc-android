@@ -405,9 +405,6 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
   for (const entry of stagedDeleteEntries) {
     try {
       await deleteFileByAbsolutePath(entry.absolutePath);
-      console.log(
-        `[Manifest] Deleted staged_delete file: ${entry.originalName}`
-      );
     } catch (error) {
       console.error(
         `[Manifest] Error deleting staged_delete file ${entry.originalName}:`,
@@ -437,16 +434,9 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
 
   // Delete files that are in stored manifest but not in new manifest
   if (filesToDelete.length > 0) {
-    console.log(
-      `[Manifest] Deleting ${filesToDelete.length} file(s) that are no longer in current session`
-    );
-
     for (const entry of filesToDelete) {
       try {
         await deleteFileByAbsolutePath(entry.absolutePath);
-        console.log(
-          `[Manifest] Deleted file no longer in session: ${entry.originalName}`
-        );
       } catch (error) {
         console.error(
           `[Manifest] Error deleting file ${entry.originalName}:`,

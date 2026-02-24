@@ -24,6 +24,29 @@ export interface MemberActionPlugin {
   ): Promise<{ remove: () => void }>;
 }
 
-const MemberAction = registerPlugin<MemberActionPlugin>("MemberAction");
+// ── Platform detection ──
+function isElectron(): boolean {
+  return typeof window !== "undefined" && !!(window as any).electronAPI;
+}
+
+// ── Electron desktop stub (not required on desktop) ──
+function createDesktopPlugin(): MemberActionPlugin {
+  return {
+    async notifyAction(_options: MemberActionData) {
+      return { success: false };
+    },
+    async addListener(
+      _eventName: "actionResponse",
+      _listenerFunc: (event: { memberId: string; status: string }) => void
+    ) {
+      return { remove: () => {} };
+    },
+  };
+}
+
+// ── Export: Electron uses stub, Android uses Capacitor native plugin ──
+const MemberAction: MemberActionPlugin = isElectron()
+  ? createDesktopPlugin()
+  : registerPlugin<MemberActionPlugin>("MemberAction");
 
 export default MemberAction;

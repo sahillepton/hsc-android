@@ -401,7 +401,7 @@ const ZoomControls = ({
         </div>
         <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
           <div className="flex items-center p-0.5 ">
-            {onToggleUserLocation && (
+            {onToggleUserLocation && !(window as any).electronAPI && (
               <div>
                 <Button
                   size="icon"

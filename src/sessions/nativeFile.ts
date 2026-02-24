@@ -12,6 +12,10 @@ export type StagedNativeFile = {
   originalName: string;
 };
 
+function isElectron(): boolean {
+  return typeof window !== "undefined" && !!(window as any).electronAPI;
+}
+
 export function sanitizeFileName(name: string): string {
   // keep it filesystem-safe and stable
   return name.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -26,21 +30,38 @@ export function stampedFileName(
 }
 
 /**
- * Convert the plugin absolutePath to a WebView URL (fetchable).
+ * Convert the plugin absolutePath to a fetchable URL.
+ * On Electron: returns the path as-is (use readFileBinary IPC instead of fetch).
+ * On Android (Capacitor): uses Capacitor.convertFileSrc.
  */
 export function webviewUrlFromAbsolutePath(absolutePath: string): string {
+  if (isElectron()) {
+    return absolutePath;
+  }
   return Capacitor.convertFileSrc(absolutePath);
 }
 
 /**
  * Small-file helper ONLY. Creates a browser File object so existing parsers remain unchanged.
  * WARNING: reads full file into JS memory.
+ *
+ * On Electron: Uses binary IPC (structured clone) — no base64, no UI thread blocking.
+ * On Android: Uses Capacitor.convertFileSrc + fetch.
  */
 export async function fileFromAbsolutePathAsFile(
   absolutePath: string,
   fileName: string,
   mimeType?: string
 ): Promise<File> {
+  if (isElectron()) {
+    const api = (window as any).electronAPI;
+    const uint8: Uint8Array | null = await api.readFileBinary(absolutePath);
+    if (!uint8) throw new Error(`Failed to read file: ${absolutePath}`);
+    const mime = mimeType || "application/octet-stream";
+    return new File([uint8], fileName, { type: mime });
+  }
+
+  // Capacitor (Android) path
   const url = webviewUrlFromAbsolutePath(absolutePath);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to read staged file: ${res.status}`);
@@ -56,13 +77,10 @@ export async function fileFromAbsolutePathAsFile(
 export async function deleteFileByAbsolutePath(
   absolutePath: string
 ): Promise<void> {
-  console.log(`[DeleteFile] Deleting file with absolutePath: ${absolutePath}`);
-
   // Use native plugin to delete file directly by absolute path
   // This avoids Capacitor Filesystem directory mapping issues
   try {
     await NativeUploader.deleteFile({ absolutePath });
-    console.log(`[DeleteFile] Successfully deleted: ${absolutePath}`);
   } catch (error) {
     const errorMsg = `[DeleteFile] FAILED to delete: ${absolutePath}`;
     console.error(errorMsg);

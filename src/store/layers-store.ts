@@ -110,9 +110,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   },
   deleteLayer: (layerId: string) => {
     // Mark layer as staged_delete in manifest before filtering
-    console.log(
-      `[LayerDelete] Marking layer ${layerId} as staged_delete in manifest`
-    );
     markLayerStagedDelete(layerId).catch((error) => {
       console.error(
         `[LayerDelete] Error marking layer as staged_delete:`,

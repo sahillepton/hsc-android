@@ -73,7 +73,7 @@ import { ZipFolder } from "@/plugins/zip-folder";
 import { Screenshot } from "@/plugins/screenshot";
 import { Capacitor } from "@capacitor/core";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
-import { MAX_UPLOAD_FILES, HSC_FILES_DIR, HSC_BASE_DIR } from "@/sessions/constants";
+import { MAX_UPLOAD_FILES, HSC_FILES_DIR, HSC_BASE_DIR, HSC_MANIFEST_PATH } from "@/sessions/constants";
 import {
   upsertManifestEntry,
   finalizeSaveManifest,
@@ -97,32 +97,57 @@ import {
 // Settings Button Component
 function SettingsButton() {
   const [isOpen, setIsOpen] = useState(false);
+  const isElectronBuild = !!(window as any).electronAPI;
 
-  // Get storage paths
-  const getStoragePaths = () => {
-    if (!Capacitor.isNativePlatform()) {
+  const defaultPaths = (() => {
+    if (isElectronBuild) {
       return {
-        tiles: "Internal storage/Documents/tiles",
-        screenshots: "Internal storage/Pictures/HSC Maps",
-        sessions: `Internal storage/documents/${HSC_BASE_DIR}`,
-        layers: `Internal storage/Android/data/org.deal.mcsa/files/documents/${HSC_FILES_DIR}`,
+        tiles: "Loading...",
+        screenshots: "Loading...",
+        sessions: "Loading...",
+        layers: "Loading...",
+        manifest: "Loading...",
       };
     }
-
-    // Get app ID to determine the correct package path
-    const appId = Capacitor.getPlatform() === "android" 
-      ? "org.deal.mcsa" // MCSA app package
-      : "com.example.app"; // hsc-android package (fallback)
-
+    const appId = Capacitor.getPlatform() === "android"
+      ? "org.deal.mcsa"
+      : "com.example.app";
     return {
-      tiles: "Documents/tiles",
-      screenshots: "Pictures/HSC Maps",
-      sessions: `Android/data/${appId}/files/documents/${HSC_BASE_DIR}`,
-      layers: `Android/data/${appId}/files/documents/${HSC_FILES_DIR}`,
+      tiles: "Internal Storage/Documents/tiles",
+      screenshots: "Internal Storage/Pictures/HSC Maps",
+      sessions: `Internal Storage/Android/data/${appId}/files/documents/${HSC_BASE_DIR}`,
+      layers: `Internal Storage/Android/data/${appId}/files/documents/${HSC_FILES_DIR}`,
+      manifest: `Internal Storage/Android/data/${appId}/files/documents/${HSC_MANIFEST_PATH}`,
     };
-  };
+  })();
 
-  const paths = getStoragePaths();
+  const [paths, setPaths] = useState(defaultPaths);
+
+  // Resolve actual Windows paths from Electron main process
+  useEffect(() => {
+    if (!isElectronBuild) return;
+    const api = (window as any).electronAPI;
+    (async () => {
+      try {
+        const [docsPath, picsPath] = await Promise.all([
+          api.getPath("documents"),
+          api.getPath("pictures"),
+        ]);
+        // Normalize to forward slashes for display
+        const docs = docsPath.replace(/\\/g, "/");
+        const pics = picsPath.replace(/\\/g, "/");
+        setPaths({
+          tiles: `${docs}/tiles`,
+          screenshots: `${pics}/HSC-Screenshots`,
+          sessions: `${docs}/${HSC_BASE_DIR}`,
+          layers: `${docs}/${HSC_FILES_DIR}`,
+          manifest: `${docs}/${HSC_MANIFEST_PATH}`,
+        });
+      } catch (err) {
+        console.error("[SettingsButton] Failed to resolve paths:", err);
+      }
+    })();
+  }, [isElectronBuild]);
 
   return (
     <div className="absolute top-2 right-2 z-50 pointer-events-none">
@@ -198,6 +223,18 @@ function SettingsButton() {
                 </div>
                 <p className="text-xs text-slate-600 pl-4 font-mono break-all">
                   {paths.layers}
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-red-500"></div>
+                  <span className="text-xs font-semibold text-slate-700 uppercase">
+                    Manifest
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 pl-4 font-mono break-all">
+                  {paths.manifest}
                 </p>
               </div>
             </div>
@@ -633,7 +670,7 @@ const MapComponent = ({
 
                   minzoom: 0,
                   maxzoom: 18, // camera zoom allowed
-                  maxNativeZoom: 14, // 🔥 THIS IS THE KEY
+                  maxNativeZoom: 5, // 🔥 THIS IS THE KEY
                 });
                
               } catch (e) {
@@ -1642,9 +1679,6 @@ const MapComponent = ({
           }
         } catch (error) {
           // Sketch layers file doesn't exist, which is fine
-          console.log(
-            `[SessionRestore] No sketch layers file found (this is OK)`
-          );
         }
       } catch (error) {
         console.warn(`[SessionRestore] Error restoring sketch layers:`, error);
@@ -4257,7 +4291,7 @@ const MapComponent = ({
                               tiles: updatedTiles,
                               minzoom: 0,
                               maxzoom: 18,
-                              maxNativeZoom: 14,
+                              maxNativeZoom: 5,
                             });
                            
                           } catch (e) {

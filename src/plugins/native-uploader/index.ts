@@ -44,5 +44,43 @@ export interface NativeUploaderPlugin {
   ): Promise<{ remove: () => void }>;
 }
 
-export const NativeUploader =
-  registerPlugin<NativeUploaderPlugin>("NativeUploader");
+// ── Platform detection ──
+function isElectron(): boolean {
+  return typeof window !== "undefined" && !!(window as any).electronAPI;
+}
+
+// ── Electron desktop implementation ──
+function createDesktopPlugin(): NativeUploaderPlugin {
+  const api = () => (window as any).electronAPI;
+  return {
+    async pickAndStageMany(options?: { maxFiles?: 1 | 2 }) {
+      return await api().nativePickAndStageMany(options?.maxFiles);
+    },
+    async deleteFile(options: { absolutePath: string }) {
+      await api().nativeDeleteFile(options.absolutePath);
+    },
+    async saveExtractedFile(options: {
+      base64Data: string;
+      fileName: string;
+      mimeType?: string;
+    }) {
+      return await api().nativeSaveExtractedFile(
+        options.base64Data,
+        options.fileName,
+        options.mimeType
+      );
+    },
+    async addListener(
+      _eventName: "uploadProgress",
+      _listenerFunc: (event: any) => void
+    ) {
+      // On desktop, file copy is near-instant, so no progress events needed.
+      return { remove: () => {} };
+    },
+  };
+}
+
+// ── Export: Electron uses IPC, Android uses Capacitor native plugin ──
+export const NativeUploader: NativeUploaderPlugin = isElectron()
+  ? createDesktopPlugin()
+  : registerPlugin<NativeUploaderPlugin>("NativeUploader");

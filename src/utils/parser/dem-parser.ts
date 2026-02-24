@@ -75,9 +75,8 @@ export async function parseDemFile(
       if (!ctx) {
         throw new Error("Failed to create canvas for DEM");
       }
-      const cloned = new Uint8ClampedArray(grayscale.length);
-      cloned.set(grayscale);
-      const img = new ImageData(cloned, result.width, result.height);
+      // grayscale is from a transferred buffer (exclusively owned) — pass directly, no clone needed
+      const img = new ImageData(grayscale, result.width, result.height);
       ctx.putImageData(img, 0, 0);
 
       return {
@@ -104,6 +103,7 @@ export async function parseDemFile(
       ]);
     } catch (workerErr) {
       // Worker failed; fallback to main-thread parsing
+      console.warn("⚠️ DEM Worker FAILED, falling back to main thread:", workerErr);
       onProgress?.(50);
       dem = await Promise.race([
         fileToDEMRaster(file),

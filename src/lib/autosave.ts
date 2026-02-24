@@ -67,11 +67,13 @@ export const serializeLayers = async (
       delete (serializedLayer as any).bitmap;
       delete (serializedLayer as any).texture;
 
-      // Convert Float32Array to regular array for serialization
+      // Save elevation data as binary buffer in ZIP (avoids JSON-encoding millions of floats)
       if (serializedLayer.elevationData) {
         const elevationData = serializedLayer.elevationData;
+        const elevKey = `elevation_${layer.id}.bin`;
+        bitmaps.set(elevKey, new Blob([elevationData.data.buffer as ArrayBuffer]));
         (serializedLayer as any).elevationData = {
-          data: Array.from(elevationData.data), // Convert Float32Array to regular array
+          elevationFileName: elevKey,
           width: elevationData.width,
           height: elevationData.height,
           min: elevationData.min,
@@ -123,9 +125,16 @@ export const saveLayers = async (
       zip.file("node_icon_mappings.json", JSON.stringify(nodeIconMappings));
     }
 
-    // Add bitmap PNG files to ZIP (saves all pixel data)
-    for (const [layerId, blob] of bitmaps.entries()) {
-      const fileName = `bitmaps/bitmap_${layerId}.png`;
+    // Add bitmap PNG files and elevation binary files to ZIP
+    for (const [key, blob] of bitmaps.entries()) {
+      let fileName: string;
+      if (key.startsWith("elevation_")) {
+        // Elevation data — store in elevations/ folder
+        fileName = `elevations/${key}`;
+      } else {
+        // Bitmap — store in bitmaps/ folder
+        fileName = `bitmaps/bitmap_${key}.png`;
+      }
       const arrayBuffer = await blob.arrayBuffer();
       zip.file(fileName, arrayBuffer);
     }
@@ -282,20 +291,33 @@ export const deserializeLayers = async (
           }
         }
 
-        // Reconstruct Float32Array from regular array
-        if (
-          (layer as any).elevationData &&
-          Array.isArray((layer as any).elevationData.data)
-        ) {
+        // Reconstruct Float32Array from binary file or regular array (backward compat)
+        if ((layer as any).elevationData) {
+          const elev = (layer as any).elevationData;
           try {
-            const elevationData = (layer as any).elevationData;
-            deserialized.elevationData = {
-              data: new Float32Array(elevationData.data),
-              width: elevationData.width,
-              height: elevationData.height,
-              min: elevationData.min,
-              max: elevationData.max,
-            };
+            if (elev.elevationFileName && zip) {
+              // New format: binary file in ZIP
+              const elevFile = zip.file(`elevations/${elev.elevationFileName}`);
+              if (elevFile) {
+                const buf = await elevFile.async("arraybuffer");
+                deserialized.elevationData = {
+                  data: new Float32Array(buf),
+                  width: elev.width,
+                  height: elev.height,
+                  min: elev.min,
+                  max: elev.max,
+                };
+              }
+            } else if (Array.isArray(elev.data)) {
+              // Old format: JSON array (backward compatibility)
+              deserialized.elevationData = {
+                data: new Float32Array(elev.data),
+                width: elev.width,
+                height: elev.height,
+                min: elev.min,
+                max: elev.max,
+              };
+            }
           } catch (error) {
             console.warn(
               `Failed to reconstruct elevation data for layer ${layer.id}:`,
@@ -334,13 +356,9 @@ export const loadLayers = async (): Promise<LayerProps[]> => {
       return [];
     }
 
-    // Convert base64 to blob
-    const binaryString = atob(content);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: "application/zip" });
+    // Convert base64 to blob using browser-native decode (non-blocking, C++ engine)
+    const res = await fetch(`data:application/zip;base64,${content}`);
+    const blob = await res.blob();
 
     // Load ZIP using JSZip
     const JSZip = (await import("jszip")).default;

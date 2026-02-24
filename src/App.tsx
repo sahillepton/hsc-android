@@ -22,18 +22,12 @@ const App = () => {
         const untrackedFiles = await loadUntrackedFiles();
 
         if (untrackedFiles.length > 0) {
-          console.log(
-            `[AppStartup] Found ${untrackedFiles.length} untracked file(s) to cleanup`
-          );
           // Delete each file using plugin
           for (const file of untrackedFiles) {
             try {
               await NativeUploader.deleteFile({
                 absolutePath: file.absolutePath,
               });
-              console.log(
-                `[AppStartup] Deleted untracked file: ${file.absolutePath}`
-              );
             } catch (error) {
               console.warn(
                 `[AppStartup] Failed to delete untracked file: ${file.absolutePath}`,
@@ -45,7 +39,6 @@ const App = () => {
 
           // Clear untracked.json after cleanup
           await clearUntracked();
-          console.log(`[AppStartup] Cleanup complete, cleared untracked.json`);
         }
 
         toast.dismiss(toastId);
