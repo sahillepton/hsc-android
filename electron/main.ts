@@ -294,7 +294,7 @@ ipcMain.handle("nativeUploader:saveExtractedFile", async (_e, base64Data: string
 const ALLOWED_EXTENSIONS = new Set([
   "tif", "tiff", "hgt", "dett",
   "geojson", "json", "csv", "gpx", "kml", "kmz", "wkt",
-  "shp", "shx", "dbf", "prj",
+  "shp", "shx", "dbf", "prj", "cpg",
   "zip",
 ]);
 
@@ -311,7 +311,8 @@ function getFileType(lowerName: string): "vector" | "tiff" | "shapefile_componen
     return "tiff";
   }
   if (lowerName.endsWith(".shp") || lowerName.endsWith(".shx") ||
-      lowerName.endsWith(".dbf") || lowerName.endsWith(".prj")) {
+      lowerName.endsWith(".dbf") || lowerName.endsWith(".prj") ||
+      lowerName.endsWith(".cpg")) {
     return "shapefile_component";
   }
   return "vector";
@@ -380,8 +381,9 @@ async function processShapefiles(
   for (const file of files) {
     const lowerName = file.name.toLowerCase();
     if (lowerName.endsWith(".shp") || lowerName.endsWith(".shx") ||
-        lowerName.endsWith(".dbf") || lowerName.endsWith(".prj")) {
-      const baseName = lowerName.replace(/\.(shp|shx|dbf|prj)$/, "");
+        lowerName.endsWith(".dbf") || lowerName.endsWith(".prj") ||
+        lowerName.endsWith(".cpg")) {
+      const baseName = lowerName.replace(/\.(shp|shx|dbf|prj|cpg)$/, "");
       const group = shapefileGroups.get(baseName) || [];
       group.push(file);
       shapefileGroups.set(baseName, group);

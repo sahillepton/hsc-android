@@ -16,7 +16,7 @@ import {
   useIgrsPreference,
   useUserLocation,
 } from "@/store/layers-store";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Video, Upload, MessageSquare, PhoneCall } from "lucide-react";
 import {
   TooltipBox,
@@ -26,16 +26,93 @@ import {
 } from "@/lib/tooltip-components";
 import MemberAction from "@/plugins/member-action";
 
+const isMeaningfulPropertyValue = (value: unknown): boolean => {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return (
+      normalized !== "" &&
+      normalized !== "null" &&
+      normalized !== "undefined" &&
+      normalized !== "nan"
+    );
+  }
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as object).length > 0;
+  return true;
+};
+
+const formatOsmOtherTags = (raw: string): string => {
+  if (!raw) return "";
+  const normalized = raw.replace(/\\"/g, '"').trim();
+  const pairRegex = /"((?:\\.|[^"\\])*)"=>"((?:\\.|[^"\\])*)"/g;
+  const pairs: string[] = [];
+
+  for (const match of normalized.matchAll(pairRegex)) {
+    const key = match[1].replace(/\\"/g, '"').trim();
+    const value = match[2].replace(/\\"/g, '"').trim();
+    if (!key) continue;
+    pairs.push(value ? `${key}=${value}` : key);
+  }
+
+  if (!pairs.length) return normalized;
+
+  const maxPairs = 6;
+  const visible = pairs.slice(0, maxPairs);
+  if (pairs.length > maxPairs) {
+    visible.push(`+${pairs.length - maxPairs} more`);
+  }
+  return visible.join("; ");
+};
+
+const formatTooltipValue = (key: string, value: unknown): string => {
+  if (typeof value === "string") {
+    if (key.toLowerCase() === "other_tags") {
+      return formatOsmOtherTags(value);
+    }
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value) || (value && typeof value === "object")) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+};
+
+const formatAttributeLabel = (key: string): string => {
+  if (!key) return key;
+  const withSpaces = key
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/-/g, " ")
+    .trim();
+  return withSpaces
+    .split(/\s+/)
+    .map((word) =>
+      word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : word
+    )
+    .join(" ");
+};
+
 const Tooltip = () => {
   const { hoverInfo } = useHoverInfo();
   const { layers } = useLayers();
   const useIgrs = useIgrsPreference();
   const { showUserLocation } = useUserLocation();
+  const isDesktopBuild = !!(window as any).electronAPI;
   const [tooltipPosition, setTooltipPosition] = useState<{
     x: number;
     y: number;
   } | null>(null);
   const [mapZoom, setMapZoom] = useState<number | null>(null);
+  const tooltipRafRef = useRef<number | null>(null);
+  const lastTooltipPositionRef = useRef<{ x: number; y: number } | null>(null);
   const mapRef = (window as any).mapRef;
 
   // Update tooltip position when map moves/zooms
@@ -65,6 +142,16 @@ const Tooltip = () => {
       setTooltipPosition(null);
       return;
     }
+
+    const setPositionSafely = (x: number, y: number) => {
+      const prev = lastTooltipPositionRef.current;
+      // Ignore tiny sub-pixel shifts to reduce rerenders during pan.
+      if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - y) < 0.5) {
+        return;
+      }
+      lastTooltipPositionRef.current = { x, y };
+      setTooltipPosition({ x, y });
+    };
 
     const updatePosition = () => {
       try {
@@ -161,14 +248,14 @@ const Tooltip = () => {
         if (lng !== undefined && lat !== undefined) {
           // Project geographic coordinates to screen coordinates
           const point = map.project([lng, lat]);
-          setTooltipPosition({ x: point.x, y: point.y });
+          setPositionSafely(point.x, point.y);
         } else {
           // Fallback to original x, y if coordinates can't be determined
-          setTooltipPosition({ x: hoverInfo.x || 0, y: hoverInfo.y || 0 });
+          setPositionSafely(hoverInfo.x || 0, hoverInfo.y || 0);
         }
       } catch (error) {
         // Fallback to original x, y on error
-        setTooltipPosition({ x: hoverInfo.x || 0, y: hoverInfo.y || 0 });
+        setPositionSafely(hoverInfo.x || 0, hoverInfo.y || 0);
       }
     };
 
@@ -178,22 +265,38 @@ const Tooltip = () => {
     const map = mapRef.current?.getMap();
     if (map) {
       // Get initial zoom
-      setMapZoom(map.getZoom());
+      const initialZoom = map.getZoom();
+      setMapZoom(initialZoom);
 
-      const handleZoom = () => {
-        setMapZoom(map.getZoom());
-        updatePosition();
+      const schedulePositionUpdate = () => {
+        if (tooltipRafRef.current !== null) return;
+        tooltipRafRef.current = requestAnimationFrame(() => {
+          tooltipRafRef.current = null;
+          updatePosition();
+        });
       };
 
-      map.on("move", updatePosition);
+      const handleZoom = () => {
+        const zoom = map.getZoom();
+        setMapZoom((prev) =>
+          prev === null || Math.abs(prev - zoom) >= 0.01 ? zoom : prev
+        );
+        schedulePositionUpdate();
+      };
+
+      map.on("move", schedulePositionUpdate);
       map.on("zoom", handleZoom);
 
       return () => {
-        map.off("move", updatePosition);
+        if (tooltipRafRef.current !== null) {
+          cancelAnimationFrame(tooltipRafRef.current);
+          tooltipRafRef.current = null;
+        }
+        map.off("move", schedulePositionUpdate);
         map.off("zoom", handleZoom);
       };
     }
-  }, [hoverInfo, mapRef]);
+  }, [hoverInfo, mapRef, layers]);
 
   if (!hoverInfo) {
     return null;
@@ -472,7 +575,7 @@ const Tooltip = () => {
 
       return (
         <TooltipBox
-          maxWidth={useGridLayout ? "max-w-[320px]" : "max-w-[200px]"}
+          maxWidth={useGridLayout ? "max-w-[380px]" : "max-w-[200px]"}
           style={{ maxHeight: "450px", overflowY: "auto" }}
         >
           <TooltipHeading
@@ -494,116 +597,120 @@ const Tooltip = () => {
             properties={displayProperties}
             useGridLayout={useGridLayout}
           />
-          <TooltipDivider />
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
-                const memberId =
-                  (object as any)?.globalId ||
-                  (object as any)?.displayId ||
-                  "Unknown";
-                const memberName = (object as any)?.callsign || memberId;
-                try {
-                  await MemberAction.notifyAction({
-                    memberId: String(memberId),
-                    action: "call",
-                    memberName: String(memberName),
-                    metadata: JSON.stringify({ type: "video" }),
-                  });
-                } catch (err) {
-                  console.warn("[MemberAction] Plugin not available:", err);
-                  alert("Video call initiated");
-                }
-              }}
-              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
-              style={{ backgroundColor: "#7F1D1D" }}
-              title="Video Call"
-            >
-              <Video size={12} />
-              <span>Video</span>
-            </button>
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
-                const memberId =
-                  (object as any)?.globalId ||
-                  (object as any)?.displayId ||
-                  "Unknown";
-                const memberName = (object as any)?.callsign || memberId;
-                try {
-                  await MemberAction.notifyAction({
-                    memberId: String(memberId),
-                    action: "info",
-                    memberName: String(memberName),
-                    metadata: JSON.stringify({ type: "ftp" }),
-                  });
-                } catch (err) {
-                  console.warn("[MemberAction] Plugin not available:", err);
-                  alert("FTP connection initiated");
-                }
-              }}
-              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
-              style={{ backgroundColor: "#3F6212" }}
-              title="File Transfer"
-            >
-              <Upload size={12} />
-              <span>FTP</span>
-            </button>
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
-                const memberId =
-                  (object as any)?.globalId ||
-                  (object as any)?.displayId ||
-                  "Unknown";
-                const memberName = (object as any)?.callsign || memberId;
-                try {
-                  await MemberAction.notifyAction({
-                    memberId: String(memberId),
-                    action: "call",
-                    memberName: String(memberName),
-                    metadata: JSON.stringify({ type: "voice" }),
-                  });
-                } catch (err) {
-                  console.warn("[MemberAction] Plugin not available:", err);
-                  alert("Phone call initiated");
-                }
-              }}
-              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
-              style={{ backgroundColor: "#1E3A8A" }}
-              title="Voice Call"
-            >
-              <PhoneCall className="size-3" />
-              <span>Call</span>
-            </button>
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
-                const memberId =
-                  (object as any)?.globalId ||
-                  (object as any)?.displayId ||
-                  "Unknown";
-                const memberName = (object as any)?.callsign || memberId;
-                try {
-                  await MemberAction.notifyAction({
-                    memberId: String(memberId),
-                    action: "message",
-                    memberName: String(memberName),
-                  });
-                } catch (err) {
-                  console.warn("[MemberAction] Plugin not available:", err);
-                  alert("Message sent");
-                }
-              }}
-              className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
-              style={{ backgroundColor: "#A16207" }}
-              title="Send Message"
-            >
-              <MessageSquare size={12} />
-              <span>Message</span>
-            </button>
-          </div>
+          {!isDesktopBuild && (
+            <>
+              <TooltipDivider />
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const memberId =
+                      (object as any)?.globalId ||
+                      (object as any)?.displayId ||
+                      "Unknown";
+                    const memberName = (object as any)?.callsign || memberId;
+                    try {
+                      await MemberAction.notifyAction({
+                        memberId: String(memberId),
+                        action: "call",
+                        memberName: String(memberName),
+                        metadata: JSON.stringify({ type: "video" }),
+                      });
+                    } catch (err) {
+                      console.warn("[MemberAction] Plugin not available:", err);
+                      alert("Video call initiated");
+                    }
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                  style={{ backgroundColor: "#7F1D1D" }}
+                  title="Video Call"
+                >
+                  <Video size={12} />
+                  <span>Video</span>
+                </button>
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const memberId =
+                      (object as any)?.globalId ||
+                      (object as any)?.displayId ||
+                      "Unknown";
+                    const memberName = (object as any)?.callsign || memberId;
+                    try {
+                      await MemberAction.notifyAction({
+                        memberId: String(memberId),
+                        action: "info",
+                        memberName: String(memberName),
+                        metadata: JSON.stringify({ type: "ftp" }),
+                      });
+                    } catch (err) {
+                      console.warn("[MemberAction] Plugin not available:", err);
+                      alert("FTP connection initiated");
+                    }
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                  style={{ backgroundColor: "#3F6212" }}
+                  title="File Transfer"
+                >
+                  <Upload size={12} />
+                  <span>FTP</span>
+                </button>
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const memberId =
+                      (object as any)?.globalId ||
+                      (object as any)?.displayId ||
+                      "Unknown";
+                    const memberName = (object as any)?.callsign || memberId;
+                    try {
+                      await MemberAction.notifyAction({
+                        memberId: String(memberId),
+                        action: "call",
+                        memberName: String(memberName),
+                        metadata: JSON.stringify({ type: "voice" }),
+                      });
+                    } catch (err) {
+                      console.warn("[MemberAction] Plugin not available:", err);
+                      alert("Phone call initiated");
+                    }
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                  style={{ backgroundColor: "#1E3A8A" }}
+                  title="Voice Call"
+                >
+                  <PhoneCall className="size-3" />
+                  <span>Call</span>
+                </button>
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const memberId =
+                      (object as any)?.globalId ||
+                      (object as any)?.displayId ||
+                      "Unknown";
+                    const memberName = (object as any)?.callsign || memberId;
+                    try {
+                      await MemberAction.notifyAction({
+                        memberId: String(memberId),
+                        action: "message",
+                        memberName: String(memberName),
+                      });
+                    } catch (err) {
+                      console.warn("[MemberAction] Plugin not available:", err);
+                      alert("Message sent");
+                    }
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                  style={{ backgroundColor: "#A16207" }}
+                  title="Send Message"
+                >
+                  <MessageSquare size={12} />
+                  <span>Message</span>
+                </button>
+              </div>
+            </>
+          )}
         </TooltipBox>
       );
     }
@@ -808,13 +915,6 @@ const Tooltip = () => {
         });
       }
 
-      if (properties.name) {
-        tooltipProperties.push({
-          label: "Name",
-          value: String(properties.name),
-        });
-      }
-
       if (geometryInfo) {
         tooltipProperties.push({
           label: geometryInfo.split(":")[0],
@@ -833,23 +933,22 @@ const Tooltip = () => {
 
       // Add other properties
       const propertyEntries = Object.entries(properties).filter(
-        ([key]) =>
-          key.toLowerCase() !== "latitude" &&
-          key.toLowerCase() !== "longitude" &&
-          key.toLowerCase() !== "name"
+        ([, value]) => isMeaningfulPropertyValue(value)
       );
 
-      propertyEntries.forEach(([key, value]) => {
+      propertyEntries
+        .sort(([a], [b]) => a.localeCompare(b))
+        .forEach(([key, value]) => {
         tooltipProperties.push({
-          label: formatLabel(key),
-          value: String(value),
+          label: formatAttributeLabel(key),
+          value: formatTooltipValue(key, value),
         });
-      });
+        });
 
-      const useGridLayout = tooltipProperties.length > 6;
+      const useGridLayout = tooltipProperties.length > 10;
 
       return (
-        <TooltipBox maxWidth="max-w-[200px]">
+        <TooltipBox maxWidth={useGridLayout ? "max-w-[380px]" : "max-w-[200px]"}>
           {layerInfo?.name && (
             <TooltipHeading
               title={layerInfo.name}

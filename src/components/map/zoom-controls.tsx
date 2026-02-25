@@ -116,7 +116,7 @@ const ZoomControls = ({
     }
 
     // Only schedule auto-save if enabled and callback exists
-    if (!autoSaveEnabled || !onSaveSession) {
+    if (!autoSaveEnabled || !onSaveSessionRef.current) {
       return;
     }
 
@@ -147,7 +147,7 @@ const ZoomControls = ({
         autoSaveIntervalRef.current = null;
       }
     };
-  }, [autoSaveEnabled, onSaveSession]);
+  }, [autoSaveEnabled]);
 
   const handleZoomIn = () => {
     if (mapRef.current) {

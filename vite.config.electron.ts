@@ -44,7 +44,15 @@ export default defineConfig({
       ignored: [
         "**/public/tiles/**",
         "**/*.pbf",
+        "**/.git/**",
+        "**/node_modules/**",
+        "**/.idea/**",
+        "**/.vscode/**",
       ],
+      awaitWriteFinish: {
+        stabilityThreshold: 300,
+        pollInterval: 100,
+      },
     },
   },
 });

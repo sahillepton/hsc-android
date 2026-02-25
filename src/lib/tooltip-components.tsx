@@ -48,18 +48,29 @@ export const TooltipProperty = ({
   value: React.ReactNode;
   className?: string;
 }) => {
+  const { tooltipHeadingColor, tooltipValueColor } = useTooltipConfigStore();
   return (
     <div
       className={cn(
-        "flex justify-between items-center gap-2 py-0.5",
+        "flex flex-col items-start gap-1 py-1",
         className
       )}
       style={{ fontSize: "inherit", fontFamily: "inherit" }}
     >
-      <span className="text-gray-700 font-medium min-w-[80px]">
+      <span
+        className="font-medium leading-tight"
+        style={{ color: tooltipHeadingColor }}
+      >
         {label}:
       </span>
-      <span className="text-gray-900 text-right font-mono">
+      <span
+        className="leading-snug wrap-break-word whitespace-pre-wrap"
+        style={{
+          fontFamily: "inherit",
+          fontSize: "inherit",
+          color: tooltipValueColor,
+        }}
+      >
         {value}
       </span>
     </div>
@@ -100,7 +111,7 @@ export const TooltipProperties = ({
   }
 
   return (
-    <div className={cn("space-y-0.5 overflow-hidden", className)}>
+    <div className={cn("space-y-1 overflow-hidden", className)}>
       {properties.map((prop, idx) => (
         <TooltipProperty key={idx} label={prop.label} value={prop.value} />
       ))}
@@ -127,7 +138,7 @@ export const TooltipBox = ({
   return (
     <div
       className={cn(
-        "bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl p-2 overflow-hidden",
+        "bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl p-2 overflow-hidden min-w-[180px]",
         maxWidth,
         className
       )}
