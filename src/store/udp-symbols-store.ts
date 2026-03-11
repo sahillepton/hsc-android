@@ -16,6 +16,15 @@ interface UdpSymbolsState {
   setGroupSymbol: (groupId: string, symbol: string) => void;
   getGroupSymbol: (groupId: string) => string | undefined;
   clearGroupSymbol: (groupId: string) => void;
+  // Mother node symbol
+  motherNodeSymbol: string; // Default: "mother-fighter"
+  setMotherNodeSymbol: (symbol: string) => void;
+  // SNR gradient colors [low, mid, high] as hex strings
+  snrColors: [string, string, string]; // Default: ["#FF0000", "#FFFF00", "#00FF00"]
+  setSnrColors: (colors: [string, string, string]) => void;
+  // SNR line widths [low, mid, high] in pixels
+  snrLineWidths: [number, number, number]; // Default: [1, 3, 5]
+  setSnrLineWidths: (widths: [number, number, number]) => void;
 }
 
 export const useUdpSymbolsStore = create<UdpSymbolsState>()(
@@ -90,6 +99,18 @@ export const useUdpSymbolsStore = create<UdpSymbolsState>()(
           delete newSymbols[key];
           return { groupSymbols: newSymbols };
         }),
+      // Mother node symbol
+      motherNodeSymbol: "mother-fighter",
+      setMotherNodeSymbol: (symbol: string) =>
+        set({ motherNodeSymbol: symbol || "mother-fighter" }),
+      // SNR gradient colors
+      snrColors: ["#FF0000", "#FFFF00", "#00FF00"] as [string, string, string],
+      setSnrColors: (colors: [string, string, string]) =>
+        set({ snrColors: colors }),
+      // SNR line widths
+      snrLineWidths: [1, 3, 5] as [number, number, number],
+      setSnrLineWidths: (widths: [number, number, number]) =>
+        set({ snrLineWidths: widths }),
     }),
     {
       name: "udp-symbols-storage", // localStorage key

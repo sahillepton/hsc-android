@@ -9,14 +9,13 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.InetAddress
+import java.net.InetSocketAddress
 
 @CapacitorPlugin(name = "Udp")
 class UdpPlugin : Plugin() {
 
     private var socket: DatagramSocket? = null
-    private var serverAddress: InetAddress? = null
-    private var serverPort: Int = 0
+    private val LISTEN_PORT = 40074 // Fixed port for receiving topology data from intranet
     private var listening = false
 
     // Optional: test event from MainActivity
@@ -29,76 +28,40 @@ class UdpPlugin : Plugin() {
     @PluginMethod
     fun create(call: PluginCall) {
         try {
-            // Match your JS: { address, port }
-            var host = call.getString("address")
-            if (host == null) host = call.getString("host") // fallback
-            var port = call.getInt("port")
-            if (port == null) port = call.getInt("remotePort")
-
-            if (host == null || port == null) {
-                val data = call.data
-                Log.e("UdpPlugin", "Host or port missing. Got: $data")
-                call.reject("Host or port missing")
-                return
+            // Close existing socket if any
+            if (socket != null && !socket!!.isClosed) {
+                listening = false
+                socket?.close()
+                socket = null
             }
 
-            serverAddress = InetAddress.getByName(host)
-            serverPort = port
+            // Bind to fixed port 40074 to receive data from intranet
+            socket = DatagramSocket(null).apply {
+                reuseAddress = true
+                bind(InetSocketAddress(LISTEN_PORT))
+            }
 
-            socket = DatagramSocket() // UDP client socket
+            Log.d("UdpPlugin", "UDP socket bound to port $LISTEN_PORT")
 
             startListening()
 
             val ret = JSObject()
             ret.put("ok", true)
-            ret.put("host", host)
-            ret.put("port", port)
+            ret.put("port", LISTEN_PORT)
             call.resolve(ret)
 
         } catch (e: Exception) {
+            Log.e("UdpPlugin", "UDP create failed: ${e.message}", e)
             call.reject("UDP create failed: ${e.message}")
         }
     }
 
     @PluginMethod
     fun send(call: PluginCall) {
-        try {
-            val msg = call.getString("data")
-            if (msg == null) {
-                call.reject("No data")
-                return
-            }
-
-            // Allow overriding address/port per send (since JS passes them)
-            val host = call.getString("address")
-            val port = call.getInt("port")
-            var addr = serverAddress
-            var p = serverPort
-
-            if (host != null) {
-                addr = InetAddress.getByName(host)
-            }
-            if (port != null) {
-                p = port
-            }
-
-            if (socket == null || addr == null) {
-                call.reject("Socket not created. Call create() first.")
-                return
-            }
-
-            val buf = msg.toByteArray()
-            val packet = DatagramPacket(buf, buf.size, addr, p)
-            socket?.send(packet)
-
-            val ret = JSObject()
-            ret.put("ok", true)
-            ret.put("bytesSent", buf.size)
-            call.resolve(ret)
-
-        } catch (e: Exception) {
-            call.reject("UDP send failed: ${e.message}")
-        }
+        // No longer needed - receive-only socket on port 40074
+        val ret = JSObject()
+        ret.put("ok", true)
+        call.resolve(ret)
     }
 
     private fun startListening() {
@@ -132,7 +95,7 @@ class UdpPlugin : Plugin() {
                 }
 
             } catch (e: Exception) {
-                Log.e("UdpPlugin", "Error in UDP listen loop: ${e.message}")
+                Log.e("UdpPlugin", "Error in UDP listen loop: ${e.message}", e)
             }
         }.start()
     }
@@ -146,6 +109,7 @@ class UdpPlugin : Plugin() {
                 it.close()
             }
         }
+        socket = null
 
         val ret = JSObject()
         ret.put("ok", true)
@@ -158,4 +122,3 @@ class UdpPlugin : Plugin() {
         close(call)
     }
 }
-

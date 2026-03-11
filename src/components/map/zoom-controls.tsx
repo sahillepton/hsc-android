@@ -6,7 +6,6 @@ import {
   ZoomIn,
   Waypoints,
   LayersIcon,
-  WifiPen,
   WifiOff,
   Ruler,
   Network,
@@ -17,6 +16,7 @@ import {
   Home,
   MapPin,
   Crop,
+  Camera,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -50,7 +50,6 @@ const ZoomControls = ({
   zoom,
   bearing = 0,
   onToggleLayersBox,
-  onOpenConnectionConfig,
   onToggleMeasurementBox,
   onToggleNetworkBox,
   onUpload,
@@ -59,6 +58,7 @@ const ZoomControls = ({
   onRestoreSession,
   onToggleUserLocation,
   onResetHome,
+  onCaptureScreenshot,
   showUserLocation,
   isLayersBoxOpen,
   isMeasurementBoxOpen,
@@ -74,7 +74,6 @@ const ZoomControls = ({
   zoom: number;
   bearing?: number;
   onToggleLayersBox?: () => void;
-  onOpenConnectionConfig?: () => void;
   onToggleMeasurementBox?: () => void;
   onToggleNetworkBox?: () => void;
   onUpload?: () => void;
@@ -83,6 +82,7 @@ const ZoomControls = ({
   onRestoreSession?: () => void;
   onToggleUserLocation?: () => void;
   onResetHome?: () => void;
+  onCaptureScreenshot?: () => void;
   showUserLocation?: boolean;
   isLayersBoxOpen?: boolean;
   isMeasurementBoxOpen?: boolean;
@@ -120,9 +120,8 @@ const ZoomControls = ({
       return;
     }
 
-    // Use setInterval for more reliable timing on tablets
-    autoSaveIntervalRef.current = setInterval(async () => {
-      // Check if still enabled before saving
+    // Immediate save when auto-save is enabled, then start interval
+    const performSave = async () => {
       if (onSaveSessionRef.current) {
         setIsSaving(true);
         try {
@@ -133,7 +132,13 @@ const ZoomControls = ({
           setIsSaving(false);
         }
       }
-    }, 60000); // 30 seconds
+    };
+
+    // Trigger immediate save
+    performSave();
+
+    // Then set up interval for subsequent saves (30 seconds)
+    autoSaveIntervalRef.current = setInterval(performSave, 30000); // Fixed: 30 seconds
 
     // Cleanup on unmount or when disabled
     return () => {
@@ -480,17 +485,6 @@ const ZoomControls = ({
           </div>
         </div>
         <div className="flex items-center gap-0 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm">
-          {onOpenConnectionConfig && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-10 w-10 text-slate-800 hover:text-foreground  rounded-none"
-              title="Connection Settings"
-              onClick={onOpenConnectionConfig}
-            >
-              <WifiPen className="h-4 w-4" />
-            </Button>
-          )}
           {onResetHome && (
             <div>
               <Button
@@ -503,6 +497,17 @@ const ZoomControls = ({
                 <Home className="h-4 w-4" />
               </Button>
             </div>
+          )}
+          {onCaptureScreenshot && (
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={onCaptureScreenshot}
+              className="h-10 w-10 hover:bg-white cursor-pointer"
+              title="Capture Screenshot"
+            >
+              <Camera className="h-4 w-4" />
+            </Button>
           )}
           {igrsToggleProps && (
             <div className="flex items-center gap-2 px-3 border-l border-slate-200">

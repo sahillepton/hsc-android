@@ -28,6 +28,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ZipFolderPlugin.class);
         registerPlugin(MemberActionPlugin.class);
         registerPlugin(OfflineTileServerPlugin.class);
+        registerPlugin(ScreenshotPlugin.class);
 
         super.onCreate(savedInstanceState);
         

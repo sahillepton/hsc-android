@@ -76,24 +76,16 @@ fun GisScreen() {
         }
     )
     
-    // Cleanup when composable is disposed
+    // The GisScreen composable is kept alive across tab switches (always in composition tree).
+    // Do NOT remove the fragment on dispose — it keeps the Capacitor WebView/Bridge alive,
+    // preserving all map state, sketches, layers, and UDP connections.
+    // The fragment will be cleaned up naturally when the Activity is destroyed.
     DisposableEffect(Unit) {
-        Log.d("GisScreen", "DisposableEffect created")
+        Log.d("GisScreen", "DisposableEffect created — fragment will be kept alive across tab switches")
         onDispose {
-            Log.d("GisScreen", "GisScreen being disposed")
-            val fragment = fragmentManager.findFragmentByTag("gis_fragment")
-            fragment?.let {
-                if (!fragmentManager.isStateSaved) {
-                    try {
-                        fragmentManager.beginTransaction()
-                            .remove(it)
-                            .commitNowAllowingStateLoss()
-                        Log.d("GisScreen", "Fragment removed on dispose")
-                    } catch (e: Exception) {
-                        Log.e("GisScreen", "Error removing fragment: ${e.message}", e)
-                    }
-                }
-            }
+            Log.d("GisScreen", "GisScreen being disposed — keeping fragment alive for state preservation")
+            // Intentionally NOT removing the fragment here.
+            // The fragment and its WebView survive tab switches to preserve user work.
         }
     }
 }

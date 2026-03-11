@@ -9,12 +9,16 @@ interface UdpLayerData {
   threats: any[];
   geoMessages: any[];
   topology: {
+    motherNodeId: number | null; // topoForMcsa.node_id — the mother node
     nodes: Map<
       number,
       {
         id: number;
+        ip: string;
         lat: number;
         long: number;
+        altitude: number;
+        rssi: number;
         neighbors: Array<{ id: number; snr: number }>;
       }
     >;
@@ -47,6 +51,7 @@ export const useUdpDataStore = create<UdpDataState>((set) => ({
     threats: [],
     geoMessages: [],
     topology: {
+      motherNodeId: null,
       nodes: new Map(),
       connections: new Map(),
     },
@@ -64,6 +69,7 @@ export const useUdpDataStore = create<UdpDataState>((set) => ({
           networkMemberPositions: new Map(newData.networkMemberPositions),
           networkMemberMetadata: new Map(newData.networkMemberMetadata),
           topology: {
+            motherNodeId: newData.topology?.motherNodeId ?? null,
             nodes: new Map(newData.topology?.nodes || []),
             connections: new Map(newData.topology?.connections || []),
           },
@@ -84,6 +90,7 @@ export const useUdpDataStore = create<UdpDataState>((set) => ({
         threats: [],
         geoMessages: [],
         topology: {
+          motherNodeId: null,
           nodes: new Map(),
           connections: new Map(),
         },

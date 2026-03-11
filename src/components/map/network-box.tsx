@@ -1,5 +1,6 @@
 import { X, Network } from "lucide-react";
 import NetworkLayersPanel from "@/components/app-sidebar/network-layers-panel";
+import TooltipConfigStrip from "@/components/tooltip-config-strip";
 
 const NetworkBox = ({ onClose }: { onClose: () => void }) => {
   return (
@@ -23,6 +24,7 @@ const NetworkBox = ({ onClose }: { onClose: () => void }) => {
           <X className="h-4 w-4" />
         </button>
       </div>
+      <TooltipConfigStrip />
       <div className="p-2 flex-1 overflow-y-auto">
         <NetworkLayersPanel
           isOpen={true}

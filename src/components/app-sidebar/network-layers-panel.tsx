@@ -15,8 +15,29 @@ import {
 } from "@/store/layers-store";
 import { useUdpLayers } from "@/components/map/udp-layers";
 import { useUdpDataStore } from "@/store/udp-data-store";
+import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
 import UdpLayerConfigPopover from "./udp-layer-config-popover";
 import { calculateIgrs } from "@/lib/utils";
+
+// All available icons for mother node selection
+const motherNodeIcons = [
+  "mother-fighter",
+  "fighter1",
+  "fighter2",
+  "fighter3",
+  "fighter4",
+  "fighter5",
+  "fighter6",
+  "fighter7",
+  "fighter8",
+  "fighter9",
+  "fighter10",
+  "fighter11",
+  "fighter12",
+  "fighter13",
+  "fighter14",
+  "helicopter1",
+];
 
 type NetworkLayersPanelProps = {
   isOpen: boolean;
@@ -37,6 +58,9 @@ const NetworkLayersPanel = ({
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const topologyData = useUdpDataStore((state) => state.udpData.topology);
+  const { motherNodeSymbol, setMotherNodeSymbol, groupSymbols, snrColors, setSnrColors, snrLineWidths, setSnrLineWidths } =
+    useUdpSymbolsStore();
+  const [showMotherIconPicker, setShowMotherIconPicker] = useState(false);
 
   // Get UDP layer data - only network members
   const networkMembersLayer = udpLayers.find(
@@ -335,6 +359,291 @@ const NetworkLayersPanel = ({
     }
   }, [topologyGroups.map((g) => g.id).join(",")]);
 
+  // Collect active group icons (to disable them in mother node picker)
+  const activeGroupIconSet = new Set<string>();
+  const defaultGroupIcons: Record<string, string> = {
+    A: "fighter1",
+    B: "fighter2",
+    C: "fighter3",
+    D: "fighter4",
+    E: "fighter5",
+    F: "fighter6",
+    G: "fighter7",
+    H: "fighter8",
+    I: "fighter9",
+    J: "fighter10",
+  };
+  topologyGroups.forEach((group) => {
+    const key = `topology-group-${group.id}`;
+    const sym =
+      groupSymbols[key] || defaultGroupIcons[group.id] || "fighter1";
+    activeGroupIconSet.add(sym);
+  });
+
+  const renderLegend = () => {
+    const hasTopology = topologyData.nodes.size > 0;
+    if (!hasTopology) return null;
+
+    // Current mother icon
+    const currentMotherIcon = motherNodeSymbol || "mother-fighter";
+
+    // Get a sample group icon for the legend
+    const sampleGroupIcon =
+      topologyGroups.length > 0
+        ? groupSymbols[`topology-group-${topologyGroups[0].id}`] ||
+          defaultGroupIcons[topologyGroups[0].id] ||
+          "fighter1"
+        : "fighter1";
+
+    return (
+      <div className="mb-3">
+        <div className="rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm">
+          <div className="text-[13px] font-semibold text-foreground mb-3">
+            Legend
+          </div>
+
+          {/* SNR Gradient */}
+          <div className="mb-3">
+            <div className="text-[11px] font-medium text-zinc-600 mb-1.5">
+              SNR (Signal-to-Noise Ratio)
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-zinc-500">0</span>
+              <div
+                className="flex-1 h-3 rounded-full"
+                style={{
+                  background: `linear-gradient(to right, ${snrColors[0]}, ${snrColors[1]}, ${snrColors[2]})`,
+                }}
+              />
+              <span className="text-[10px] text-zinc-500">100</span>
+            </div>
+            <div className="flex justify-between mt-0.5 px-5">
+              <span className="text-[9px] text-zinc-400">Poor</span>
+              <span className="text-[9px] text-zinc-400">Medium</span>
+              <span className="text-[9px] text-zinc-400">Good</span>
+            </div>
+
+            {/* SNR Color Customization */}
+            <div className="mt-2 pt-2 border-t border-border/30">
+              <div className="flex items-center justify-between gap-2">
+                {(["Poor", "Medium", "Good"] as const).map((label, idx) => {
+                  const colorValue = snrColors[idx];
+                  return (
+                    <div
+                      key={label}
+                      className="flex flex-col items-center gap-1"
+                    >
+                      <span className="text-[9px] text-zinc-500">{label}</span>
+                      <label className="relative cursor-pointer group">
+                        <div
+                          className="w-6 h-6 rounded-md border-2 border-zinc-300 group-hover:border-zinc-500 transition-colors shadow-sm"
+                          style={{ backgroundColor: colorValue }}
+                        />
+                        <input
+                          type="color"
+                          value={colorValue}
+                          onChange={(e) => {
+                            const newColor = e.target.value.toUpperCase();
+                            // Check for duplicate colors
+                            const otherColors = snrColors.filter(
+                              (_, i) => i !== idx
+                            );
+                            if (otherColors.includes(newColor)) return;
+                            const updated = [...snrColors] as [
+                              string,
+                              string,
+                              string,
+                            ];
+                            updated[idx] = newColor;
+                            setSnrColors(updated);
+                          }}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                          title={`Change ${label.toLowerCase()} color`}
+                        />
+                      </label>
+                    </div>
+                  );
+                })}
+
+                {/* Reset button */}
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-[9px] text-zinc-500">&nbsp;</span>
+                  <button
+                    onClick={() => {
+                      setSnrColors(["#FF0000", "#FFFF00", "#00FF00"]);
+                      setSnrLineWidths([1, 3, 5]);
+                    }}
+                    className="text-[9px] text-zinc-400 hover:text-zinc-600 px-1.5 py-1 rounded hover:bg-zinc-100 transition-colors"
+                    title="Reset colors and thickness to defaults"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* SNR Line Thickness */}
+            <div className="mt-2 pt-2 border-t border-border/30">
+              <div className="text-[10px] font-medium text-zinc-500 mb-1.5">
+                Line Thickness (px)
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                {(["Poor", "Medium", "Good"] as const).map((label, idx) => {
+                  const widthValue = snrLineWidths[idx];
+                  return (
+                    <div
+                      key={label}
+                      className="flex flex-col items-center gap-1"
+                    >
+                      <span className="text-[9px] text-zinc-500">{label}</span>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          onClick={() => {
+                            if (widthValue <= 1) return;
+                            const updated = [...snrLineWidths] as [number, number, number];
+                            updated[idx] = widthValue - 1;
+                            setSnrLineWidths(updated);
+                          }}
+                          className="w-5 h-5 flex items-center justify-center rounded border border-zinc-300 hover:bg-zinc-100 text-[10px] text-zinc-600 transition-colors"
+                          title="Decrease"
+                        >
+                          −
+                        </button>
+                        <span className="w-5 text-center text-[10px] font-mono text-zinc-700 font-semibold">
+                          {widthValue}
+                        </span>
+                        <button
+                          onClick={() => {
+                            if (widthValue >= 12) return;
+                            const updated = [...snrLineWidths] as [number, number, number];
+                            updated[idx] = widthValue + 1;
+                            setSnrLineWidths(updated);
+                          }}
+                          className="w-5 h-5 flex items-center justify-center rounded border border-zinc-300 hover:bg-zinc-100 text-[10px] text-zinc-600 transition-colors"
+                          title="Increase"
+                        >
+                          +
+                        </button>
+                      </div>
+                      {/* Preview line */}
+                      <div
+                        className="rounded-full mt-0.5"
+                        style={{
+                          width: "32px",
+                          height: `${widthValue}px`,
+                          backgroundColor: snrColors[idx],
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-[9px] text-zinc-500">&nbsp;</span>
+                  <span className="text-[9px] text-zinc-400">&nbsp;</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Node Icons */}
+          <div className="flex items-center gap-4 mt-2">
+            {/* Mother Node */}
+            <div className="flex items-center gap-1.5">
+              <img
+                src={`/icons/${currentMotherIcon}.svg`}
+                alt="Mother Node"
+                className="w-5 h-5"
+              />
+              <span className="text-[11px] text-zinc-600">Mother Node</span>
+            </div>
+
+            {/* Topology Node */}
+            <div className="flex items-center gap-1.5">
+              <img
+                src={`/icons/${sampleGroupIcon}.svg`}
+                alt="Topology Node"
+                className="w-5 h-5"
+              />
+              <span className="text-[11px] text-zinc-600">Topology Node</span>
+            </div>
+          </div>
+
+          {/* Mother Node Icon Config */}
+          <div className="mt-3 pt-3 border-t border-border/40">
+            <div className="flex items-center justify-between">
+              <div className="text-[11px] font-medium text-zinc-600">
+                Mother Node Icon
+              </div>
+              <button
+                onClick={() => setShowMotherIconPicker(!showMotherIconPicker)}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-border/60 hover:bg-zinc-50 transition-colors"
+              >
+                <img
+                  src={`/icons/${currentMotherIcon}.svg`}
+                  alt="Current"
+                  className="w-4 h-4"
+                />
+                <span className="text-[10px] text-zinc-500">Change</span>
+                <svg
+                  className={`w-3 h-3 text-zinc-400 transition-transform ${
+                    showMotherIconPicker ? "rotate-180" : ""
+                  }`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 9l-7 7-7-7"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            {showMotherIconPicker && (
+              <div className="mt-2 grid grid-cols-6 gap-1">
+                {motherNodeIcons.map((iconName) => {
+                  const isSelected = currentMotherIcon === iconName;
+                  const isUsedByGroup = activeGroupIconSet.has(iconName);
+                  return (
+                    <button
+                      key={iconName}
+                      disabled={isUsedByGroup && iconName !== "mother-fighter"}
+                      onClick={() => {
+                        setMotherNodeSymbol(iconName);
+                        setShowMotherIconPicker(false);
+                      }}
+                      className={`flex items-center justify-center p-1.5 rounded border transition-all ${
+                        isSelected
+                          ? "border-blue-500 bg-blue-100 ring-2 ring-blue-400"
+                          : isUsedByGroup && iconName !== "mother-fighter"
+                          ? "border-gray-200 bg-gray-100 opacity-40 cursor-not-allowed"
+                          : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
+                      }`}
+                      title={
+                        isUsedByGroup && iconName !== "mother-fighter"
+                          ? `Used by group nodes`
+                          : iconName.replace(/-/g, " ")
+                      }
+                    >
+                      <img
+                        src={`/icons/${iconName}.svg`}
+                        alt={iconName}
+                        className="w-4 h-4"
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderTopologyGroups = () => {
     if (topologyGroups.length === 0) {
       return null;
@@ -442,6 +751,15 @@ const NetworkLayersPanel = ({
   };
 
   const renderList = () => {
+    // When network layers are toggled off, hide data from panel too
+    if (!networkLayersVisible) {
+      return (
+        <div className="text-center text-sm text-muted-foreground py-3">
+          Network layers are hidden
+        </div>
+      );
+    }
+
     const hasNetworkMembers = networkMembersData.length > 0;
     const hasTopologyData = topologyData.nodes.size > 0;
 
@@ -551,6 +869,7 @@ const NetworkLayersPanel = ({
             </div>
           </div>
         )}
+        {hasTopologyData && renderLegend()}
         {hasTopologyData && renderTopologyGroups()}
       </div>
     );
