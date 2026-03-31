@@ -5,6 +5,7 @@ import {
   formatLabel,
   calculateIgrs,
 } from "@/lib/utils";
+import { DEFAULT_LAYER_MAX_ZOOM } from "@/lib/constants";
 import {
   normalizeAngleSigned,
   computePolygonPerimeterMeters,
@@ -95,7 +96,7 @@ const formatAttributeLabel = (key: string): string => {
   return withSpaces
     .split(/\s+/)
     .map((word) =>
-      word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : word
+      word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : word,
     )
     .join(" ");
 };
@@ -279,7 +280,7 @@ const Tooltip = () => {
       const handleZoom = () => {
         const zoom = map.getZoom();
         setMapZoom((prev) =>
-          prev === null || Math.abs(prev - zoom) >= 0.01 ? zoom : prev
+          prev === null || Math.abs(prev - zoom) >= 0.01 ? zoom : prev,
         );
         schedulePositionUpdate();
       };
@@ -355,7 +356,7 @@ const Tooltip = () => {
   if (layerInfo && mapZoom !== null) {
     const minZoomCheck =
       layerInfo.minzoom === undefined || mapZoom >= layerInfo.minzoom;
-    const maxZoomCheck = mapZoom <= (layerInfo.maxzoom ?? 20);
+    const maxZoomCheck = mapZoom <= (layerInfo.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM);
     if (!minZoomCheck || !maxZoomCheck) {
       return null;
     }
@@ -472,7 +473,7 @@ const Tooltip = () => {
             {
               label: useIgrs ? "IGRS" : "Latitude",
               value: useIgrs
-                ? calculateIgrs(lng, lat) ?? "—"
+                ? (calculateIgrs(lng, lat) ?? "—")
                 : `${lat.toFixed(5)}°`,
             },
           ];
@@ -499,7 +500,7 @@ const Tooltip = () => {
             {
               label: "Raster Size",
               value: `${width} × ${height} px`,
-            }
+            },
           );
 
           return (
@@ -546,7 +547,7 @@ const Tooltip = () => {
             importantKeys.includes(key) &&
             value !== undefined &&
             value !== null &&
-            typeof value !== "object"
+            typeof value !== "object",
         )
         .map(([key, value]) => ({
           label: formatLabel(key),
@@ -565,10 +566,10 @@ const Tooltip = () => {
           value: useIgrs
             ? calculateIgrs(object.longitude, object.latitude) ||
               `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(
-                4
+                4,
               )}°]`
             : `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(
-                4
+                4,
               )}°]`,
         });
       }
@@ -583,8 +584,8 @@ const Tooltip = () => {
               layer.id === "udp-network-members-layer"
                 ? "Network Member"
                 : layer.id === "udp-topology-nodes-layer"
-                ? "Topology Node"
-                : "Target"
+                  ? "Topology Node"
+                  : "Target"
             }
           />
           {properties.length > 0 && (
@@ -604,17 +605,15 @@ const Tooltip = () => {
                 <button
                   onClick={async (e) => {
                     e.stopPropagation();
-                    const memberId =
-                      (object as any)?.globalId ||
-                      (object as any)?.displayId ||
-                      "Unknown";
-                    const memberName = (object as any)?.callsign || memberId;
+                    const globalId = String(
+                      (object as any)?.globalId ??
+                        (object as any)?.displayId ??
+                        "Unknown",
+                    );
                     try {
                       await MemberAction.notifyAction({
-                        memberId: String(memberId),
-                        action: "call",
-                        memberName: String(memberName),
-                        metadata: JSON.stringify({ type: "video" }),
+                        globalId,
+                        action: "video",
                       });
                     } catch (err) {
                       console.warn("[MemberAction] Plugin not available:", err);
@@ -631,17 +630,15 @@ const Tooltip = () => {
                 <button
                   onClick={async (e) => {
                     e.stopPropagation();
-                    const memberId =
-                      (object as any)?.globalId ||
-                      (object as any)?.displayId ||
-                      "Unknown";
-                    const memberName = (object as any)?.callsign || memberId;
+                    const globalId = String(
+                      (object as any)?.globalId ??
+                        (object as any)?.displayId ??
+                        "Unknown",
+                    );
                     try {
                       await MemberAction.notifyAction({
-                        memberId: String(memberId),
-                        action: "info",
-                        memberName: String(memberName),
-                        metadata: JSON.stringify({ type: "ftp" }),
+                        globalId,
+                        action: "ftp",
                       });
                     } catch (err) {
                       console.warn("[MemberAction] Plugin not available:", err);
@@ -658,17 +655,15 @@ const Tooltip = () => {
                 <button
                   onClick={async (e) => {
                     e.stopPropagation();
-                    const memberId =
-                      (object as any)?.globalId ||
-                      (object as any)?.displayId ||
-                      "Unknown";
-                    const memberName = (object as any)?.callsign || memberId;
+                    const globalId = String(
+                      (object as any)?.globalId ??
+                        (object as any)?.displayId ??
+                        "Unknown",
+                    );
                     try {
                       await MemberAction.notifyAction({
-                        memberId: String(memberId),
+                        globalId,
                         action: "call",
-                        memberName: String(memberName),
-                        metadata: JSON.stringify({ type: "voice" }),
                       });
                     } catch (err) {
                       console.warn("[MemberAction] Plugin not available:", err);
@@ -685,16 +680,15 @@ const Tooltip = () => {
                 <button
                   onClick={async (e) => {
                     e.stopPropagation();
-                    const memberId =
-                      (object as any)?.globalId ||
-                      (object as any)?.displayId ||
-                      "Unknown";
-                    const memberName = (object as any)?.callsign || memberId;
+                    const globalId = String(
+                      (object as any)?.globalId ??
+                        (object as any)?.displayId ??
+                        "Unknown",
+                    );
                     try {
                       await MemberAction.notifyAction({
-                        memberId: String(memberId),
+                        globalId,
                         action: "message",
-                        memberName: String(memberName),
                       });
                     } catch (err) {
                       console.warn("[MemberAction] Plugin not available:", err);
@@ -755,7 +749,7 @@ const Tooltip = () => {
         {
           label: `Target (${coordinateLabel})`,
           value: formatCoordinatePair(layerInfo.azimuthTarget),
-        }
+        },
       );
 
       return (
@@ -842,7 +836,7 @@ const Tooltip = () => {
           nodeProperties.push({
             label: `Location (${coordinateLabel})`,
             value: formatCoordinatePair(
-              object.geometry.coordinates as [number, number]
+              object.geometry.coordinates as [number, number],
             ),
           });
         }
@@ -880,8 +874,8 @@ const Tooltip = () => {
               [
                 object.geometry.coordinates[i + 1][0],
                 object.geometry.coordinates[i + 1][1],
-              ]
-            )
+              ],
+            ),
           );
         }
         geometryInfo = `Distance: ${totalDistance.toFixed(2)} km`;
@@ -894,7 +888,7 @@ const Tooltip = () => {
         object.geometry.coordinates[0]
       ) {
         const areaMeters = computePolygonAreaMeters(
-          object.geometry.coordinates
+          object.geometry.coordinates,
         );
         geometryInfo = `Area: ${formatArea(areaMeters)}`;
       }
@@ -926,29 +920,31 @@ const Tooltip = () => {
         tooltipProperties.push({
           label: `Coordinates (${coordinateLabel})`,
           value: formatCoordinatePair(
-            object.geometry.coordinates as [number, number]
+            object.geometry.coordinates as [number, number],
           ),
         });
       }
 
       // Add other properties
-      const propertyEntries = Object.entries(properties).filter(
-        ([, value]) => isMeaningfulPropertyValue(value)
+      const propertyEntries = Object.entries(properties).filter(([, value]) =>
+        isMeaningfulPropertyValue(value),
       );
 
       propertyEntries
         .sort(([a], [b]) => a.localeCompare(b))
         .forEach(([key, value]) => {
-        tooltipProperties.push({
-          label: formatAttributeLabel(key),
-          value: formatTooltipValue(key, value),
-        });
+          tooltipProperties.push({
+            label: formatAttributeLabel(key),
+            value: formatTooltipValue(key, value),
+          });
         });
 
       const useGridLayout = tooltipProperties.length > 10;
 
       return (
-        <TooltipBox maxWidth={useGridLayout ? "max-w-[380px]" : "max-w-[200px]"}>
+        <TooltipBox
+          maxWidth={useGridLayout ? "max-w-[380px]" : "max-w-[200px]"}
+        >
           {layerInfo?.name && (
             <TooltipHeading
               title={layerInfo.name}
@@ -966,7 +962,7 @@ const Tooltip = () => {
     if (object.sourcePosition && object.targetPosition) {
       const distance = getDistance(
         [object.sourcePosition[0], object.sourcePosition[1]],
-        [object.targetPosition[0], object.targetPosition[1]]
+        [object.targetPosition[0], object.targetPosition[1]],
       );
       const segmentDistances = Array.isArray(layerInfo?.segmentDistancesKm)
         ? layerInfo.segmentDistancesKm
@@ -1015,7 +1011,7 @@ const Tooltip = () => {
             {
               label: "Avg segment",
               value: formatDistance(avgSegmentKm ?? 0),
-            }
+            },
           );
         } else {
           properties.push({
@@ -1034,15 +1030,15 @@ const Tooltip = () => {
         {
           label: `From (${coordinateLabel})`,
           value: formatCoordinatePair(
-            object.sourcePosition as [number, number]
+            object.sourcePosition as [number, number],
           ),
         },
         {
           label: `To (${coordinateLabel})`,
           value: formatCoordinatePair(
-            object.targetPosition as [number, number]
+            object.targetPosition as [number, number],
           ),
-        }
+        },
       );
 
       return (
@@ -1174,7 +1170,9 @@ const Tooltip = () => {
     return (
       <TooltipBox>
         <TooltipHeading title="Map Feature" />
-        <div className="text-gray-600" style={{ fontSize: "0.95em" }}>Hover for details</div>
+        <div className="text-gray-600" style={{ fontSize: "0.95em" }}>
+          Hover for details
+        </div>
       </TooltipBox>
     );
   };

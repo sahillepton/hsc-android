@@ -1,50 +1,45 @@
 import { registerPlugin } from "@capacitor/core";
 
+/** Tooltip → native: only these two fields are sent. */
 export interface MemberActionData {
-  memberId: string; // Global ID of the member
-  action: "call" | "message" | "info"; // Action type
-  memberName?: string; // Optional: Member's name
-  phoneNumber?: string; // Optional: Phone number for call/message
-  metadata?: string; // Optional: Any additional JSON data
+  globalId: string;
+  action: "video" | "ftp" | "call" | "message";
 }
 
 export interface MemberActionPlugin {
-  /**
-   * Notify the native app about a member action
-   * Called when user clicks Call/Message button in tooltip
-   */
   notifyAction(options: MemberActionData): Promise<{ success: boolean }>;
 
-  /**
-   * Listen for responses from native app (optional)
-   */
   addListener(
     eventName: "actionResponse",
-    listenerFunc: (event: { memberId: string; status: string }) => void
+    listenerFunc: (event: { globalId: string; status: string }) => void,
   ): Promise<{ remove: () => void }>;
 }
 
-// ── Platform detection ──
 function isElectron(): boolean {
-  return typeof window !== "undefined" && !!(window as any).electronAPI;
+  return (
+    typeof window !== "undefined" &&
+    typeof (window as Window & { electronAPI?: unknown }).electronAPI !==
+      "undefined"
+  );
 }
 
-// ── Electron desktop stub (not required on desktop) ──
 function createDesktopPlugin(): MemberActionPlugin {
   return {
-    async notifyAction(_options: MemberActionData) {
+    async notifyAction(options: MemberActionData) {
+      void options;
       return { success: false };
     },
     async addListener(
-      _eventName: "actionResponse",
-      _listenerFunc: (event: { memberId: string; status: string }) => void
+      eventName: "actionResponse",
+      listenerFunc: (event: { globalId: string; status: string }) => void,
     ) {
+      void eventName;
+      void listenerFunc;
       return { remove: () => {} };
     },
   };
 }
 
-// ── Export: Electron uses stub, Android uses Capacitor native plugin ──
 const MemberAction: MemberActionPlugin = isElectron()
   ? createDesktopPlugin()
   : registerPlugin<MemberActionPlugin>("MemberAction");

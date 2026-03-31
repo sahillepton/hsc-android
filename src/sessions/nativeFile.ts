@@ -1,11 +1,11 @@
-import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Filesystem } from "@capacitor/filesystem";
 import { Capacitor } from "@capacitor/core";
-import { HSC_FILES_DIR } from "./constants";
+import { getHscFilesDir, HSC_DIRECTORY } from "./constants";
 import { NativeUploader } from "@/plugins/native-uploader";
 
 export type StagedNativeFile = {
   absolutePath: string;
-  logicalPath: string; // "DOCUMENTS/HSC-SESSIONS/FILES/..."
+  logicalPath: string; // "DATA/HSC-SESSIONS/FILES/..."
   size: number;
   mimeType: string;
   status: "staged";
@@ -24,7 +24,7 @@ export function sanitizeFileName(name: string): string {
 export function stampedFileName(
   originalName: string,
   idx = 0,
-  now = Date.now()
+  now = Date.now(),
 ): string {
   return `${now}_${idx}_${sanitizeFileName(originalName)}`;
 }
@@ -51,7 +51,7 @@ export function webviewUrlFromAbsolutePath(absolutePath: string): string {
 export async function fileFromAbsolutePathAsFile(
   absolutePath: string,
   fileName: string,
-  mimeType?: string
+  mimeType?: string,
 ): Promise<File> {
   if (isElectron()) {
     const api = (window as any).electronAPI;
@@ -75,7 +75,7 @@ export async function fileFromAbsolutePathAsFile(
  * Delete a file by absolute path (same approach as restore uses)
  */
 export async function deleteFileByAbsolutePath(
-  absolutePath: string
+  absolutePath: string,
 ): Promise<void> {
   // Use native plugin to delete file directly by absolute path
   // This avoids Capacitor Filesystem directory mapping issues
@@ -87,7 +87,7 @@ export async function deleteFileByAbsolutePath(
     console.error(`[DeleteFile] Error:`, error);
     console.error(
       `[DeleteFile] Error message:`,
-      error instanceof Error ? error.message : String(error)
+      error instanceof Error ? error.message : String(error),
     );
     throw error;
   }
@@ -95,23 +95,26 @@ export async function deleteFileByAbsolutePath(
 
 /**
  * Delete a staged/saved file by logical path (for backward compatibility):
- * "DOCUMENTS/HSC-SESSIONS/FILES/<name>"
+ * "DATA/HSC-SESSIONS/FILES/<name>" (new) or "DOCUMENTS/HSC-SESSIONS/FILES/<name>" (legacy)
  */
 export async function deleteFileByLogicalPath(
-  logicalPath: string
+  logicalPath: string,
 ): Promise<void> {
-  // Convert logical path to expected format and use absolute path approach
-  // This is a fallback - prefer using absolutePath directly
-  const prefix = "DOCUMENTS/";
-  const rel = logicalPath.startsWith(prefix)
-    ? logicalPath.slice(prefix.length)
-    : logicalPath;
-  const fullPath = `documents/${rel}`;
+  const dataPrefix = "DATA/";
+  const docsPrefix = "DOCUMENTS/";
+  let rel: string;
+  if (logicalPath.startsWith(dataPrefix)) {
+    rel = logicalPath.slice(dataPrefix.length);
+  } else if (logicalPath.startsWith(docsPrefix)) {
+    rel = logicalPath.slice(docsPrefix.length);
+  } else {
+    rel = logicalPath;
+  }
 
   try {
     await Filesystem.deleteFile({
-      path: fullPath,
-      directory: Directory.Data,
+      path: rel,
+      directory: HSC_DIRECTORY,
     });
   } catch (error) {
     throw error;
@@ -124,8 +127,8 @@ export async function deleteFileByLogicalPath(
 export async function listSessionFiles(): Promise<string[]> {
   try {
     const r = await Filesystem.readdir({
-      path: HSC_FILES_DIR,
-      directory: Directory.Data, // Plugin saves to app's private files
+      path: getHscFilesDir(),
+      directory: HSC_DIRECTORY,
     });
     return (r.files || []).map((f: any) => f.name ?? String(f));
   } catch {

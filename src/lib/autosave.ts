@@ -1,13 +1,16 @@
 import type { LayerProps } from "@/lib/definitions";
 import { listFilesInDirectory } from "./capacitor-utils";
 import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
+import {
+  HSC_DIRECTORY,
+  getHscBaseDir,
+  getHscManifestPath,
+  getHscUntrackedPath,
+  getHscFilesDir,
+  getAutosaveSessionPath,
+} from "@/sessions/constants";
 
-const AUTOSAVE_SESSION_PATH = "HSC_SESSIONS/autosave_session.zip";
-
-const ensureDirectory = async (
-  dirPath: string,
-  directory = Directory.Documents
-) => {
+const ensureDirectory = async (dirPath: string, directory = HSC_DIRECTORY) => {
   if (!dirPath) return;
   try {
     await Filesystem.mkdir({
@@ -23,7 +26,7 @@ const ensureDirectory = async (
 // Serialize layers, converting non-serializable data to serializable formats
 // Returns serialized layers and bitmaps map (layerId -> blob) for separate storage
 export const serializeLayers = async (
-  layers: LayerProps[]
+  layers: LayerProps[],
 ): Promise<{
   serialized: LayerProps[];
   bitmaps: Map<string, Blob>;
@@ -48,7 +51,7 @@ export const serializeLayers = async (
           const blob = await new Promise<Blob | null>((resolve) => {
             canvas.toBlob(
               (blob: Blob | null) => resolve(blob),
-              "image/png" // PNG preserves all pixel data including transparency
+              "image/png", // PNG preserves all pixel data including transparency
             );
           });
           if (blob) {
@@ -60,7 +63,7 @@ export const serializeLayers = async (
         } catch (error) {
           console.warn(
             `Failed to convert DEM bitmap to blob for layer ${layer.name}:`,
-            error
+            error,
           );
         }
       }
@@ -71,7 +74,10 @@ export const serializeLayers = async (
       if (serializedLayer.elevationData) {
         const elevationData = serializedLayer.elevationData;
         const elevKey = `elevation_${layer.id}.bin`;
-        bitmaps.set(elevKey, new Blob([elevationData.data.buffer as ArrayBuffer]));
+        bitmaps.set(
+          elevKey,
+          new Blob([elevationData.data.buffer as ArrayBuffer]),
+        );
         (serializedLayer as any).elevationData = {
           elevationFileName: elevKey,
           width: elevationData.width,
@@ -91,8 +97,8 @@ export const serializeLayers = async (
 // Save layers as ZIP to HSC_SESSIONS folder (file storage, no size limit)
 export const saveLayers = async (
   layers: LayerProps[],
-  targetPath: string = AUTOSAVE_SESSION_PATH,
-  targetDirectory: Directory = Directory.Documents
+  targetPath: string = getAutosaveSessionPath(),
+  targetDirectory: Directory = HSC_DIRECTORY,
 ): Promise<void> => {
   try {
     // Layers should already have zoom ranges calculated in the store
@@ -194,7 +200,7 @@ export const saveLayers = async (
 // Accepts optional zip object to load bitmaps from separate PNG files
 export const deserializeLayers = async (
   layers: LayerProps[],
-  zip?: any
+  zip?: any,
 ): Promise<LayerProps[]> => {
   const deserializedLayers: LayerProps[] = [];
 
@@ -208,7 +214,7 @@ export const deserializeLayers = async (
         if ((layer as any).bitmapFileName && zip) {
           try {
             const bitmapFile = zip.file(
-              `bitmaps/${(layer as any).bitmapFileName}`
+              `bitmaps/${(layer as any).bitmapFileName}`,
             );
             if (bitmapFile) {
               const blob = await bitmapFile.async("blob");
@@ -248,7 +254,7 @@ export const deserializeLayers = async (
           } catch (error) {
             console.warn(
               `Failed to load bitmap from ZIP for layer ${layer.id}:`,
-              error
+              error,
             );
           }
         }
@@ -286,7 +292,7 @@ export const deserializeLayers = async (
           } catch (error) {
             console.warn(
               "Failed to reconstruct DEM bitmap from data URL:",
-              error
+              error,
             );
           }
         }
@@ -321,7 +327,7 @@ export const deserializeLayers = async (
           } catch (error) {
             console.warn(
               `Failed to reconstruct elevation data for layer ${layer.id}:`,
-              error
+              error,
             );
           }
         }
@@ -331,7 +337,7 @@ export const deserializeLayers = async (
     } catch (error) {
       console.error(
         `Error deserializing layer ${layer.id || "unknown"}:`,
-        error
+        error,
       );
       // Skip this layer but continue with others
     }
@@ -340,14 +346,42 @@ export const deserializeLayers = async (
   return deserializedLayers;
 };
 
+/**
+ * Import sketch layers from `sketch_layers.zip` (same bundle as `saveLayers` / session restore).
+ * Use this when the user uploads that ZIP from an export or from a larger archive.
+ */
+export async function importSketchLayersFromSketchZipBlob(
+  blob: Blob,
+): Promise<LayerProps[]> {
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+    const layersFile = zip.file("layers.json");
+    if (!layersFile) {
+      console.warn("[Sketch import] No layers.json in sketch ZIP");
+      return [];
+    }
+    const layersJson = await layersFile.async("string");
+    const importData = JSON.parse(layersJson);
+    if (!importData.version || !Array.isArray(importData.layers)) {
+      console.warn("[Sketch import] Invalid layers.json in sketch ZIP");
+      return [];
+    }
+    return await deserializeLayers(importData.layers, zip);
+  } catch (error) {
+    console.error("[Sketch import] Failed to import sketch ZIP:", error);
+    return [];
+  }
+}
+
 // Load layers from ZIP file in HSC_SESSIONS folder (file storage)
 export const loadLayers = async (): Promise<LayerProps[]> => {
   try {
     // Try to load from autosave session file
     // Read as base64 for binary ZIP file
     const result = await Filesystem.readFile({
-      path: AUTOSAVE_SESSION_PATH,
-      directory: Directory.Documents,
+      path: getAutosaveSessionPath(),
+      directory: HSC_DIRECTORY,
       encoding: Encoding.UTF8,
     });
 
@@ -404,17 +438,16 @@ export const loadLayers = async (): Promise<LayerProps[]> => {
 
 // Save node icon mappings to file storage
 export const saveNodeIconMappings = async (
-  mappings: Record<string, string>
+  mappings: Record<string, string>,
 ): Promise<void> => {
   try {
     const data = JSON.stringify(mappings);
-    const filePath = "HSC_SESSIONS/node_icon_mappings.json";
+    const filePath = `${getHscBaseDir()}/node_icon_mappings.json`;
 
-    // Ensure directory exists
     try {
       await Filesystem.mkdir({
-        path: "HSC_SESSIONS",
-        directory: Directory.Documents,
+        path: getHscBaseDir(),
+        directory: HSC_DIRECTORY,
         recursive: true,
       });
     } catch (error) {
@@ -424,7 +457,7 @@ export const saveNodeIconMappings = async (
     await Filesystem.writeFile({
       path: filePath,
       data: data,
-      directory: Directory.Documents,
+      directory: HSC_DIRECTORY,
       encoding: Encoding.UTF8,
     });
   } catch (error) {
@@ -437,10 +470,10 @@ export const loadNodeIconMappings = async (): Promise<
   Record<string, string>
 > => {
   try {
-    const filePath = "HSC_SESSIONS/node_icon_mappings.json";
+    const filePath = `${getHscBaseDir()}/node_icon_mappings.json`;
     const result = await Filesystem.readFile({
       path: filePath,
-      directory: Directory.Documents,
+      directory: HSC_DIRECTORY,
       encoding: Encoding.UTF8,
     });
 
@@ -462,8 +495,8 @@ export const clearAutosave = async (): Promise<void> => {
     // Delete session ZIP file
     try {
       await Filesystem.deleteFile({
-        path: AUTOSAVE_SESSION_PATH,
-        directory: Directory.Documents,
+        path: getAutosaveSessionPath(),
+        directory: HSC_DIRECTORY,
       });
     } catch (error) {
       // File might not exist, ignore
@@ -472,8 +505,8 @@ export const clearAutosave = async (): Promise<void> => {
     // Delete node icon mappings file
     try {
       await Filesystem.deleteFile({
-        path: "HSC_SESSIONS/node_icon_mappings.json",
-        directory: Directory.Documents,
+        path: `${getHscBaseDir()}/node_icon_mappings.json`,
+        directory: HSC_DIRECTORY,
       });
     } catch (error) {
       // File might not exist, ignore
@@ -482,12 +515,76 @@ export const clearAutosave = async (): Promise<void> => {
     console.error("Error clearing autosave:", error);
   }
 };
+
+async function tryDeleteCapacitorFile(rel: string): Promise<void> {
+  try {
+    await Filesystem.deleteFile({
+      path: rel,
+      directory: HSC_DIRECTORY,
+    });
+  } catch {
+    // missing file is fine
+  }
+}
+
+/** Android: remove session tree under getExternalFilesDir (…/files/HSC-SESSIONS/…). */
+async function wipeAndroidExternalFilesRoot(): Promise<void> {
+  await tryDeleteCapacitorFile(getHscManifestPath());
+  await tryDeleteCapacitorFile(getHscUntrackedPath());
+  await tryDeleteCapacitorFile(getAutosaveSessionPath());
+  await tryDeleteCapacitorFile(`${getHscBaseDir()}/node_icon_mappings.json`);
+  await tryDeleteCapacitorFile(`${getHscFilesDir()}/sketch_layers.zip`);
+
+  try {
+    await Filesystem.rmdir({
+      path: getHscBaseDir(),
+      directory: HSC_DIRECTORY,
+      recursive: true,
+    });
+  } catch {
+    // folder may not exist
+  }
+}
+
+/**
+ * Flush ALL session files permanently from disk.
+ * Windows: Documents\HSC-SESSIONS\FILES (and whole HSC-SESSIONS under Documents),
+ * plus userData\HSC-SESSIONS (manifest.json, sketch layers via Capacitor EXTERNAL).
+ * Android: entire app external files dir (Android/data/com.example.app/files).
+ */
+export const flushAllSessionFiles = async (): Promise<void> => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const api = (window as any).electronAPI;
+  const isElectron = !!api;
+
+  if (isElectron) {
+    const docsPath: string = await api.getPath("documents");
+    const userDataPath: string = await api.resolveDirectory("EXTERNAL");
+
+    await api.rmdir(`${docsPath}\\${getHscBaseDir()}`);
+    await api.rmdir(`${userDataPath}\\${getHscBaseDir()}`);
+
+    try {
+      await new Promise<void>((resolve) => {
+        const req = indexedDB.deleteDatabase("Disc");
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+        req.onblocked = () => resolve();
+      });
+    } catch {
+      // best-effort
+    }
+  } else {
+    await wipeAndroidExternalFilesRoot();
+  }
+};
+
 // Load layers from a file on app startup
 export const loadLayersFromFile = async (
-  filePath?: string
+  filePath?: string,
 ): Promise<LayerProps[]> => {
   try {
-    const storageDir = Directory.Documents;
+    const storageDir = HSC_DIRECTORY;
 
     // If no file path provided, try to find the most recent export or default file
     if (!filePath) {
@@ -627,10 +724,10 @@ export const loadLayersFromFile = async (
 
 // Load node icon mappings from file
 export const loadNodeIconMappingsFromFile = async (
-  filePath?: string
+  filePath?: string,
 ): Promise<Record<string, string>> => {
   try {
-    const storageDir = Directory.Documents;
+    const storageDir = HSC_DIRECTORY;
 
     // Try to find node_icon_mappings.json in HSC_Layers folder
     const defaultPath = filePath || "HSC_Layers/node_icon_mappings.json";

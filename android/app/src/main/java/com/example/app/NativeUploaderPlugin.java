@@ -94,8 +94,7 @@ public class NativeUploaderPlugin extends Plugin {
 
         ioExecutor.execute(() -> {
             try {
-                // Use the same directory as pickAndStageMany
-                File docsRoot = getContext().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+                File docsRoot = getContext().getExternalFilesDir(null);
                 if (docsRoot == null) docsRoot = getContext().getFilesDir();
 
                 File destDir = new File(docsRoot, "HSC-SESSIONS/FILES");
@@ -116,7 +115,7 @@ public class NativeUploaderPlugin extends Plugin {
 
                 JSObject result = new JSObject();
                 result.put("absolutePath", finalFile.getAbsolutePath());
-                result.put("logicalPath", "DOCUMENTS/HSC-SESSIONS/FILES/" + finalFile.getName());
+                result.put("logicalPath", "DATA/HSC-SESSIONS/FILES/" + finalFile.getName());
                 result.put("size", finalFile.length());
                 result.put("mimeType", mimeType);
 
@@ -173,8 +172,7 @@ public class NativeUploaderPlugin extends Plugin {
 
         ioExecutor.execute(() -> {
             try {
-                // Use external files directory with documents subdirectory (accessible via file manager)
-                File docsRoot = getContext().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+                File docsRoot = getContext().getExternalFilesDir(null);
                 if (docsRoot == null) docsRoot = getContext().getFilesDir();
 
                 File destDir = new File(docsRoot, "HSC-SESSIONS/FILES");
@@ -243,7 +241,7 @@ public class NativeUploaderPlugin extends Plugin {
 
                     JSObject one = new JSObject();
                     one.put("absolutePath", finalFile.getAbsolutePath());
-                    one.put("logicalPath", "DOCUMENTS/HSC-SESSIONS/FILES/" + finalFile.getName());
+                    one.put("logicalPath", "DATA/HSC-SESSIONS/FILES/" + finalFile.getName());
                     one.put("size", finalFile.length());
                     one.put("mimeType", mimeType);
                     one.put("status", "staged");

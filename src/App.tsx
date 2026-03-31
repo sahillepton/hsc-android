@@ -16,9 +16,8 @@ const App = () => {
     const cleanupUntrackedFiles = async () => {
       const toastId = toast.loading("Setting Up App.");
       try {
-        const { loadUntrackedFiles, clearUntracked } = await import(
-          "./sessions/manifestStore"
-        );
+        const { loadUntrackedFiles, clearUntracked } =
+          await import("./sessions/manifestStore");
         const untrackedFiles = await loadUntrackedFiles();
 
         if (untrackedFiles.length > 0) {
@@ -31,7 +30,7 @@ const App = () => {
             } catch (error) {
               console.warn(
                 `[AppStartup] Failed to delete untracked file: ${file.absolutePath}`,
-                error
+                error,
               );
               // Continue with other files even if one fails
             }

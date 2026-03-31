@@ -1,9 +1,9 @@
 import { Filesystem, Encoding } from "@capacitor/filesystem";
 import {
   HSC_DIRECTORY,
-  HSC_MANIFEST_PATH,
-  HSC_BASE_DIR,
-  HSC_UNTRACKED_PATH,
+  getHscManifestPath,
+  getHscBaseDir,
+  getHscUntrackedPath,
 } from "./constants";
 
 export type ManifestStatus = "staged" | "saved" | "staged_delete";
@@ -13,7 +13,7 @@ export type ManifestEntry = {
   layerName: string;
 
   // storage info
-  path: string; // logicalPath: "DOCUMENTS/HSC-SESSIONS/FILES/<name>"
+  path: string; // logicalPath: "DATA/HSC-SESSIONS/FILES/<name>"
   absolutePath: string; // native absolute path (android)
   originalName: string;
   mimeType?: string;
@@ -56,7 +56,7 @@ export function getTempManifest(): ManifestEntry[] {
 export async function loadStoredManifest(): Promise<ManifestEntry[]> {
   try {
     const r = await Filesystem.readFile({
-      path: HSC_MANIFEST_PATH,
+      path: getHscManifestPath(),
       directory: HSC_DIRECTORY,
       encoding: Encoding.UTF8,
     });
@@ -79,7 +79,7 @@ export async function writeManifest(entries: ManifestEntry[]): Promise<void> {
   try {
     // Ensure directory exists
     await Filesystem.mkdir({
-      path: HSC_BASE_DIR,
+      path: getHscBaseDir(),
       directory: HSC_DIRECTORY,
       recursive: true,
     });
@@ -88,7 +88,7 @@ export async function writeManifest(entries: ManifestEntry[]): Promise<void> {
   }
 
   await Filesystem.writeFile({
-    path: HSC_MANIFEST_PATH,
+    path: getHscManifestPath(),
     directory: HSC_DIRECTORY,
     data: JSON.stringify(entries, null, 2),
     encoding: Encoding.UTF8,
@@ -113,14 +113,14 @@ type UntrackedManifest = {
  */
 async function addToUntracked(
   absolutePath: string,
-  layerId: string
+  layerId: string,
 ): Promise<void> {
   try {
     // Load existing untracked files
     let untracked: UntrackedManifest = { files: [] };
     try {
       const result = await Filesystem.readFile({
-        path: HSC_UNTRACKED_PATH,
+        path: getHscUntrackedPath(),
         directory: HSC_DIRECTORY,
         encoding: Encoding.UTF8,
       });
@@ -139,7 +139,7 @@ async function addToUntracked(
     // Ensure directory exists
     try {
       await Filesystem.mkdir({
-        path: HSC_BASE_DIR,
+        path: getHscBaseDir(),
         directory: HSC_DIRECTORY,
         recursive: true,
       });
@@ -149,7 +149,7 @@ async function addToUntracked(
 
     // Write back to disk
     await Filesystem.writeFile({
-      path: HSC_UNTRACKED_PATH,
+      path: getHscUntrackedPath(),
       directory: HSC_DIRECTORY,
       data: JSON.stringify(untracked, null, 2),
       encoding: Encoding.UTF8,
@@ -170,7 +170,7 @@ async function removeFromUntracked(layerId: string): Promise<void> {
     let untracked: UntrackedManifest = { files: [] };
     try {
       const result = await Filesystem.readFile({
-        path: HSC_UNTRACKED_PATH,
+        path: getHscUntrackedPath(),
         directory: HSC_DIRECTORY,
         encoding: Encoding.UTF8,
       });
@@ -188,7 +188,7 @@ async function removeFromUntracked(layerId: string): Promise<void> {
     if (untracked.files.length === 0) {
       try {
         await Filesystem.deleteFile({
-          path: HSC_UNTRACKED_PATH,
+          path: getHscUntrackedPath(),
           directory: HSC_DIRECTORY,
         });
       } catch {
@@ -196,7 +196,7 @@ async function removeFromUntracked(layerId: string): Promise<void> {
       }
     } else {
       await Filesystem.writeFile({
-        path: HSC_UNTRACKED_PATH,
+        path: getHscUntrackedPath(),
         directory: HSC_DIRECTORY,
         data: JSON.stringify(untracked, null, 2),
         encoding: Encoding.UTF8,
@@ -215,7 +215,7 @@ async function removeFromUntracked(layerId: string): Promise<void> {
 export async function loadUntrackedFiles(): Promise<UntrackedFile[]> {
   try {
     const result = await Filesystem.readFile({
-      path: HSC_UNTRACKED_PATH,
+      path: getHscUntrackedPath(),
       directory: HSC_DIRECTORY,
       encoding: Encoding.UTF8,
     });
@@ -234,7 +234,7 @@ export async function loadUntrackedFiles(): Promise<UntrackedFile[]> {
 export async function clearUntracked(): Promise<void> {
   try {
     await Filesystem.deleteFile({
-      path: HSC_UNTRACKED_PATH,
+      path: getHscUntrackedPath(),
       directory: HSC_DIRECTORY,
     });
   } catch {
@@ -247,7 +247,7 @@ export async function clearUntracked(): Promise<void> {
  * If status is "staged", also add to untracked.json
  */
 export async function upsertTempManifestEntry(
-  entry: ManifestEntry
+  entry: ManifestEntry,
 ): Promise<void> {
   const idx = tempManifest.findIndex((x) => x.layerId === entry.layerId);
   const wasStaged = idx >= 0 && tempManifest[idx].status === "staged";
@@ -283,7 +283,7 @@ export async function upsertManifestEntry(entry: ManifestEntry): Promise<void> {
  */
 export async function updateManifestColor(
   layerId: string,
-  color: [number, number, number] | [number, number, number, number]
+  color: [number, number, number] | [number, number, number, number],
 ): Promise<void> {
   const entry = tempManifest.find((x) => x.layerId === layerId);
   if (entry) {
@@ -361,7 +361,7 @@ export async function markLayerStagedDelete(layerId: string): Promise<void> {
     } catch (error) {
       console.error(
         `[Manifest] Error deleting file for layer ${layerId}:`,
-        error
+        error,
       );
     }
     // Remove from untracked.json
@@ -400,7 +400,7 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
 
   // Delete files with staged_delete status
   const stagedDeleteEntries = tempManifest.filter(
-    (e) => e.status === "staged_delete"
+    (e) => e.status === "staged_delete",
   );
   for (const entry of stagedDeleteEntries) {
     try {
@@ -408,7 +408,7 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
     } catch (error) {
       console.error(
         `[Manifest] Error deleting staged_delete file ${entry.originalName}:`,
-        error
+        error,
       );
     }
   }
@@ -417,7 +417,7 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
   let m: ManifestEntry[] = tempManifest
     .filter((e) => e.status !== "staged_delete")
     .map((e) =>
-      e.status === "staged" ? { ...e, status: "saved" as ManifestStatus } : e
+      e.status === "staged" ? { ...e, status: "saved" as ManifestStatus } : e,
     );
 
   // Load stored manifest to find files that need to be deleted
@@ -429,7 +429,7 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
   // Find files in stored manifest that are not in the new manifest
   const filesToDelete = storedManifest.filter(
     (entry) =>
-      entry.status === "saved" && !newManifestLayerIds.has(entry.layerId)
+      entry.status === "saved" && !newManifestLayerIds.has(entry.layerId),
   );
 
   // Delete files that are in stored manifest but not in new manifest
@@ -440,7 +440,7 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
       } catch (error) {
         console.error(
           `[Manifest] Error deleting file ${entry.originalName}:`,
-          error
+          error,
         );
       }
     }

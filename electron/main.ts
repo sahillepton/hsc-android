@@ -47,17 +47,30 @@ app.on("activate", () => {
 // ── Helper ──
 function resolveDirectory(dir: string): string {
   switch (dir) {
-    case "DOCUMENTS": return app.getPath("documents");
-    case "DATA":      return app.getPath("userData");
-    case "CACHE":     return app.getPath("temp");
-    case "DESKTOP":   return app.getPath("desktop");
-    case "DOWNLOADS": return app.getPath("downloads");
-    default:          return app.getPath("documents");
+    case "DOCUMENTS":
+      return app.getPath("documents");
+    case "DATA":
+      return app.getPath("userData");
+    case "EXTERNAL":
+      return app.getPath("userData");
+    case "CACHE":
+      return app.getPath("temp");
+    case "DESKTOP":
+      return app.getPath("desktop");
+    case "DOWNLOADS":
+      return app.getPath("downloads");
+    default:
+      return app.getPath("documents");
   }
 }
 
 async function pathExists(p: string): Promise<boolean> {
-  try { await fs.access(p); return true; } catch { return false; }
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ── Filesystem IPC (all async) ──
@@ -75,21 +88,27 @@ ipcMain.handle("fs:readFileBinary", async (_e, p: string) => {
   return buf; // Buffer → Uint8Array through IPC structured clone
 });
 
-ipcMain.handle("fs:readFileInDir", async (_e, rel: string, dir: string, enc?: string) => {
-  const full = path.join(resolveDirectory(dir), rel);
-  if (!(await pathExists(full))) return null;
-  if (enc === "base64") {
-    const buf = await fs.readFile(full);
-    return buf.toString("base64");
-  }
-  return await fs.readFile(full, "utf-8");
-});
+ipcMain.handle(
+  "fs:readFileInDir",
+  async (_e, rel: string, dir: string, enc?: string) => {
+    const full = path.join(resolveDirectory(dir), rel);
+    if (!(await pathExists(full))) return null;
+    if (enc === "base64") {
+      const buf = await fs.readFile(full);
+      return buf.toString("base64");
+    }
+    return await fs.readFile(full, "utf-8");
+  },
+);
 
-ipcMain.handle("fs:readFileInDirBinary", async (_e, rel: string, dir: string) => {
-  const full = path.join(resolveDirectory(dir), rel);
-  if (!(await pathExists(full))) return null;
-  return await fs.readFile(full); // raw Buffer
-});
+ipcMain.handle(
+  "fs:readFileInDirBinary",
+  async (_e, rel: string, dir: string) => {
+    const full = path.join(resolveDirectory(dir), rel);
+    if (!(await pathExists(full))) return null;
+    return await fs.readFile(full); // raw Buffer
+  },
+);
 
 ipcMain.handle("fs:writeFile", async (_e, p: string, data: string) => {
   await fs.mkdir(path.dirname(p), { recursive: true });
@@ -97,13 +116,16 @@ ipcMain.handle("fs:writeFile", async (_e, p: string, data: string) => {
   return p;
 });
 
-ipcMain.handle("fs:writeFileInDir", async (_e, rel: string, dir: string, data: string, enc?: string) => {
-  const full = path.join(resolveDirectory(dir), rel);
-  await fs.mkdir(path.dirname(full), { recursive: true });
-  if (enc === "base64") await fs.writeFile(full, Buffer.from(data, "base64"));
-  else await fs.writeFile(full, data, "utf-8");
-  return full;
-});
+ipcMain.handle(
+  "fs:writeFileInDir",
+  async (_e, rel: string, dir: string, data: string, enc?: string) => {
+    const full = path.join(resolveDirectory(dir), rel);
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    if (enc === "base64") await fs.writeFile(full, Buffer.from(data, "base64"));
+    else await fs.writeFile(full, data, "utf-8");
+    return full;
+  },
+);
 
 ipcMain.handle("fs:deleteFile", async (_e, p: string) => {
   if (await pathExists(p)) await fs.unlink(p);
@@ -119,12 +141,18 @@ ipcMain.handle("fs:mkdir", async (_e, rel: string, dir: string) => {
   await fs.mkdir(full, { recursive: true });
 });
 
+ipcMain.handle("fs:rmdir", async (_e, dirPath: string) => {
+  if (await pathExists(dirPath))
+    await fs.rm(dirPath, { recursive: true, force: true });
+});
+
 ipcMain.handle("fs:readdirInDir", async (_e, rel: string, dir: string) => {
   const full = path.join(resolveDirectory(dir), rel || "");
   if (!(await pathExists(full))) return [];
   const entries = await fs.readdir(full, { withFileTypes: true });
-  return entries.map(d => ({
-    name: d.name, type: d.isDirectory() ? "directory" : "file",
+  return entries.map((d) => ({
+    name: d.name,
+    type: d.isDirectory() ? "directory" : "file",
   }));
 });
 
@@ -138,13 +166,16 @@ ipcMain.handle("fs:stat", async (_e, p: string) => {
 });
 
 // ── Preferences IPC (async) ──
-const prefsFilePath = () => path.join(app.getPath("userData"), "hsc-prefs.json");
+const prefsFilePath = () =>
+  path.join(app.getPath("userData"), "hsc-prefs.json");
 
 async function loadPrefs(): Promise<Record<string, string>> {
   try {
     const data = await fs.readFile(prefsFilePath(), "utf-8");
     return JSON.parse(data);
-  } catch { return {}; }
+  } catch {
+    return {};
+  }
 }
 
 async function savePrefs(p: Record<string, string>) {
@@ -152,20 +183,45 @@ async function savePrefs(p: Record<string, string>) {
   await fs.writeFile(prefsFilePath(), JSON.stringify(p, null, 2), "utf-8");
 }
 
-ipcMain.handle("prefs:get", async (_e, k: string) => (await loadPrefs())[k] ?? null);
+ipcMain.handle(
+  "prefs:get",
+  async (_e, k: string) => (await loadPrefs())[k] ?? null,
+);
 ipcMain.handle("prefs:set", async (_e, k: string, v: string) => {
-  const p = await loadPrefs(); p[k] = v; await savePrefs(p);
+  const p = await loadPrefs();
+  p[k] = v;
+  await savePrefs(p);
 });
 ipcMain.handle("prefs:remove", async (_e, k: string) => {
-  const p = await loadPrefs(); delete p[k]; await savePrefs(p);
+  const p = await loadPrefs();
+  delete p[k];
+  await savePrefs(p);
 });
 
 // ── Dialog IPC ──
 ipcMain.handle("dialog:openFile", async (_e, opts?: any) => {
   const r = await dialog.showOpenDialog(mainWindow!, {
-    properties: opts?.multiSelections ? ["openFile", "multiSelections"] : ["openFile"],
+    properties: opts?.multiSelections
+      ? ["openFile", "multiSelections"]
+      : ["openFile"],
     filters: opts?.filters || [
-      { name: "GIS Files", extensions: ["json","geojson","csv","shp","zip","tif","tiff","xlsx","gpx","kml","kmz","hgt"] },
+      {
+        name: "GIS Files",
+        extensions: [
+          "json",
+          "geojson",
+          "csv",
+          "shp",
+          "zip",
+          "tif",
+          "tiff",
+          "xlsx",
+          "gpx",
+          "kml",
+          "kmz",
+          "hgt",
+        ],
+      },
       { name: "All Files", extensions: ["*"] },
     ],
   });
@@ -173,22 +229,31 @@ ipcMain.handle("dialog:openFile", async (_e, opts?: any) => {
 });
 
 ipcMain.handle("dialog:openFolder", async () => {
-  const r = await dialog.showOpenDialog(mainWindow!, { properties: ["openDirectory"] });
+  const r = await dialog.showOpenDialog(mainWindow!, {
+    properties: ["openDirectory"],
+  });
   return r.filePaths[0] || null;
 });
 
-ipcMain.handle("dialog:saveFile", async (_e, defaultPath: string, filters?: any[]) => {
-  const r = await dialog.showSaveDialog(mainWindow!, {
-    defaultPath,
-    filters: filters || [{ name: "All Files", extensions: ["*"] }],
-  });
-  return r.filePath || null;
-});
+ipcMain.handle(
+  "dialog:saveFile",
+  async (_e, defaultPath: string, filters?: any[]) => {
+    const r = await dialog.showSaveDialog(mainWindow!, {
+      defaultPath,
+      filters: filters || [{ name: "All Files", extensions: ["*"] }],
+    });
+    return r.filePath || null;
+  },
+);
 
 // ── App paths ──
-ipcMain.handle("app:getPath", async (_e, name: string) => app.getPath(name as any));
+ipcMain.handle("app:getPath", async (_e, name: string) =>
+  app.getPath(name as any),
+);
 ipcMain.handle("app:getDocumentsPath", async () => app.getPath("documents"));
-ipcMain.handle("app:resolveDirectory", async (_e, dir: string) => resolveDirectory(dir));
+ipcMain.handle("app:resolveDirectory", async (_e, dir: string) =>
+  resolveDirectory(dir),
+);
 
 // ── Screenshot (async) ──
 ipcMain.handle("screenshot:capture", async () => {
@@ -205,96 +270,153 @@ ipcMain.handle("screenshot:capture", async () => {
   }
 });
 
-ipcMain.handle("shell:showItemInFolder", async (_e, p: string) => shell.showItemInFolder(p));
+ipcMain.handle("shell:showItemInFolder", async (_e, p: string) =>
+  shell.showItemInFolder(p),
+);
 
 // ── NativeUploader IPC (async) ──
 function getMimeTypeFromExt(ext: string): string {
   const mimes: Record<string, string> = {
-    ".json": "application/json", ".geojson": "application/geo+json",
-    ".csv": "text/csv", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".shp": "application/x-shapefile", ".zip": "application/zip",
-    ".tif": "image/tiff", ".tiff": "image/tiff",
-    ".gpx": "application/gpx+xml", ".kml": "application/vnd.google-earth.kml+xml",
-    ".kmz": "application/vnd.google-earth.kmz", ".hgt": "application/octet-stream",
-    ".pbf": "application/x-protobuf", ".png": "image/png", ".jpg": "image/jpeg",
+    ".json": "application/json",
+    ".geojson": "application/geo+json",
+    ".csv": "text/csv",
+    ".xlsx":
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".shp": "application/x-shapefile",
+    ".zip": "application/zip",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".gpx": "application/gpx+xml",
+    ".kml": "application/vnd.google-earth.kml+xml",
+    ".kmz": "application/vnd.google-earth.kmz",
+    ".hgt": "application/octet-stream",
+    ".pbf": "application/x-protobuf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
   };
   return mimes[ext.toLowerCase()] || "application/octet-stream";
 }
 
 function getSessionFilesDir(): string {
-  return path.join(app.getPath("documents"), "HSC-SESSIONS", "FILES");
+  return path.join(app.getPath("userData"), "HSC-SESSIONS", "FILES");
 }
 
-ipcMain.handle("nativeUploader:pickAndStageMany", async (_e, maxFiles?: number) => {
-  const r = await dialog.showOpenDialog(mainWindow!, {
-    properties: maxFiles === 1 ? ["openFile"] : ["openFile", "multiSelections"],
-    filters: [
-      { name: "GIS Files", extensions: ["json", "geojson", "csv", "shp", "zip", "tif", "tiff", "xlsx", "gpx", "kml", "kmz", "hgt"] },
-      { name: "All Files", extensions: ["*"] },
-    ],
-  });
+ipcMain.handle(
+  "nativeUploader:pickAndStageMany",
+  async (_e, maxFiles?: number) => {
+    const r = await dialog.showOpenDialog(mainWindow!, {
+      properties:
+        maxFiles === 1 ? ["openFile"] : ["openFile", "multiSelections"],
+      filters: [
+        {
+          name: "GIS Files",
+          extensions: [
+            "json",
+            "geojson",
+            "csv",
+            "shp",
+            "zip",
+            "tif",
+            "tiff",
+            "xlsx",
+            "gpx",
+            "kml",
+            "kmz",
+            "hgt",
+          ],
+        },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    });
 
-  if (r.canceled || r.filePaths.length === 0) {
-    return { files: [] };
-  }
+    if (r.canceled || r.filePaths.length === 0) {
+      return { files: [] };
+    }
 
-  const filePaths = maxFiles ? r.filePaths.slice(0, maxFiles) : r.filePaths;
-  const filesDir = getSessionFilesDir();
-  await fs.mkdir(filesDir, { recursive: true });
+    const filePaths = maxFiles ? r.filePaths.slice(0, maxFiles) : r.filePaths;
+    const filesDir = getSessionFilesDir();
+    await fs.mkdir(filesDir, { recursive: true });
 
-  const staged: Array<{absolutePath: string; logicalPath: string; size: number; mimeType: string; status: "staged"; originalName: string}> = [];
-  for (let i = 0; i < filePaths.length; i++) {
-    const src = filePaths[i];
-    const originalName = path.basename(src);
-    const stamp = `${Date.now()}_${i}_${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const staged: Array<{
+      absolutePath: string;
+      logicalPath: string;
+      size: number;
+      mimeType: string;
+      status: "staged";
+      originalName: string;
+    }> = [];
+    for (let i = 0; i < filePaths.length; i++) {
+      const src = filePaths[i];
+      const originalName = path.basename(src);
+      const stamp = `${Date.now()}_${i}_${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const dest = path.join(filesDir, stamp);
+
+      await fs.copyFile(src, dest);
+      const stat = await fs.stat(dest);
+      const ext = path.extname(originalName);
+
+      staged.push({
+        absolutePath: dest,
+        logicalPath: `DATA/HSC-SESSIONS/FILES/${stamp}`,
+        size: stat.size,
+        mimeType: getMimeTypeFromExt(ext),
+        status: "staged" as const,
+        originalName,
+      });
+    }
+
+    return { files: staged };
+  },
+);
+
+ipcMain.handle(
+  "nativeUploader:deleteFile",
+  async (_e, absolutePath: string) => {
+    if (absolutePath && (await pathExists(absolutePath))) {
+      await fs.unlink(absolutePath);
+    }
+  },
+);
+
+ipcMain.handle(
+  "nativeUploader:saveExtractedFile",
+  async (_e, base64Data: string, fileName: string, mimeType?: string) => {
+    const filesDir = getSessionFilesDir();
+    await fs.mkdir(filesDir, { recursive: true });
+
+    const stamp = `${Date.now()}_0_${fileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
     const dest = path.join(filesDir, stamp);
 
-    await fs.copyFile(src, dest);
+    await fs.writeFile(dest, Buffer.from(base64Data, "base64"));
     const stat = await fs.stat(dest);
-    const ext = path.extname(originalName);
 
-    staged.push({
+    return {
       absolutePath: dest,
-      logicalPath: `DOCUMENTS/HSC-SESSIONS/FILES/${stamp}`,
+      logicalPath: `DATA/HSC-SESSIONS/FILES/${stamp}`,
       size: stat.size,
-      mimeType: getMimeTypeFromExt(ext),
-      status: "staged" as const,
-      originalName,
-    });
-  }
-
-  return { files: staged };
-});
-
-ipcMain.handle("nativeUploader:deleteFile", async (_e, absolutePath: string) => {
-  if (absolutePath && (await pathExists(absolutePath))) {
-    await fs.unlink(absolutePath);
-  }
-});
-
-ipcMain.handle("nativeUploader:saveExtractedFile", async (_e, base64Data: string, fileName: string, mimeType?: string) => {
-  const filesDir = getSessionFilesDir();
-  await fs.mkdir(filesDir, { recursive: true });
-
-  const stamp = `${Date.now()}_0_${fileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-  const dest = path.join(filesDir, stamp);
-
-  await fs.writeFile(dest, Buffer.from(base64Data, "base64"));
-  const stat = await fs.stat(dest);
-
-  return {
-    absolutePath: dest,
-    logicalPath: `DOCUMENTS/HSC-SESSIONS/FILES/${stamp}`,
-    size: stat.size,
-    mimeType: mimeType || getMimeTypeFromExt(path.extname(fileName)),
-  };
-});
+      mimeType: mimeType || getMimeTypeFromExt(path.extname(fileName)),
+    };
+  },
+);
 
 // ── ZipFolder IPC ──
 const ALLOWED_EXTENSIONS = new Set([
-  "tif", "tiff", "hgt", "dett",
-  "geojson", "json", "csv", "gpx", "kml", "kmz", "wkt",
-  "shp", "shx", "dbf", "prj", "cpg",
+  "tif",
+  "tiff",
+  "hgt",
+  "dett",
+  "geojson",
+  "json",
+  "csv",
+  "gpx",
+  "kml",
+  "kmz",
+  "wkt",
+  "shp",
+  "shx",
+  "dbf",
+  "prj",
+  "cpg",
   "zip",
 ]);
 
@@ -305,14 +427,24 @@ type ExtractedFileInfo = {
   size: number;
 };
 
-function getFileType(lowerName: string): "vector" | "tiff" | "shapefile_component" {
-  if (lowerName.endsWith(".tif") || lowerName.endsWith(".tiff") ||
-      lowerName.endsWith(".hgt") || lowerName.endsWith(".dett")) {
+function getFileType(
+  lowerName: string,
+): "vector" | "tiff" | "shapefile_component" {
+  if (
+    lowerName.endsWith(".tif") ||
+    lowerName.endsWith(".tiff") ||
+    lowerName.endsWith(".hgt") ||
+    lowerName.endsWith(".dett")
+  ) {
     return "tiff";
   }
-  if (lowerName.endsWith(".shp") || lowerName.endsWith(".shx") ||
-      lowerName.endsWith(".dbf") || lowerName.endsWith(".prj") ||
-      lowerName.endsWith(".cpg")) {
+  if (
+    lowerName.endsWith(".shp") ||
+    lowerName.endsWith(".shx") ||
+    lowerName.endsWith(".dbf") ||
+    lowerName.endsWith(".prj") ||
+    lowerName.endsWith(".cpg")
+  ) {
     return "shapefile_component";
   }
   return "vector";
@@ -322,7 +454,7 @@ async function extractZipRecursive(
   zipBuf: Buffer,
   destDir: string,
   depth: number,
-  maxDepth: number
+  maxDepth: number,
 ): Promise<ExtractedFileInfo[]> {
   if (depth > maxDepth) return [];
 
@@ -334,16 +466,22 @@ async function extractZipRecursive(
 
     const fileName = path.basename(relativeName);
     const lowerName = fileName.toLowerCase();
-    const ext = lowerName.lastIndexOf(".") > 0
-      ? lowerName.substring(lowerName.lastIndexOf(".") + 1)
-      : "";
+    const ext =
+      lowerName.lastIndexOf(".") > 0
+        ? lowerName.substring(lowerName.lastIndexOf(".") + 1)
+        : "";
 
     if (!ext || !ALLOWED_EXTENSIONS.has(ext)) continue;
 
     const data = await entry.async("nodebuffer");
 
     if (lowerName.endsWith(".zip")) {
-      const nested = await extractZipRecursive(data, destDir, depth + 1, maxDepth);
+      const nested = await extractZipRecursive(
+        data,
+        destDir,
+        depth + 1,
+        maxDepth,
+      );
       results.push(...nested);
       continue;
     }
@@ -374,15 +512,19 @@ async function extractZipRecursive(
 
 async function processShapefiles(
   files: ExtractedFileInfo[],
-  destDir: string
+  destDir: string,
 ): Promise<ExtractedFileInfo[]> {
   const shapefileGroups = new Map<string, ExtractedFileInfo[]>();
 
   for (const file of files) {
     const lowerName = file.name.toLowerCase();
-    if (lowerName.endsWith(".shp") || lowerName.endsWith(".shx") ||
-        lowerName.endsWith(".dbf") || lowerName.endsWith(".prj") ||
-        lowerName.endsWith(".cpg")) {
+    if (
+      lowerName.endsWith(".shp") ||
+      lowerName.endsWith(".shx") ||
+      lowerName.endsWith(".dbf") ||
+      lowerName.endsWith(".prj") ||
+      lowerName.endsWith(".cpg")
+    ) {
       const baseName = lowerName.replace(/\.(shp|shx|dbf|prj|cpg)$/, "");
       const group = shapefileGroups.get(baseName) || [];
       group.push(file);
@@ -394,8 +536,12 @@ async function processShapefiles(
   const processedPaths = new Set<string>();
 
   for (const [baseName, components] of shapefileGroups.entries()) {
-    const hasShp = components.some(c => c.name.toLowerCase().endsWith(".shp"));
-    const hasDbf = components.some(c => c.name.toLowerCase().endsWith(".dbf"));
+    const hasShp = components.some((c) =>
+      c.name.toLowerCase().endsWith(".shp"),
+    );
+    const hasDbf = components.some((c) =>
+      c.name.toLowerCase().endsWith(".dbf"),
+    );
 
     if (hasShp && hasDbf) {
       const zip = new JSZip();
@@ -404,7 +550,10 @@ async function processShapefiles(
         zip.file(comp.name, buf);
       }
 
-      const zipBuf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+      const zipBuf = await zip.generateAsync({
+        type: "nodebuffer",
+        compression: "DEFLATE",
+      });
       const zipName = `${baseName}.zip`;
       const zipPath = path.join(destDir, zipName);
       await fs.writeFile(zipPath, zipBuf);
@@ -419,7 +568,11 @@ async function processShapefiles(
 
       for (const comp of components) {
         processedPaths.add(comp.absolutePath);
-        try { await fs.unlink(comp.absolutePath); } catch { /* ignore */ }
+        try {
+          await fs.unlink(comp.absolutePath);
+        } catch {
+          /* ignore */
+        }
       }
     } else {
       for (const comp of components) {
@@ -439,28 +592,31 @@ async function processShapefiles(
   return result;
 }
 
-ipcMain.handle("zipFolder:extractZipRecursive", async (_e, zipPath: string, outputDir?: string) => {
-  const dir = outputDir || "HSC-SESSIONS/FILES";
-  const destDir = path.join(app.getPath("documents"), dir);
-  await fs.mkdir(destDir, { recursive: true });
+ipcMain.handle(
+  "zipFolder:extractZipRecursive",
+  async (_e, zipPath: string, outputDir?: string) => {
+    const dir = outputDir || "HSC-SESSIONS/FILES";
+    const destDir = path.join(app.getPath("documents"), dir);
+    await fs.mkdir(destDir, { recursive: true });
 
-  if (!(await pathExists(zipPath))) {
-    throw new Error(`ZIP file does not exist: ${zipPath}`);
-  }
+    if (!(await pathExists(zipPath))) {
+      throw new Error(`ZIP file does not exist: ${zipPath}`);
+    }
 
-  const zipBuf = await fs.readFile(zipPath);
-  const extractedFiles = await extractZipRecursive(zipBuf, destDir, 0, 10);
-  const finalFiles = await processShapefiles(extractedFiles, destDir);
+    const zipBuf = await fs.readFile(zipPath);
+    const extractedFiles = await extractZipRecursive(zipBuf, destDir, 0, 10);
+    const finalFiles = await processShapefiles(extractedFiles, destDir);
 
-  return {
-    files: finalFiles.map(f => ({
-      absolutePath: f.absolutePath,
-      name: f.name,
-      type: f.type === "shapefile_component" ? "vector" : f.type,
-      size: f.size,
-    })),
-  };
-});
+    return {
+      files: finalFiles.map((f) => ({
+        absolutePath: f.absolutePath,
+        name: f.name,
+        type: f.type === "shapefile_component" ? "vector" : f.type,
+        size: f.size,
+      })),
+    };
+  },
+);
 
 ipcMain.handle("zipFolder:zipHscSessionsFolder", async () => {
   const sessionsDir = path.join(app.getPath("documents"), "HSC-SESSIONS");
@@ -486,7 +642,10 @@ ipcMain.handle("zipFolder:zipHscSessionsFolder", async () => {
 
   await addDirToZip(sessionsDir, zip);
 
-  const zipBuf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  const zipBuf = await zip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+  });
   const zipName = `HSC-SESSIONS_${Date.now()}.zip`;
   const zipPath = path.join(app.getPath("documents"), zipName);
   await fs.writeFile(zipPath, zipBuf);
@@ -495,25 +654,35 @@ ipcMain.handle("zipFolder:zipHscSessionsFolder", async () => {
   return { absolutePath: zipPath, fileName: zipName, size: stat.size };
 });
 
-ipcMain.handle("zipFolder:zipManifestFiles", async (_e, files: Array<{ absolutePath: string; originalName: string }>) => {
-  const zip = new JSZip();
+ipcMain.handle(
+  "zipFolder:zipManifestFiles",
+  async (_e, files: Array<{ absolutePath: string; originalName: string }>) => {
+    const zip = new JSZip();
 
-  for (const file of files) {
-    if (await pathExists(file.absolutePath)) {
-      const buf = await fs.readFile(file.absolutePath);
-      zip.file(file.originalName || path.basename(file.absolutePath), buf);
+    for (const file of files) {
+      if (await pathExists(file.absolutePath)) {
+        const buf = await fs.readFile(file.absolutePath);
+        zip.file(file.originalName || path.basename(file.absolutePath), buf);
+      }
     }
-  }
 
-  const zipBuf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-  const zipName = `HSC-Export_${Date.now()}.zip`;
-  const zipPath = path.join(app.getPath("documents"), "HSC-SESSIONS", zipName);
-  await fs.mkdir(path.dirname(zipPath), { recursive: true });
-  await fs.writeFile(zipPath, zipBuf);
-  const stat = await fs.stat(zipPath);
+    const zipBuf = await zip.generateAsync({
+      type: "nodebuffer",
+      compression: "DEFLATE",
+    });
+    const zipName = `HSC-Export_${Date.now()}.zip`;
+    const zipPath = path.join(
+      app.getPath("documents"),
+      "HSC-SESSIONS",
+      zipName,
+    );
+    await fs.mkdir(path.dirname(zipPath), { recursive: true });
+    await fs.writeFile(zipPath, zipBuf);
+    const stat = await fs.stat(zipPath);
 
-  return { absolutePath: zipPath, fileName: zipName, size: stat.size };
-});
+    return { absolutePath: zipPath, fileName: zipName, size: stat.size };
+  },
+);
 
 // ── TileCache IPC ──
 let tileCacheDir: string = "";
@@ -523,24 +692,29 @@ ipcMain.handle("tileCache:setTilesDirectory", async (_e, tilePath: string) => {
   return { success: true };
 });
 
-ipcMain.handle("tileCache:getTile", async (_e, z: string, x: string, y: string) => {
-  if (!tileCacheDir) {
-    throw new Error("Tiles directory not set");
-  }
-  const tilePath = path.join(tileCacheDir, z, x, `${y}.pbf`);
-  if (!(await pathExists(tilePath))) {
-    throw new Error(`Tile not found: ${z}/${x}/${y}`);
-  }
-  const buf = await fs.readFile(tilePath);
-  return { data: buf.toString("base64"), fromCache: true };
-});
+ipcMain.handle(
+  "tileCache:getTile",
+  async (_e, z: string, x: string, y: string) => {
+    if (!tileCacheDir) {
+      throw new Error("Tiles directory not set");
+    }
+    const tilePath = path.join(tileCacheDir, z, x, `${y}.pbf`);
+    if (!(await pathExists(tilePath))) {
+      throw new Error(`Tile not found: ${z}/${x}/${y}`);
+    }
+    const buf = await fs.readFile(tilePath);
+    return { data: buf.toString("base64"), fromCache: true };
+  },
+);
 
 ipcMain.handle("tileCache:clearCache", async () => {
   return { success: true };
 });
 
 ipcMain.handle("tileCache:pickDirectory", async () => {
-  const r = await dialog.showOpenDialog(mainWindow!, { properties: ["openDirectory"] });
+  const r = await dialog.showOpenDialog(mainWindow!, {
+    properties: ["openDirectory"],
+  });
   if (r.filePaths.length > 0) {
     tileCacheDir = r.filePaths[0];
     return { path: tileCacheDir };
@@ -550,11 +724,15 @@ ipcMain.handle("tileCache:pickDirectory", async () => {
 
 // ── Udp IPC ──
 let udpSocket: dgram.Socket | null = null;
-const UDP_LISTEN_PORT = 40074;
+const UDP_LISTEN_PORT = 40074; // Keep in sync with src/lib/constants.ts → UDP_PORT
 
 ipcMain.handle("udp:create", async () => {
   if (udpSocket) {
-    try { udpSocket.close(); } catch { /* ignore */ }
+    try {
+      udpSocket.close();
+    } catch {
+      /* ignore */
+    }
     udpSocket = null;
   }
 
@@ -570,7 +748,11 @@ ipcMain.handle("udp:create", async () => {
 
     socket.on("message", (msg) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        const bytes = new Uint8Array(msg.buffer, msg.byteOffset, msg.byteLength);
+        const bytes = new Uint8Array(
+          msg.buffer,
+          msg.byteOffset,
+          msg.byteLength,
+        );
         mainWindow.webContents.send("udp:message", {
           buffer: bytes,
           byteLength: bytes.byteLength,
@@ -592,7 +774,11 @@ ipcMain.handle("udp:send", async () => {
 
 ipcMain.handle("udp:closeAllSockets", async () => {
   if (udpSocket) {
-    try { udpSocket.close(); } catch { /* ignore */ }
+    try {
+      udpSocket.close();
+    } catch {
+      /* ignore */
+    }
     udpSocket = null;
     console.log("[UDP] Socket closed");
   }
@@ -617,10 +803,15 @@ function getMimeType(ext: string): string {
   return types[ext.toLowerCase()] || "application/octet-stream";
 }
 
-function startTileServer(folder: string): Promise<{ baseUrl: string; port: number }> {
+function startTileServer(
+  folder: string,
+): Promise<{ baseUrl: string; port: number }> {
   return new Promise((resolve, reject) => {
     if (tileServer && tileServerFolder === folder) {
-      resolve({ baseUrl: `http://localhost:${tileServerPort}`, port: tileServerPort });
+      resolve({
+        baseUrl: `http://localhost:${tileServerPort}`,
+        port: tileServerPort,
+      });
       return;
     }
 
@@ -678,7 +869,9 @@ function startTileServer(folder: string): Promise<{ baseUrl: string; port: numbe
           if (buf[0] === 0x1f && buf[1] === 0x8b) {
             headers["Content-Encoding"] = "gzip";
           }
-        } catch { /* skip gzip header if can't read */ }
+        } catch {
+          /* skip gzip header if can't read */
+        }
       }
 
       res.writeHead(200, headers);
@@ -690,8 +883,13 @@ function startTileServer(folder: string): Promise<{ baseUrl: string; port: numbe
       if (addr && typeof addr === "object") {
         tileServerPort = addr.port;
         tileServer = server;
-        console.log(`[TileServer] Running at http://localhost:${tileServerPort} serving ${folder}`);
-        resolve({ baseUrl: `http://localhost:${tileServerPort}`, port: tileServerPort });
+        console.log(
+          `[TileServer] Running at http://localhost:${tileServerPort} serving ${folder}`,
+        );
+        resolve({
+          baseUrl: `http://localhost:${tileServerPort}`,
+          port: tileServerPort,
+        });
       } else {
         reject(new Error("Failed to start tile server"));
       }
@@ -715,14 +913,19 @@ app.whenReady().then(async () => {
       console.error("[TileServer] Failed to auto-start:", err);
     }
   } else {
-    console.warn(`[TileServer] Default tile folder not found: ${defaultTileFolder}`);
+    console.warn(
+      `[TileServer] Default tile folder not found: ${defaultTileFolder}`,
+    );
   }
 });
 
 // Tile server IPC handlers
 ipcMain.handle("tileServer:getServerUrl", async () => {
   if (tileServer && tileServerPort > 0) {
-    return { baseUrl: `http://localhost:${tileServerPort}`, port: tileServerPort };
+    return {
+      baseUrl: `http://localhost:${tileServerPort}`,
+      port: tileServerPort,
+    };
   }
   const defaultFolder = path.join(app.getPath("documents"), "tiles");
   if (fsSync.existsSync(defaultFolder)) {
@@ -731,16 +934,21 @@ ipcMain.handle("tileServer:getServerUrl", async () => {
   throw new Error("No tile folder found");
 });
 
-ipcMain.handle("tileServer:updateFolderPath", async (_e, folderPath: string) => {
-  return await startTileServer(folderPath);
-});
+ipcMain.handle(
+  "tileServer:updateFolderPath",
+  async (_e, folderPath: string) => {
+    return await startTileServer(folderPath);
+  },
+);
 
 ipcMain.handle("tileServer:checkStoragePermission", async () => {
   return { hasPermission: true };
 });
 
 ipcMain.handle("tileServer:selectTileFolder", async () => {
-  const r = await dialog.showOpenDialog(mainWindow!, { properties: ["openDirectory"] });
+  const r = await dialog.showOpenDialog(mainWindow!, {
+    properties: ["openDirectory"],
+  });
   if (r.filePaths.length > 0) {
     const folder = r.filePaths[0];
     await startTileServer(folder);
@@ -760,4 +968,3 @@ app.on("before-quit", () => {
     tileServer = null;
   }
 });
-

@@ -85,9 +85,7 @@ class NativeUploaderPlugin : Plugin() {
 
         ioExecutor.execute {
             try {
-                // Use the same directory as pickAndStageMany
-                var docsRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-                if (docsRoot == null) docsRoot = context.filesDir
+                val docsRoot = context.getExternalFilesDir(null) ?: context.filesDir
 
                 val destDir = File(docsRoot, "HSC-SESSIONS/FILES")
                 destDir.mkdirs()
@@ -106,7 +104,7 @@ class NativeUploaderPlugin : Plugin() {
 
                 val result = JSObject()
                 result.put("absolutePath", finalFile.absolutePath)
-                result.put("logicalPath", "DOCUMENTS/HSC-SESSIONS/FILES/${finalFile.name}")
+                result.put("logicalPath", "DATA/HSC-SESSIONS/FILES/${finalFile.name}")
                 result.put("size", finalFile.length())
                 result.put("mimeType", mimeType)
 
@@ -157,8 +155,7 @@ class NativeUploaderPlugin : Plugin() {
 
         ioExecutor.execute {
             try {
-                var docsRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-                if (docsRoot == null) docsRoot = context.filesDir
+                val docsRoot = context.getExternalFilesDir(null) ?: context.filesDir
 
                 val destDir = File(docsRoot, "HSC-SESSIONS/FILES")
                 destDir.mkdirs()
@@ -220,7 +217,7 @@ class NativeUploaderPlugin : Plugin() {
 
                     val one = JSObject()
                     one.put("absolutePath", finalFile.absolutePath)
-                    one.put("logicalPath", "DOCUMENTS/HSC-SESSIONS/FILES/${finalFile.name}")
+                    one.put("logicalPath", "DATA/HSC-SESSIONS/FILES/${finalFile.name}")
                     one.put("size", finalFile.length())
                     one.put("mimeType", mimeType)
                     one.put("status", "staged")

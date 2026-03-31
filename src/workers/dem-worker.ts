@@ -2,6 +2,12 @@
 // Returns plain data buffers. Main thread builds canvas.
 // Timeout is enforced by caller.
 
+import {
+  DEM_NO_DATA_VALUE,
+  DEM_MIN_VALID_ELEVATION,
+  DEM_MAX_VALID_ELEVATION,
+} from "@/lib/constants";
+
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
 const ctx: any = self as any;
@@ -218,10 +224,9 @@ const parseHGT = async (buffer: ArrayBuffer) => {
   const elevationData = new Float32Array(width * height);
   let minVal = Infinity;
   let maxVal = -Infinity;
-  const NO_DATA_VALUE = -32768;
   for (let i = 0; i < width * height; i++) {
     const elevation = dataView.getInt16(i * 2, false);
-    if (elevation === NO_DATA_VALUE || elevation < -1000 || elevation > 9000) {
+    if (elevation === DEM_NO_DATA_VALUE || elevation < DEM_MIN_VALID_ELEVATION || elevation > DEM_MAX_VALID_ELEVATION) {
       elevationData[i] = minVal !== Infinity ? minVal : 0;
     } else {
       elevationData[i] = elevation;

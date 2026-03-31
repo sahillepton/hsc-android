@@ -17,12 +17,24 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import IconSelection from "./icon-selection";
 import MeasurementBox from "./measurement-box";
 import NetworkBox from "./network-box";
+import RouteBox, {
+  type RouteToolState,
+  initialRouteToolState,
+} from "./route-box";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 // import UdpConfigDialog from "./udp-config-dialog"; // Removed: port is now fixed at 40074
 import OfflineLocationTracker from "./offline-location-tracker";
 import { initializeTileServer } from "./tile-folder-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "../ui/dialog";
 import {
   useRubberBandRectangle,
   useRubberBandOverlay,
@@ -73,7 +85,24 @@ import { ZipFolder } from "@/plugins/zip-folder";
 import { Screenshot } from "@/plugins/screenshot";
 import { Capacitor } from "@capacitor/core";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
-import { MAX_UPLOAD_FILES, HSC_FILES_DIR, HSC_BASE_DIR, HSC_MANIFEST_PATH } from "@/sessions/constants";
+import { MAX_UPLOAD_FILES, getHscFilesDir } from "@/sessions/constants";
+import {
+  UDP_PORT,
+  MAPBOX_ACCESS_TOKEN,
+  DEFAULT_CENTER,
+  DEFAULT_ZOOM,
+  INITIAL_MAP_ZOOM,
+  GEOLOCATION_ZOOM,
+  MAP_MIN_ZOOM,
+  MAP_MAX_ZOOM,
+  MAP_MAX_PITCH,
+  TILE_SOURCE_MAX_NATIVE_ZOOM,
+  ANDROID_TILES_PATH,
+  ANDROID_SCREENSHOTS_PATH,
+  TILES_FOLDER_NAME,
+  STORAGE_PERMISSION_TIMEOUT_MS,
+  DEFAULT_LAYER_MAX_ZOOM,
+} from "@/lib/constants";
 import {
   upsertManifestEntry,
   finalizeSaveManifest,
@@ -94,6 +123,12 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 
+/** Last path segment, lowercased (handles Windows `\\` and nested zip paths). */
+function fileBasenameLower(fileName: string): string {
+  const normalized = fileName.replace(/\\/g, "/");
+  return (normalized.split("/").pop() ?? normalized).toLowerCase();
+}
+
 // Settings Button Component
 function SettingsButton() {
   const [isOpen, setIsOpen] = useState(false);
@@ -104,20 +139,14 @@ function SettingsButton() {
       return {
         tiles: "Loading...",
         screenshots: "Loading...",
-        sessions: "Loading...",
-        layers: "Loading...",
-        manifest: "Loading...",
+        downloads: "Loading...",
       };
     }
-    const appId = Capacitor.getPlatform() === "android"
-      ? "org.deal.mcsa"
-      : "com.example.app";
+
     return {
-      tiles: "Internal Storage/Documents/tiles",
-      screenshots: "Internal Storage/Pictures/HSC Maps",
-      sessions: `Internal Storage/Android/data/${appId}/files/documents/${HSC_BASE_DIR}`,
-      layers: `Internal Storage/Android/data/${appId}/files/documents/${HSC_FILES_DIR}`,
-      manifest: `Internal Storage/Android/data/${appId}/files/documents/${HSC_MANIFEST_PATH}`,
+      tiles: ANDROID_TILES_PATH,
+      screenshots: ANDROID_SCREENSHOTS_PATH,
+      downloads: `Internal Storage/Documents`,
     };
   })();
 
@@ -132,16 +161,14 @@ function SettingsButton() {
         const [docsPath, picsPath] = await Promise.all([
           api.getPath("documents"),
           api.getPath("pictures"),
+          api.getPath("userData"),
         ]);
-        // Normalize to forward slashes for display
         const docs = docsPath.replace(/\\/g, "/");
         const pics = picsPath.replace(/\\/g, "/");
         setPaths({
-          tiles: `${docs}/tiles`,
+          tiles: `${docs}/${TILES_FOLDER_NAME}`,
           screenshots: `${pics}/HSC-Screenshots`,
-          sessions: `${docs}/${HSC_BASE_DIR}`,
-          layers: `${docs}/${HSC_FILES_DIR}`,
-          manifest: `${docs}/${HSC_MANIFEST_PATH}`,
+          downloads: `${docs}/HSC-SESSIONS`,
         });
       } catch (err) {
         console.error("[SettingsButton] Failed to resolve paths:", err);
@@ -206,35 +233,11 @@ function SettingsButton() {
                 <div className="flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-purple-500"></div>
                   <span className="text-xs font-semibold text-slate-700 uppercase">
-                    Session Files
+                    Downloaded Files
                   </span>
                 </div>
                 <p className="text-xs text-slate-600 pl-4 font-mono break-all">
-                  {paths.sessions}
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-orange-500"></div>
-                  <span className="text-xs font-semibold text-slate-700 uppercase">
-                    Layer Files
-                  </span>
-                </div>
-                <p className="text-xs text-slate-600 pl-4 font-mono break-all">
-                  {paths.layers}
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-red-500"></div>
-                  <span className="text-xs font-semibold text-slate-700 uppercase">
-                    Manifest
-                  </span>
-                </div>
-                <p className="text-xs text-slate-600 pl-4 font-mono break-all">
-                  {paths.manifest}
+                  {paths.downloads}
                 </p>
               </div>
             </div>
@@ -275,7 +278,7 @@ const MapComponent = ({
     (a: [number, number], b: [number, number], thresholdMeters = 25) => {
       return calculateDistanceMeters(a, b) <= thresholdMeters;
     },
-    []
+    [],
   );
 
   const mapRef = useRef<any>(null);
@@ -327,10 +330,8 @@ const MapComponent = ({
           "appStateChange",
           async ({ isActive }) => {
             if (isActive) {
-       
-              const { initializeTileServer } = await import(
-                "./tile-folder-dialog"
-              );
+              const { initializeTileServer } =
+                await import("./tile-folder-dialog");
               // Wait for permissions when app comes to foreground (user might have granted them)
               const url = await initializeTileServer(true);
 
@@ -349,7 +350,7 @@ const MapComponent = ({
                 }, 100);
               }
             }
-          }
+          },
         );
       } catch (error) {
         // Capacitor App plugin not available, use browser visibility API as fallback
@@ -357,9 +358,8 @@ const MapComponent = ({
           if (!document.hidden) {
             // App came to foreground - restart tile server fresh
 
-            const { initializeTileServer } = await import(
-              "./tile-folder-dialog"
-            );
+            const { initializeTileServer } =
+              await import("./tile-folder-dialog");
             // Wait for permissions when app comes to foreground (user might have granted them)
             const url = await initializeTileServer(true);
 
@@ -431,27 +431,65 @@ const MapComponent = ({
     [number, number] | null
   >(null);
   const [rubberBandEnd, setRubberBandEnd] = useState<[number, number] | null>(
-    null
+    null,
   );
   const [isAndroidTablet, setIsAndroidTablet] = useState(false);
   const [rubberBandToastId, setRubberBandToastId] = useState<string | null>(
-    null
+    null,
   );
 
   const [selectedNodeForIcon, setSelectedNodeForIcon] = useState<string | null>(
-    null
+    null,
   );
-  const [mapZoom, setMapZoom] = useState(4);
+  const [mapZoom, setMapZoom] = useState(INITIAL_MAP_ZOOM);
   const [mapBearing, setMapBearing] = useState(0);
   // UDP config dialog state removed - port is now fixed at 40074
   const [showConnectionError, setShowConnectionError] = useState(false);
   const [isCameraPopoverOpen, setIsCameraPopoverOpen] = useState(false);
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
   const [isNetworkBoxOpen, setIsNetworkBoxOpen] = useState(false);
+  const [isRoutePanelOpen, setIsRoutePanelOpen] = useState(false);
+  const [routeState, setRouteState] = useState<RouteToolState>(
+    initialRouteToolState,
+  );
+  const dijkstraWorkerRef = useRef<Worker | null>(null);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
+  const [tileDataError, setTileDataError] = useState<string | null>(null);
+  const [expectedTilePath, setExpectedTilePath] = useState<string>(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = (window as any).electronAPI;
+    return api
+      ? `Documents / ${TILES_FOLDER_NAME}`
+      : `Internal Storage / Documents / ${TILES_FOLDER_NAME}`;
+  });
   const lastLayerCreationTimeRef = useRef<number>(0);
+
+  // Reset route tool state when the layer used for routing is deleted (avoids stale path/graph).
+  useEffect(() => {
+    const id = routeState.selectedLayerId;
+    if (!id) return;
+    if (layers.some((l) => l.id === id)) return;
+    setRouteState(initialRouteToolState);
+    if (dijkstraWorkerRef.current) {
+      dijkstraWorkerRef.current.terminate();
+      dijkstraWorkerRef.current = null;
+    }
+  }, [layers, routeState.selectedLayerId]);
+
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = (window as any).electronAPI;
+    if (!api) return;
+    api
+      .getPath("documents")
+      .then((docsPath: string) => {
+        const docs = docsPath.replace(/\\/g, "/");
+        setExpectedTilePath(`${docs}/${TILES_FOLDER_NAME}`);
+      })
+      .catch(() => {});
+  }, []);
 
   // Initialize tile server on mount and set up fetch interceptor for tile logging
   useEffect(() => {
@@ -470,19 +508,18 @@ const MapComponent = ({
           if (tileMatch) {
             const [, z, x, y] = tileMatch;
 
-
             try {
               const response = await originalFetch.apply(this, args);
               if (!response.ok) {
                 console.error(
-                  `CAPACITOR_HAHA [Tile Request] FAILED: z=${z}, x=${x}, y=${y} - Status: ${response.status} ${response.statusText}`
+                  `CAPACITOR_HAHA [Tile Request] FAILED: z=${z}, x=${x}, y=${y} - Status: ${response.status} ${response.statusText}`,
                 );
-              } 
+              }
               return response;
             } catch (error) {
               console.error(
                 `CAPACITOR_HAHA [Tile Request] ERROR: z=${z}, x=${x}, y=${y} -`,
-                error
+                error,
               );
               throw error;
             }
@@ -519,13 +556,15 @@ const MapComponent = ({
           // If 404, check permissions and retry once
           if (response.status === 404) {
             console.warn(
-              "[Map] style.json not found (404), checking permissions..."
+              "[Map] style.json not found (404), checking permissions...",
             );
             const { checkStoragePermission, waitForStoragePermission } =
               await import("./tile-folder-dialog");
             const hasPermission = await checkStoragePermission();
             if (!hasPermission) {
-              const granted = await waitForStoragePermission(5000); // Wait 5 seconds
+              const granted = await waitForStoragePermission(
+                STORAGE_PERMISSION_TIMEOUT_MS,
+              );
               if (granted) {
                 // Retry fetch
                 const retryResponse = await fetch(styleUrl);
@@ -536,7 +575,7 @@ const MapComponent = ({
             }
             // If still 404 or no permission, throw error
             throw new Error(
-              `style.json not found (404) - Check if file exists in Documents/tiles/ and permissions are granted`
+              `style.json not found (404) - Check if file exists in Documents/${TILES_FOLDER_NAME}/ and permissions are granted`,
             );
           }
           if (!response.ok) {
@@ -550,7 +589,6 @@ const MapComponent = ({
             Object.keys(styleJson.sources).forEach((sourceKey) => {
               const source = styleJson.sources[sourceKey];
               if (source.type === "vector" && source.tiles) {
-            
                 source.tiles = source.tiles.map((tileUrl: string) => {
                   // Extract the tile path (e.g., /3/5/3.pbf from any URL format)
                   let tilePath = tileUrl;
@@ -584,10 +622,9 @@ const MapComponent = ({
 
                   // Always use tile server URL
                   const finalUrl = `${tileServerUrl}${tilePath}`;
-               
+
                   return finalUrl;
                 });
-         
               }
             });
           }
@@ -600,7 +637,7 @@ const MapComponent = ({
           } else if (
             styleJson.layers &&
             styleJson.layers.some(
-              (layer: any) => layer.layout && layer.layout["text-field"]
+              (layer: any) => layer.layout && layer.layout["text-field"],
             )
           ) {
             // If glyphs is missing but text layers exist, set default glyphs path
@@ -612,13 +649,15 @@ const MapComponent = ({
         })
         .catch((error) => {
           console.error("[Map] Failed to fetch and apply style:", error);
+          setTileDataError(
+            `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
+          );
         });
     } catch (error) {
       console.error("[Map] Error reloading style:", error);
     }
 
     map.once("style.load", () => {
-
       // Force update all tile source URLs to point to tile server
       const currentStyle = map.getStyle();
       if (currentStyle && currentStyle.sources) {
@@ -627,8 +666,6 @@ const MapComponent = ({
           if (source) {
             const sourceData = source as any;
             if (sourceData.type === "vector" && sourceData.tiles) {
-             
-
               // Update tiles to point to tile server
               const updatedTiles = sourceData.tiles.map((tileUrl: string) => {
                 let tilePath = tileUrl;
@@ -668,16 +705,14 @@ const MapComponent = ({
                   type: "vector",
                   tiles: updatedTiles,
 
-                  minzoom: 0,
-                  maxzoom: 18, // camera zoom allowed
-                  maxNativeZoom: 5, // 🔥 THIS IS THE KEY
+                  minzoom: MAP_MIN_ZOOM,
+                  maxzoom: MAP_MAX_ZOOM,
+                  maxNativeZoom: TILE_SOURCE_MAX_NATIVE_ZOOM,
                 });
-               
               } catch (e) {
                 console.error(`[Map] Failed to update source ${sourceKey}:`, e);
               }
             } else {
-              
             }
           }
         });
@@ -686,6 +721,9 @@ const MapComponent = ({
 
     map.once("style.error", (e: any) => {
       console.error("[Map] Failed to reload style:", e);
+      setTileDataError(
+        "Failed to load map style. The tile data may be missing or corrupted at the expected location.",
+      );
     });
   }, [tileServerUrl]);
 
@@ -709,26 +747,25 @@ const MapComponent = ({
           (event) => {
             if (event.totalBytes > 0) {
               currentUploadProgress = Math.round(
-                (event.bytesWritten / event.totalBytes) * 100
+                (event.bytesWritten / event.totalBytes) * 100,
               );
-        
+
               toast.update(
                 toastId,
                 `Uploading File: ${currentUploadProgress}/100 %`,
-                "loading"
+                "loading",
               );
             }
-          }
+          },
         );
       } catch (listenerError) {
         console.warn(
           "[FileUpload] Failed to add progress listener:",
-          listenerError
+          listenerError,
         );
         // Continue without progress listener
       }
 
-;
       const result = await NativeUploader.pickAndStageMany({
         maxFiles: MAX_UPLOAD_FILES,
       });
@@ -758,7 +795,7 @@ const MapComponent = ({
             toast.update(
               toastId,
               getBlockedFileMessage(stagedFile.originalName),
-              "error"
+              "error",
             );
             continue; // Skip this file
           }
@@ -777,9 +814,9 @@ const MapComponent = ({
               `File ${
                 stagedFile.originalName
               } is too large (${fileSizeMB.toFixed(
-                2
+                2,
               )} MB). Maximum size is 500 MB.`,
-              "error"
+              "error",
             );
             continue; // Skip this file
           }
@@ -796,8 +833,8 @@ const MapComponent = ({
               new Promise<never>((_, reject) =>
                 setTimeout(
                   () => reject(new Error("File read timeout (30 seconds)")),
-                  30000
-                )
+                  30000,
+                ),
               ),
             ]);
           } catch (fileError) {
@@ -807,7 +844,7 @@ const MapComponent = ({
             toast.update(
               toastId,
               `Error reading file ${stagedFile.originalName}: ${errorMsg}`,
-              "error"
+              "error",
             );
             continue; // Skip this file and move to next
           }
@@ -817,25 +854,73 @@ const MapComponent = ({
           const isZip = fileNameLower.endsWith(".zip");
 
           if (isZip) {
-
             const extractToastId = toast.loading(
-              `Extracting ZIP: ${stagedFile.originalName}...`
+              `Extracting ZIP: ${stagedFile.originalName}...`,
             );
+
+            // sketch_layers.zip: same bundle as session restore — do not extract as generic GIS
+            if (
+              fileBasenameLower(stagedFile.originalName) === "sketch_layers.zip"
+            ) {
+              try {
+                const { importSketchLayersFromSketchZipBlob } =
+                  await import("@/lib/autosave");
+                const sketchLayers =
+                  await importSketchLayersFromSketchZipBlob(file);
+                const existingIds = new Set(layers.map((l) => l.id));
+                let added = 0;
+                for (const sl of sketchLayers) {
+                  if (!existingIds.has(sl.id)) {
+                    addLayer(sl);
+                    existingIds.add(sl.id);
+                    added++;
+                  }
+                }
+                if (added > 0) {
+                  toast.dismiss(extractToastId);
+                  toast.success(`Loaded ${added} sketch layer(s)`);
+                  hasValidFiles = true;
+                } else {
+                  toast.update(
+                    extractToastId,
+                    "No new sketch layers to add (empty file or duplicates skipped)",
+                    "notification",
+                  );
+                }
+              } catch (sketchErr) {
+                toast.update(
+                  extractToastId,
+                  `Sketch ZIP: ${
+                    sketchErr instanceof Error
+                      ? sketchErr.message
+                      : "Unknown error"
+                  }`,
+                  "error",
+                );
+              }
+              try {
+                await NativeUploader.deleteFile({
+                  absolutePath: stagedFile.absolutePath,
+                });
+              } catch {
+                /* ignore */
+              }
+              continue;
+            }
 
             try {
               // Use native plugin to extract ZIP recursively
               const extractResult = await ZipFolder.extractZipRecursive({
                 zipPath: stagedFile.absolutePath,
-                outputDir: HSC_FILES_DIR,
+                outputDir: getHscFilesDir(),
               });
 
-            
               if (extractResult.files.length === 0) {
                 toast.dismiss(extractToastId);
                 toast.update(
                   extractToastId,
                   "ZIP file is empty or contains no valid files. Only GIS-related files are allowed.",
-                  "error"
+                  "error",
                 );
                 // Don't mark as valid - continue to next file
                 continue; // Skip this ZIP file
@@ -844,11 +929,12 @@ const MapComponent = ({
               toast.update(
                 extractToastId,
                 `Found ${extractResult.files.length} file(s), processing...`,
-                "loading"
+                "loading",
               );
 
               // Track if any valid files were found in ZIP
               let hasValidFilesInZip = false;
+              const sketchImportExistingIds = new Set(layers.map((l) => l.id));
 
               // Process each extracted file sequentially
               for (
@@ -859,12 +945,69 @@ const MapComponent = ({
                 const extractedFile = extractResult.files[zipFileIdx];
                 const zipFileNum = zipFileIdx + 1;
 
+                if (
+                  fileBasenameLower(extractedFile.name) === "sketch_layers.zip"
+                ) {
+                  const sketchToastId = toast.loading(
+                    `Loading sketch layers (${extractedFile.name})...`,
+                  );
+                  try {
+                    const sketchFile = await stagedPathToFile({
+                      absolutePath: extractedFile.absolutePath,
+                      originalName: extractedFile.name,
+                      mimeType: "application/zip",
+                    });
+                    const { importSketchLayersFromSketchZipBlob } =
+                      await import("@/lib/autosave");
+                    const sketchLayers =
+                      await importSketchLayersFromSketchZipBlob(sketchFile);
+                    let added = 0;
+                    for (const sl of sketchLayers) {
+                      if (!sketchImportExistingIds.has(sl.id)) {
+                        addLayer(sl);
+                        sketchImportExistingIds.add(sl.id);
+                        added++;
+                      }
+                    }
+                    if (added > 0) {
+                      toast.dismiss(sketchToastId);
+                      toast.success(
+                        `Loaded ${added} sketch layer(s) from ${extractedFile.name}`,
+                      );
+                      hasValidFilesInZip = true;
+                      hasValidFiles = true;
+                    } else {
+                      toast.update(
+                        sketchToastId,
+                        "No new sketch layers (empty or duplicates)",
+                        "notification",
+                      );
+                    }
+                  } catch (nestedSketchErr) {
+                    toast.update(
+                      sketchToastId,
+                      `Sketch ZIP ${extractedFile.name}: ${
+                        nestedSketchErr instanceof Error
+                          ? nestedSketchErr.message
+                          : "Unknown error"
+                      }`,
+                      "error",
+                    );
+                  }
+                  try {
+                    await NativeUploader.deleteFile({
+                      absolutePath: extractedFile.absolutePath,
+                    });
+                  } catch {
+                    /* ignore */
+                  }
+                  continue;
+                }
+
                 // Check if extracted file extension is allowed
-                const { isFileExtensionAllowed } = await import(
-                  "@/lib/allowed-file-extensions"
-                );
+                const { isFileExtensionAllowed } =
+                  await import("@/lib/allowed-file-extensions");
                 if (!isFileExtensionAllowed(extractedFile.name)) {
-            
                   // Delete the extracted file since we don't want to store it
                   try {
                     await NativeUploader.deleteFile({
@@ -873,7 +1016,7 @@ const MapComponent = ({
                   } catch (deleteError) {
                     console.warn(
                       `[FileUpload] Failed to delete blocked file: ${extractedFile.name}`,
-                      deleteError
+                      deleteError,
                     );
                   }
                   continue; // Skip this file
@@ -888,7 +1031,7 @@ const MapComponent = ({
                   await upsertManifestEntry({
                     layerId: layerId,
                     layerName: layerName,
-                    path: `DOCUMENTS/${HSC_FILES_DIR}/${extractedFile.name}`,
+                    path: `DOCUMENTS/${getHscFilesDir()}/${extractedFile.name}`,
                     absolutePath: extractedFile.absolutePath,
                     originalName: extractedFile.name,
                     size: extractedFile.size,
@@ -899,7 +1042,7 @@ const MapComponent = ({
 
                   // Create progress toast for this file
                   const progressToastId = toast.loading(
-                    `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name}...`
+                    `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name}...`,
                   );
 
                   // Convert absolute path to File object for parsing
@@ -921,7 +1064,7 @@ const MapComponent = ({
                         toast.update(
                           progressToastId,
                           `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
-                          "loading"
+                          "loading",
                         );
                       },
                     });
@@ -932,15 +1075,14 @@ const MapComponent = ({
                     });
                     addLayer(newLayer);
                     // Update manifest with layer color
-                    const { updateManifestColor } = await import(
-                      "@/sessions/manifestStore"
-                    );
+                    const { updateManifestColor } =
+                      await import("@/sessions/manifestStore");
                     await updateManifestColor(layerId, newLayer.color);
 
                     toast.update(
                       progressToastId,
                       `DEM: ${extractedFile.name}`,
-                      "success"
+                      "success",
                     );
                     hasValidFiles = true; // Mark that we have at least one valid file overall
                   } else if (
@@ -956,7 +1098,7 @@ const MapComponent = ({
                         toast.update(
                           progressToastId,
                           `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
-                          "loading"
+                          "loading",
                         );
                       },
                     });
@@ -968,15 +1110,14 @@ const MapComponent = ({
                     });
                     addLayer(newLayer);
                     // Update manifest with layer color
-                    const { updateManifestColor } = await import(
-                      "@/sessions/manifestStore"
-                    );
+                    const { updateManifestColor } =
+                      await import("@/sessions/manifestStore");
                     await updateManifestColor(layerId, newLayer.color);
 
                     toast.update(
                       progressToastId,
                       `Vector: ${extractedFile.name}`,
-                      "success"
+                      "success",
                     );
                     hasValidFiles = true; // Mark that we have at least one valid file overall
                   }
@@ -986,14 +1127,14 @@ const MapComponent = ({
                 } catch (fileError) {
                   console.error(
                     `[FileUpload] Error processing extracted file ${extractedFile.name}:`,
-                    fileError
+                    fileError,
                   );
                   toast.error(
                     `Error processing ${extractedFile.name}: ${
                       fileError instanceof Error
                         ? fileError.message
                         : "Unknown error"
-                    }`
+                    }`,
                   );
                 }
               }
@@ -1004,7 +1145,7 @@ const MapComponent = ({
                 toast.update(
                   extractToastId,
                   "ZIP file contains no valid files. Only GIS-related files are allowed.",
-                  "error"
+                  "error",
                 );
                 continue; // Skip to next file
               }
@@ -1013,7 +1154,7 @@ const MapComponent = ({
               if (hasValidFilesInZip) {
                 toast.dismiss(extractToastId);
                 toast.success(
-                  `Successfully processed files from ZIP: ${stagedFile.originalName}`
+                  `Successfully processed files from ZIP: ${stagedFile.originalName}`,
                 );
               }
 
@@ -1022,17 +1163,16 @@ const MapComponent = ({
                 await NativeUploader.deleteFile({
                   absolutePath: stagedFile.absolutePath,
                 });
-  
               } catch (deleteError) {
                 console.warn(
                   `[FileUpload] Failed to delete original ZIP file:`,
-                  deleteError
+                  deleteError,
                 );
               }
             } catch (zipError) {
               console.error(
                 `[FileUpload] Error extracting ZIP file:`,
-                zipError
+                zipError,
               );
               toast.dismiss(extractToastId);
               toast.update(
@@ -1040,7 +1180,7 @@ const MapComponent = ({
                 `Error extracting ZIP: ${
                   zipError instanceof Error ? zipError.message : "Unknown error"
                 }`,
-                "error"
+                "error",
               );
               // Don't mark as valid - continue to next file
               continue; // Skip this ZIP file on error
@@ -1063,13 +1203,12 @@ const MapComponent = ({
               createdAt: Date.now(),
             };
 
-
             try {
               await upsertManifestEntry(manifestEntry);
             } catch (manifestError) {
               console.error(
                 `[FileUpload] Error adding to manifest:`,
-                manifestError
+                manifestError,
               );
               toast.update(
                 toastId,
@@ -1078,7 +1217,7 @@ const MapComponent = ({
                     ? manifestError.message
                     : "Unknown error"
                 }`,
-                "error"
+                "error",
               );
               // Continue - still try to render the file even if manifest fails
             }
@@ -1118,11 +1257,10 @@ const MapComponent = ({
             }
 
             const renderToastId = toast.loading(
-              `Rendering File ${fileNum} (${stagedFile.originalName}): 0/100 %`
+              `Rendering File ${fileNum} (${stagedFile.originalName}): 0/100 %`,
             );
 
             try {
-
               if (isRaster) {
                 const demResult = await parseDemFile(file, {
                   layerId,
@@ -1131,7 +1269,7 @@ const MapComponent = ({
                     toast.update(
                       renderToastId,
                       `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
-                      "loading"
+                      "loading",
                     );
                   },
                 });
@@ -1141,9 +1279,8 @@ const MapComponent = ({
                 });
                 addLayer(newLayer);
                 // Update manifest with layer color
-                const { updateManifestColor } = await import(
-                  "@/sessions/manifestStore"
-                );
+                const { updateManifestColor } =
+                  await import("@/sessions/manifestStore");
                 await updateManifestColor(layerId, newLayer.color);
               } else {
                 const featureCollection = await parseVectorFile(file, {
@@ -1154,7 +1291,7 @@ const MapComponent = ({
                     toast.update(
                       renderToastId,
                       `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
-                      "loading"
+                      "loading",
                     );
                   },
                 });
@@ -1165,16 +1302,15 @@ const MapComponent = ({
                 });
                 addLayer(newLayer);
                 // Update manifest with layer color
-                const { updateManifestColor } = await import(
-                  "@/sessions/manifestStore"
-                );
+                const { updateManifestColor } =
+                  await import("@/sessions/manifestStore");
                 await updateManifestColor(layerId, newLayer.color);
               }
 
               toast.update(
                 renderToastId,
                 "File Rendered Successfully",
-                "success"
+                "success",
               );
               hasValidFiles = true; // Mark that we have at least one valid file
               await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -1188,7 +1324,7 @@ const MapComponent = ({
                     ? renderError.message
                     : "Unknown error"
                 }`,
-                "error"
+                "error",
               );
               // Don't throw - continue with next file
             }
@@ -1196,14 +1332,14 @@ const MapComponent = ({
         } catch (fileError) {
           console.error(
             `[FileUpload] Error processing file ${fileNum}:`,
-            fileError
+            fileError,
           );
           toast.update(
             toastId,
             `Error processing file ${fileNum}: ${
               fileError instanceof Error ? fileError.message : "Unknown error"
             }`,
-            "error"
+            "error",
           );
           // Continue with next file
         }
@@ -1214,7 +1350,7 @@ const MapComponent = ({
         toast.update(
           toastId,
           "No valid files found. Only GIS-related files are allowed.",
-          "error"
+          "error",
         );
         return;
       }
@@ -1222,13 +1358,13 @@ const MapComponent = ({
       toast.update(
         toastId,
         `Successfully uploaded and rendered file(s)`,
-        "success"
+        "success",
       );
     } catch (error) {
       console.error("[FileUpload] Error:", error);
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
-      
+
       // Check if user cancelled - show notification toast instead of error
       if (
         errorMessage.toLowerCase().includes("user cancelled") ||
@@ -1249,11 +1385,10 @@ const MapComponent = ({
       if (progressListener) {
         try {
           progressListener.remove();
-
         } catch (removeError) {
           console.warn(
             "[FileUpload] Error removing progress listener in finally:",
-            removeError
+            removeError,
           );
         }
       }
@@ -1271,7 +1406,7 @@ const MapComponent = ({
       const { getTempManifest } = await import("@/sessions/manifestStore");
       const tempManifest = getTempManifest();
       const filesToExport = tempManifest.filter(
-        (entry) => entry.status === "staged" || entry.status === "saved"
+        (entry) => entry.status === "staged" || entry.status === "saved",
       );
 
       // Check if there's anything to export
@@ -1289,8 +1424,6 @@ const MapComponent = ({
         size: entry.size,
       }));
 
-
-
       // Call Android plugin to create ZIP
       const { ZipFolder } = await import("@/plugins/zip-folder");
       const result = await ZipFolder.zipManifestFiles({
@@ -1300,7 +1433,7 @@ const MapComponent = ({
       toast.update(
         toastId,
         `GIS data exported to Documents: ${result.fileName}`,
-        "success"
+        "success",
       );
     } catch (error) {
       const errorMessage =
@@ -1320,7 +1453,6 @@ const MapComponent = ({
   const handleSaveSession = async () => {
     const toastId = toast.loading("Saving session...");
     try {
-
       // Early validation: Check if there's anything to save
       const { getTempManifest } = await import("@/sessions/manifestStore");
       const { isSketchLayer } = await import("@/lib/sketch-layers");
@@ -1338,37 +1470,31 @@ const MapComponent = ({
       // const { loadManifest } = await import("@/sessions/manifestStore");
       // const beforeManifest = await loadManifest();
 
-
       // Step 7 & 8: Finalize manifest according to system design:
       // - Sort all layers in manifest by size (increasing order)
       // - Upgrade "staged" files to "saved" status
       // - Delete "staged_delete" files from files folder
       // - Remove "staged_delete" entries from manifest
       const finalizedEntries = await finalizeSaveManifest();
- 
+
       // Save sketch layers as ZIP file in HSC-SESSIONS/FILES folder
       // Note: sketchLayers already filtered above in early validation
-      const { HSC_FILES_DIR } = await import("@/sessions/constants");
+      const { getHscFilesDir, HSC_DIRECTORY } =
+        await import("@/sessions/constants");
       const { Filesystem } = await import("@capacitor/filesystem");
-      const sketchLayersPath = `${HSC_FILES_DIR}/sketch_layers.zip`;
+      const sketchLayersPath = `${getHscFilesDir()}/sketch_layers.zip`;
 
       if (sketchLayers.length > 0) {
-
         const { saveLayers } = await import("@/lib/autosave");
-        const { Directory } = await import("@capacitor/filesystem");
-        await saveLayers(sketchLayers, sketchLayersPath, Directory.Documents);
+        await saveLayers(sketchLayers, sketchLayersPath, HSC_DIRECTORY);
       } else {
-        // Delete sketch_layers.zip if no sketch layers exist (clear old sketch layers)
         try {
-          const { Directory } = await import("@capacitor/filesystem");
           await Filesystem.deleteFile({
             path: sketchLayersPath,
-            directory: Directory.Documents,
+            directory: HSC_DIRECTORY,
           });
-    
         } catch (error) {
           // File might not exist, which is fine
-        
         }
       }
 
@@ -1384,7 +1510,7 @@ const MapComponent = ({
         `Failed to save session: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
-        "error"
+        "error",
       );
     }
   };
@@ -1408,12 +1534,11 @@ const MapComponent = ({
 
       // Filter to only "saved" entries for rendering
       const savedEntries = mergedEntries.filter((x) => x.status === "saved");
-  
 
       // Clear ALL current layers from UI - complete reset to saved state
       // Don't call deleteLayer() as it would delete "staged" files immediately
       // Just clear the UI - we'll restore everything from saved manifest
-   
+
       setLayers([]); // Clear everything - complete reset
 
       // No existing layers after reset - all will be restored fresh
@@ -1427,19 +1552,16 @@ const MapComponent = ({
 
         // Skip if layer_id already exists (prevent duplicates)
         if (existingLayerIds.has(entry.layerId)) {
-       
           continue;
         }
 
         const progressToastId = toast.loading(
           `Restoring File ${i + 1}/${savedEntries.length}: ${
             entry.originalName
-          }`
+          }`,
         );
 
         try {
-      
-
           // Check if this is a shapefile ZIP (stored as ZIP with type="shapefile")
           // Regular ZIP files should have been extracted, but shapefile ZIPs are stored as-is
           const isShapefileZip =
@@ -1451,7 +1573,6 @@ const MapComponent = ({
             entry.originalName.toLowerCase().endsWith(".zip") &&
             !isShapefileZip
           ) {
-         
             toast.dismiss(progressToastId);
             continue;
           }
@@ -1467,12 +1588,12 @@ const MapComponent = ({
           } catch (fileError) {
             // File doesn't exist (404) - skip it
             console.warn(
-              `[SessionRestore] File not found (may have been deleted): ${entry.originalName} at ${entry.absolutePath}`
+              `[SessionRestore] File not found (may have been deleted): ${entry.originalName} at ${entry.absolutePath}`,
             );
             toast.update(
               progressToastId,
               `Skipping ${entry.originalName} (file not found)`,
-              "error"
+              "error",
             );
             await new Promise((resolve) => setTimeout(resolve, 1000));
             toast.dismiss(progressToastId);
@@ -1523,7 +1644,7 @@ const MapComponent = ({
                   `Restoring File ${i + 1}/${
                     savedEntries.length
                   }: ${percent}/100 %`,
-                  "loading"
+                  "loading",
                 );
               },
             });
@@ -1544,13 +1665,13 @@ const MapComponent = ({
             restoredFileCount++;
           } else if (isShapefileZip) {
             // Explicitly handle shapefile ZIPs using shpToGeoJSON
-    
+
             toast.update(
               progressToastId,
               `Restoring Shapefile ${i + 1}/${savedEntries.length}: ${
                 entry.originalName
               }...`,
-              "loading"
+              "loading",
             );
             const featureCollection = await shpToGeoJSON(file);
             const newLayer = createVectorLayer(featureCollection, {
@@ -1581,7 +1702,7 @@ const MapComponent = ({
                   `Restoring File ${i + 1}/${
                     savedEntries.length
                   }: ${percent}/100 %`,
-                  "loading"
+                  "loading",
                 );
               },
             });
@@ -1606,12 +1727,12 @@ const MapComponent = ({
         } catch (error) {
           console.error(
             `[SessionRestore] Error restoring file ${entry.originalName}:`,
-            error
+            error,
           );
           toast.update(
             progressToastId,
             `Error restoring ${entry.originalName}`,
-            "error"
+            "error",
           );
         }
       }
@@ -1620,22 +1741,20 @@ const MapComponent = ({
       // Note: All layers have already been cleared above, so no need to remove existing sketch layers
 
       try {
-        const { HSC_FILES_DIR } = await import("@/sessions/constants");
-        const { Filesystem, Directory, Encoding } = await import(
-          "@capacitor/filesystem"
-        );
-        const sketchLayersPath = `${HSC_FILES_DIR}/sketch_layers.zip`;
+        const { getHscFilesDir, HSC_DIRECTORY: hscDir } =
+          await import("@/sessions/constants");
+        const { Filesystem, Encoding } = await import("@capacitor/filesystem");
+        const sketchLayersPath = `${getHscFilesDir()}/sketch_layers.zip`;
 
         try {
           const result = await Filesystem.readFile({
             path: sketchLayersPath,
-            directory: Directory.Documents,
+            directory: hscDir,
             encoding: Encoding.UTF8,
           });
 
           const content = result.data;
           if (content && typeof content === "string" && content.trim() !== "") {
-            // Convert base64 to blob
             const binaryString = atob(content);
             const bytes = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) {
@@ -1643,41 +1762,20 @@ const MapComponent = ({
             }
             const blob = new Blob([bytes], { type: "application/zip" });
 
-            // Load ZIP using JSZip
-            const JSZip = (await import("jszip")).default;
-            const zip = await JSZip.loadAsync(blob);
+            const { importSketchLayersFromSketchZipBlob } =
+              await import("@/lib/autosave");
+            const sketchLayers =
+              await importSketchLayersFromSketchZipBlob(blob);
 
-            // Read layers.json from ZIP
-            const layersFile = zip.file("layers.json");
-            if (layersFile) {
-              const layersJson = await layersFile.async("string");
-              const importData = JSON.parse(layersJson);
-
-              if (importData.version && Array.isArray(importData.layers)) {
-                // Deserialize sketch layers
-                const { deserializeLayers } = await import("@/lib/autosave");
-                const sketchLayers = await deserializeLayers(
-                  importData.layers,
-                  zip
-                );
-
-                // Use existingLayerIds that was tracking restored file layers
-                // This ensures we don't duplicate layers that were already restored
-                // existingLayerIds was populated when restoring file layers above
-
-                // Add sketch layers ensuring unique layer_id
-                for (const sketchLayer of sketchLayers) {
-                  if (!existingLayerIds.has(sketchLayer.id)) {
-                    addLayer(sketchLayer);
-                    existingLayerIds.add(sketchLayer.id);
-                    restoredSketchCount++;
-                  }
-                }
-               
+            for (const sketchLayer of sketchLayers) {
+              if (!existingLayerIds.has(sketchLayer.id)) {
+                addLayer(sketchLayer);
+                existingLayerIds.add(sketchLayer.id);
+                restoredSketchCount++;
               }
             }
           }
-        } catch (error) {
+        } catch {
           // Sketch layers file doesn't exist, which is fine
         }
       } catch (error) {
@@ -1698,7 +1796,7 @@ const MapComponent = ({
         toast.update(
           toastId,
           `Restored ${parts.join(", ")} from session`,
-          "success"
+          "success",
         );
       }
     } catch (error) {
@@ -1708,10 +1806,38 @@ const MapComponent = ({
         `Failed to restore session: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
-        "error"
+        "error",
       );
     } finally {
       setIsProcessingFiles(false);
+    }
+  };
+
+  const handleFlushSession = async () => {
+    const toastId = toast.loading("Clearing all session data...");
+    try {
+      const { flushAllSessionFiles } = await import("@/lib/autosave");
+
+      await flushAllSessionFiles();
+
+      // Clear in-memory temp manifest
+      const manifestStore = await import("@/sessions/manifestStore");
+      const entries = manifestStore.getTempManifest();
+      for (const e of [...entries]) {
+        manifestStore.removeFromTempManifest(e.layerId);
+      }
+
+      // Clear layers from the map
+      setLayers([]);
+
+      toast.update(toastId, "All session data cleared", "success");
+    } catch (error) {
+      console.error("[FlushSession] Error:", error);
+      toast.update(
+        toastId,
+        `Failed to clear session: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "error",
+      );
     }
   };
 
@@ -1721,8 +1847,8 @@ const MapComponent = ({
       const map = mapRef.current.getMap();
       // Reset to initial view state with fixed zoom level
       map.easeTo({
-        center: [81.5, 20.5], // Center of India
-        zoom: 3, // Fixed zoom level (same as initialViewState)
+        center: DEFAULT_CENTER,
+        zoom: DEFAULT_ZOOM,
         pitch: 0,
         bearing: 0,
         duration: 1000,
@@ -1802,8 +1928,8 @@ const MapComponent = ({
             const map = mapRef.current.getMap();
             map.easeTo({
               center: [location.lng, location.lat],
-              zoom: 14, // Fixed zoom level for better view
-              duration: 1500, // Smooth animation over 1.5 seconds
+              zoom: GEOLOCATION_ZOOM,
+              duration: 1500,
             });
           }
 
@@ -1818,8 +1944,8 @@ const MapComponent = ({
           const map = mapRef.current.getMap();
           map.easeTo({
             center: [userLocation.lng, userLocation.lat],
-            zoom: 14, // Fixed zoom level for better view
-            duration: 1500, // Smooth animation over 1.5 seconds
+            zoom: GEOLOCATION_ZOOM,
+            duration: 1500,
           });
         }
       }
@@ -1848,12 +1974,13 @@ const MapComponent = ({
           lengthKm: dist,
         }))
         .filter(
-          (segment) => segment.lengthKm > 0 && Number.isFinite(segment.lengthKm)
+          (segment) =>
+            segment.lengthKm > 0 && Number.isFinite(segment.lengthKm),
         );
 
       const totalKm = validSegments.reduce(
         (sum, segment) => sum + segment.lengthKm,
-        0
+        0,
       );
 
       return {
@@ -1990,8 +2117,8 @@ const MapComponent = ({
         .filter((f) => f.geometry && f.geometry.type === "Polygon")
         .flatMap((f) =>
           (f.geometry as any).coordinates.map((coords: [number, number][]) =>
-            closeRing(coords)
-          )
+            closeRing(coords),
+          ),
         );
     } catch {
       return [ring];
@@ -2050,7 +2177,7 @@ const MapComponent = ({
     const segmentDistancesKm = computeSegmentDistancesKm(path);
     const totalDistanceKm = segmentDistancesKm.reduce(
       (sum, dist) => sum + dist,
-      0
+      0,
     );
 
     const newLayer: LayerProps = {
@@ -2058,7 +2185,7 @@ const MapComponent = ({
       id: generateLayerId(),
       name: `Path ${
         layers.filter(
-          (l) => l.type === "line" && !(l.name || "").includes("Connection")
+          (l) => l.type === "line" && !(l.name || "").includes("Connection"),
         ).length + 1
       }`,
       path,
@@ -2111,7 +2238,7 @@ const MapComponent = ({
       setIsDrawing,
       arePointsClose,
       finalizePolyline,
-    ]
+    ],
   );
 
   const handleAzimuthalDrawing = (point: [number, number]) => {
@@ -2316,6 +2443,49 @@ const MapComponent = ({
   const handleMapClick = (event: any) => {
     const { object } = event;
 
+    // Route point placement takes priority when panel is open
+    if (isRoutePanelOpen && routeState.graphReady && routeState.pickMode) {
+      const lngLat = event.lngLat || event.coordinate;
+      if (lngLat) {
+        const lon = Array.isArray(lngLat)
+          ? lngLat[0]
+          : (lngLat.lng ?? lngLat[0]);
+        const lat = Array.isArray(lngLat)
+          ? lngLat[1]
+          : (lngLat.lat ?? lngLat[1]);
+        const coord: [number, number] = [lon, lat];
+
+        if (routeState.pickMode === "A") {
+          setRouteState((prev) => ({
+            ...prev,
+            pointA: coord,
+            pathResult: null,
+            error: null,
+            pickMode: "B",
+          }));
+          dijkstraWorkerRef.current?.postMessage({
+            type: "snap-point",
+            lonLat: coord,
+            tag: "A",
+          });
+        } else {
+          setRouteState((prev) => ({
+            ...prev,
+            pointB: coord,
+            pathResult: null,
+            error: null,
+            pickMode: null,
+          }));
+          dijkstraWorkerRef.current?.postMessage({
+            type: "snap-point",
+            lonLat: coord,
+            tag: "B",
+          });
+        }
+        return;
+      }
+    }
+
     // If clicking on empty space, close any open dialogs
     if (selectedNodeForIcon && !object) {
       setSelectedNodeForIcon(null);
@@ -2391,7 +2561,7 @@ const MapComponent = ({
       // Check if we're already focused on this location (within small threshold)
       const centerDistance = Math.sqrt(
         Math.pow(currentCenter.lng - centerLng, 2) +
-          Math.pow(currentCenter.lat - centerLat, 2)
+          Math.pow(currentCenter.lat - centerLat, 2),
       );
 
       if (isSinglePoint) {
@@ -2422,13 +2592,13 @@ const MapComponent = ({
           currentBounds.getEast() >= maxLng &&
           currentBounds.getSouth() <= minLat &&
           currentBounds.getNorth() >= maxLat;
-        
+
         // Calculate zoom based on bounding box size
         // Smaller bounding box = higher zoom, larger bounding box = lower zoom
         const lngSpan = maxLng - minLng;
         const latSpan = maxLat - minLat;
         const maxSpan = Math.max(lngSpan, latSpan);
-        
+
         // Calculate appropriate maxZoom based on bounding box size
         // Formula: smaller span = higher zoom (up to 20), larger span = lower zoom (down to 3)
         let calculatedMaxZoom: number;
@@ -2451,7 +2621,7 @@ const MapComponent = ({
           // Extremely large area - very low zoom
           calculatedMaxZoom = 5;
         }
-        
+
         const zoomDiff = Math.abs(currentZoom - calculatedMaxZoom);
         const isAlreadyFocused = boundsContained && zoomDiff < 1;
 
@@ -2473,7 +2643,7 @@ const MapComponent = ({
             duration: 2000, // Smooth, slower duration
             maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
             linear: false, // Use default easing (smooth)
-          }
+          },
         );
       }
     } catch (error) {
@@ -2541,9 +2711,25 @@ const MapComponent = ({
       const hoveredLayer = layers.find((l) => l.id === layerId);
       if (!hoveredLayer || hoveredLayer.visible === false) {
         setHoverInfo(undefined);
+        return;
+      }
+      // Close tooltip as soon as live zoom leaves the layer range (deck uses debounced zoom for GPU visibility)
+      let minZ: number | undefined = hoveredLayer.minzoom;
+      let maxZ = hoveredLayer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM;
+      if (minZ === undefined) {
+        const zoomRange = calculateLayerZoomRange(hoveredLayer);
+        if (zoomRange) {
+          minZ = zoomRange.minZoom;
+          maxZ = zoomRange.maxZoom;
+        } else {
+          return;
+        }
+      }
+      if (mapZoom < minZ || mapZoom > maxZ) {
+        setHoverInfo(undefined);
       }
     }
-  }, [layers, hoverInfo, setHoverInfo, networkLayersVisible]);
+  }, [layers, hoverInfo, setHoverInfo, networkLayersVisible, mapZoom]);
 
   const handleMouseMove = (event: any) => {
     if (!event.lngLat) return;
@@ -2596,7 +2782,7 @@ const MapComponent = ({
         event.originalEvent.preventDefault();
       }
     },
-    [rubberBandMode, drawingMode, isDrawing]
+    [rubberBandMode, drawingMode, isDrawing],
   );
 
   // Handle mouse up for rubber band (for desktop testing)
@@ -2649,7 +2835,7 @@ const MapComponent = ({
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
           duration: 500,
           maxZoom: 18,
-        }
+        },
       );
     }
   }, [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId]);
@@ -2683,7 +2869,7 @@ const MapComponent = ({
         event.nativeEvent.preventDefault();
       }
     },
-    [isAndroidTablet, rubberBandMode, drawingMode, isDrawing]
+    [isAndroidTablet, rubberBandMode, drawingMode, isDrawing],
   );
 
   const handleTouchMove = useCallback(
@@ -2703,7 +2889,7 @@ const MapComponent = ({
         event.nativeEvent.preventDefault();
       }
     },
-    [isRubberBandDrawing, rubberBandStart]
+    [isRubberBandDrawing, rubberBandStart],
   );
 
   const handleTouchEnd = useCallback(
@@ -2756,7 +2942,7 @@ const MapComponent = ({
             padding: { top: 50, bottom: 50, left: 50, right: 50 },
             duration: 500,
             maxZoom: 18,
-          }
+          },
         );
       }
 
@@ -2767,7 +2953,7 @@ const MapComponent = ({
         event.nativeEvent.preventDefault();
       }
     },
-    [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId]
+    [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId],
   );
 
   // Show notification toast when rubber band mode is enabled
@@ -2885,11 +3071,11 @@ const MapComponent = ({
         setHoverInfo(undefined);
       }
     },
-    [setHoverInfo, layers]
+    [setHoverInfo, layers],
   );
 
   // UDP layers from separate component
-  const { udpLayers, connectionError, noDataWarning, isConnected } =
+  const { udpLayers, connectionError, noDataWarning } =
     useUdpLayers(handleLayerHover);
 
   // Rubber band overlay layers
@@ -2900,33 +3086,29 @@ const MapComponent = ({
     end: rubberBandEnd,
   });
 
-
-
   const rubberBandOverlay = useRubberBandOverlay({
     isZooming: isRubberBandZooming,
     start: rubberBandStart,
     end: rubberBandEnd,
   });
 
-  const notificationsActive =
-    networkLayersVisible && (connectionError || noDataWarning);
   // UDP config store removed - port is now fixed at 40074
 
   // Debounced zoom: only updates 1 second after user stops zooming
   // This prevents visibility updates during active zooming
   const [debouncedZoom, setDebouncedZoom] = useState(mapZoom);
-  
+
   useEffect(() => {
     // Clear any existing debounce timeout
     if (zoomDebounceTimeoutRef.current) {
       clearTimeout(zoomDebounceTimeoutRef.current);
     }
-    
+
     // Set new timeout to update debouncedZoom after 1 second of no zoom changes
     zoomDebounceTimeoutRef.current = setTimeout(() => {
       setDebouncedZoom(mapZoom);
     }, 1000); // 1 second debounce
-    
+
     // Cleanup on unmount or when mapZoom changes
     return () => {
       if (zoomDebounceTimeoutRef.current) {
@@ -2943,26 +3125,27 @@ const MapComponent = ({
 
   // Helper to compute zoom-based visibility (cheap check, no side effects)
   // Uses roundedZoom (from debouncedZoom) to only update after user stops zooming
-  const getZoomVisibility = useCallback((layer: LayerProps): boolean => {
-    let minZoom: number | undefined = layer.minzoom;
-    let maxZoom = layer.maxzoom ?? 20;
-    
-    if (minZoom === undefined) {
-      const zoomRange = calculateLayerZoomRange(layer);
-      if (zoomRange) {
-        minZoom = zoomRange.minZoom;
-        maxZoom = zoomRange.maxZoom;
-      } else {
-        return true; // Show if can't calculate
+  const getZoomVisibility = useCallback(
+    (layer: LayerProps): boolean => {
+      let minZoom: number | undefined = layer.minzoom;
+      let maxZoom = layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM;
+
+      if (minZoom === undefined) {
+        const zoomRange = calculateLayerZoomRange(layer);
+        if (zoomRange) {
+          minZoom = zoomRange.minZoom;
+          maxZoom = zoomRange.maxZoom;
+        } else {
+          return true; // Show if can't calculate
+        }
       }
-    }
-    
-    // minZoom is guaranteed to be defined here
-    // Use roundedZoom (from debouncedZoom) to reduce update frequency
-    return roundedZoom >= minZoom && roundedZoom <= maxZoom;
-  }, [roundedZoom]);
 
-
+      // minZoom is guaranteed to be defined here
+      // Use roundedZoom (from debouncedZoom) to reduce update frequency
+      return roundedZoom >= minZoom && roundedZoom <= maxZoom;
+    },
+    [roundedZoom],
+  );
 
   const deckGlLayers = useMemo(() => {
     const isLayerVisible = (layer: LayerProps) => {
@@ -2981,28 +3164,27 @@ const MapComponent = ({
     const guardColor = (color: number[] = [0, 0, 0]) =>
       color.length === 4 ? color : [...color, 255];
 
-
     // Don't filter by zoom here - we'll use Deck.gl's visible prop instead
     // This prevents layer recreation on zoom changes
     const visibleLayers = layers
       .filter(isLayerVisible)
       .filter(
         (layer) =>
-          !(layer.type === "point" && layer.name?.startsWith("Polygon Point"))
+          !(layer.type === "point" && layer.name?.startsWith("Polygon Point")),
       );
     const pointLayers = visibleLayers.filter((l) => l.type === "point");
     const lineLayers = visibleLayers.filter(
-      (l) => l.type === "line" && !(l.name || "").includes("Connection")
+      (l) => l.type === "line" && !(l.name || "").includes("Connection"),
     );
     const connectionLayers = visibleLayers.filter(
-      (l) => l.type === "line" && (l.name || "").includes("Connection")
+      (l) => l.type === "line" && (l.name || "").includes("Connection"),
     );
     const polygonLayers = visibleLayers.filter((l) => l.type === "polygon");
     const azimuthLayers = visibleLayers.filter((l) => l.type === "azimuth");
     const geoJsonLayers = visibleLayers.filter((l) => l.type === "geojson");
     const demLayers = visibleLayers.filter((l) => l.type === "dem");
     const annotationLayers = visibleLayers.filter(
-      (l) => l.type === "annotation"
+      (l) => l.type === "annotation",
     );
 
     const deckLayers: any[] = [];
@@ -3045,12 +3227,11 @@ const MapComponent = ({
         null;
 
       if (!image) {
-
         return;
       }
 
       const isVisible = layer.visible !== false && getZoomVisibility(layer);
-      
+
       deckLayers.push(
         new BitmapLayer({
           id: `${layer.id}-bitmap`,
@@ -3062,7 +3243,7 @@ const MapComponent = ({
           updateTriggers: {
             visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
           },
-        })
+        }),
       );
     });
 
@@ -3073,10 +3254,10 @@ const MapComponent = ({
         .join("|");
 
       // Compute visibility: layer must be visible AND pass zoom check
-      const isVisible = pointLayers.some(l => 
-        l.visible !== false && getZoomVisibility(l)
+      const isVisible = pointLayers.some(
+        (l) => l.visible !== false && getZoomVisibility(l),
       );
-      
+
       deckLayers.push(
         new ScatterplotLayer({
           id: "point-layer",
@@ -3091,7 +3272,7 @@ const MapComponent = ({
               number,
               number,
               number,
-              number
+              number,
             ];
           },
           getLineColor: (d: LayerProps) => {
@@ -3099,7 +3280,7 @@ const MapComponent = ({
             return color.map((c) => Math.max(0, c - 40)) as [
               number,
               number,
-              number
+              number,
             ];
           },
           getLineWidth: 1,
@@ -3114,9 +3295,12 @@ const MapComponent = ({
             getFillColor: [
               pointLayers.map((l) => l.color?.join(",")).join("|"),
             ],
-            visible: [roundedZoom, pointLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            visible: [
+              roundedZoom,
+              pointLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+            ], // Update visibility on zoom (at 0.5 intervals)
           },
-        })
+        }),
       );
     }
 
@@ -3155,7 +3339,7 @@ const MapComponent = ({
       if (pathData.length > 0) {
         // Compute visibility: at least one layer must be visible AND pass zoom check
         const isVisible = lineLayers.some(
-          (l) => l.visible !== false && getZoomVisibility(l)
+          (l) => l.visible !== false && getZoomVisibility(l),
         );
 
         deckLayers.push(
@@ -3181,7 +3365,7 @@ const MapComponent = ({
                 lineLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
               ], // Update visibility on zoom
             },
-          })
+          }),
         );
       }
     }
@@ -3224,10 +3408,10 @@ const MapComponent = ({
 
       if (connectionPathData.length > 0) {
         // Compute visibility: at least one layer must be visible AND pass zoom check
-        const isVisible = connectionLayers.some(l => 
-          l.visible !== false && getZoomVisibility(l)
+        const isVisible = connectionLayers.some(
+          (l) => l.visible !== false && getZoomVisibility(l),
         );
-        
+
         deckLayers.push(
           new LineLayer({
             id: "connection-line-layer",
@@ -3244,9 +3428,12 @@ const MapComponent = ({
             pickingRadius: 20, // Larger picking radius for touch devices
             onHover: handleLayerHover,
             updateTriggers: {
-              visible: [roundedZoom, connectionLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                connectionLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
       }
     }
@@ -3276,10 +3463,10 @@ const MapComponent = ({
       });
 
       // Compute visibility: at least one layer must be visible AND pass zoom check
-      const isVisible = polygonLayers.some(l => 
-        l.visible !== false && getZoomVisibility(l)
+      const isVisible = polygonLayers.some(
+        (l) => l.visible !== false && getZoomVisibility(l),
       );
-      
+
       deckLayers.push(
         new PolygonLayer({
           id: "polygon-layer",
@@ -3304,9 +3491,12 @@ const MapComponent = ({
           pickingRadius: 20, // Larger picking radius for touch devices
           onHover: handleLayerHover,
           updateTriggers: {
-            visible: [roundedZoom, polygonLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            visible: [
+              roundedZoom,
+              polygonLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+            ], // Update visibility on zoom (at 0.5 intervals)
           },
-        })
+        }),
       );
 
       const polygonOutlines = polygonData.map((item) => ({
@@ -3319,10 +3509,10 @@ const MapComponent = ({
 
       if (polygonOutlines.length) {
         // Use same visibility as polygon layer
-        const isVisible = polygonLayers.some(l => 
-          l.visible !== false && getZoomVisibility(l)
+        const isVisible = polygonLayers.some(
+          (l) => l.visible !== false && getZoomVisibility(l),
         );
-        
+
         deckLayers.push(
           new PathLayer({
             id: "polygon-outline-layer",
@@ -3339,9 +3529,12 @@ const MapComponent = ({
             pickingRadius: 20,
             onHover: handleLayerHover,
             updateTriggers: {
-              visible: [roundedZoom, polygonLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                polygonLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
       }
 
@@ -3391,10 +3584,10 @@ const MapComponent = ({
 
       if (pathData.length > 0) {
         // Compute visibility: at least one layer must be visible AND pass zoom check
-        const isVisible = lineLayers.some(l => 
-          l.visible !== false && getZoomVisibility(l)
+        const isVisible = lineLayers.some(
+          (l) => l.visible !== false && getZoomVisibility(l),
         );
-        
+
         deckLayers.push(
           new LineLayer({
             id: "line-layer-vertices",
@@ -3417,9 +3610,12 @@ const MapComponent = ({
             jointRounded: true,
             parameters: { depthTest: false },
             updateTriggers: {
-              visible: [roundedZoom, lineLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                lineLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
 
         const vertexData = lineLayers.flatMap((layer) => {
@@ -3449,10 +3645,10 @@ const MapComponent = ({
 
         if (vertexData.length > 0) {
           // Use same visibility as line layer
-          const isVisible = lineLayers.some(l => 
-            l.visible !== false && getZoomVisibility(l)
+          const isVisible = lineLayers.some(
+            (l) => l.visible !== false && getZoomVisibility(l),
           );
-          
+
           deckLayers.push(
             new ScatterplotLayer({
               id: "line-vertex-layer",
@@ -3470,9 +3666,12 @@ const MapComponent = ({
               radiusMaxPixels: 10,
               parameters: { depthTest: false },
               updateTriggers: {
-                visible: [roundedZoom, lineLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+                visible: [
+                  roundedZoom,
+                  lineLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+                ], // Update visibility on zoom (at 0.5 intervals)
               },
-            })
+            }),
           );
         }
       }
@@ -3534,10 +3733,10 @@ const MapComponent = ({
         .filter(Boolean);
 
       // Compute visibility: at least one layer must be visible AND pass zoom check
-      const isAzimuthVisible = azimuthLayers.some(l => 
-        l.visible !== false && getZoomVisibility(l)
+      const isAzimuthVisible = azimuthLayers.some(
+        (l) => l.visible !== false && getZoomVisibility(l),
       );
-      
+
       if (azimuthLineData.length) {
         deckLayers.push(
           new LineLayer({
@@ -3554,9 +3753,12 @@ const MapComponent = ({
             getDashArray: (d: any) => d.dashArray ?? [0, 0],
             dashJustified: true,
             updateTriggers: {
-              visible: [roundedZoom, azimuthLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                azimuthLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
       }
 
@@ -3582,9 +3784,12 @@ const MapComponent = ({
             padding: [2, 4],
             characterSet: measurementCharacterSet,
             updateTriggers: {
-              visible: [roundedZoom, azimuthLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                azimuthLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
       }
     }
@@ -3593,7 +3798,7 @@ const MapComponent = ({
       if (!layer.geojson) return;
       const lineWidth = layer.lineWidth ?? 5;
       const isVisible = layer.visible !== false && getZoomVisibility(layer);
-      
+
       deckLayers.push(
         new GeoJsonLayer({
           id: layer.id,
@@ -3612,7 +3817,7 @@ const MapComponent = ({
           getLineColor: (f: any) =>
             f.properties?.lineColor ?? guardColor(layer.color ?? [0, 150, 255]),
           getPointRadius: (f: any) =>
-            f.geometry?.type === "Point" ? layer.pointRadius ?? 5 : 0,
+            f.geometry?.type === "Point" ? (layer.pointRadius ?? 5) : 0,
           getLineWidth: (f: any) => {
             const type = f.geometry?.type;
             if (type === "LineString" || type === "MultiLineString") {
@@ -3628,14 +3833,14 @@ const MapComponent = ({
             visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
           },
           onHover: handleLayerHover,
-        })
+        }),
       );
     });
 
     annotationLayers.forEach((layer) => {
       if (!layer.annotations?.length) return;
       const isVisible = layer.visible !== false && getZoomVisibility(layer);
-      
+
       deckLayers.push(
         new TextLayer({
           id: layer.id,
@@ -3657,10 +3862,9 @@ const MapComponent = ({
           updateTriggers: {
             visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
           },
-        })
+        }),
       );
     });
-
 
     // --- Preview layers ---
     const previewLayers: any[] = [];
@@ -3693,7 +3897,7 @@ const MapComponent = ({
             getColor: (d: any) => d.color,
             getWidth: (d: any) => d.width,
             pickable: false,
-          })
+          }),
         );
       } else {
         const previewPath = closeRing([...currentPath, mousePosition]);
@@ -3709,7 +3913,7 @@ const MapComponent = ({
             getLineWidth: 1,
             stroked: false,
             pickable: false,
-          })
+          }),
         );
         previewLayers.push(
           new PathLayer({
@@ -3722,7 +3926,7 @@ const MapComponent = ({
             widthMinPixels: 1,
             parameters: { depthTest: false, depthMask: false },
             pickable: false,
-          })
+          }),
         );
 
         if (
@@ -3746,7 +3950,7 @@ const MapComponent = ({
               getColor: (d: any) => d.color,
               getWidth: (d: any) => d.width,
               pickable: false,
-            })
+            }),
           );
         }
       }
@@ -3773,7 +3977,7 @@ const MapComponent = ({
             getColor: (d: any) => d.color,
             getWidth: (d: any) => d.width,
             pickable: false,
-          })
+          }),
         );
       }
 
@@ -3795,7 +3999,7 @@ const MapComponent = ({
             getColor: (d: any) => d.color,
             getWidth: (d: any) => d.width,
             pickable: false,
-          })
+          }),
         );
       }
     }
@@ -3839,7 +4043,7 @@ const MapComponent = ({
           getDashArray: (d: any) => d.dashArray ?? [0, 0],
           dashJustified: true,
           pickable: false,
-        })
+        }),
       );
       if (distanceMeters > 5) {
         let signedPreviewAngle = normalizeAngleSigned(angleDeg);
@@ -3865,7 +4069,7 @@ const MapComponent = ({
             getBackgroundColor: [255, 255, 255, 220],
             padding: [2, 4],
             characterSet: measurementCharacterSet,
-          })
+          }),
         );
       }
     }
@@ -3887,12 +4091,115 @@ const MapComponent = ({
           pickable: false,
           radiusMinPixels: 4,
           radiusMaxPixels: 10,
-        })
+        }),
       );
     }
 
+    // ── Route finder layers ─────────────────────────────────────────────────
+    const routeLayers: any[] = [];
+    if (isRoutePanelOpen) {
+      const routeSelectedLayer = routeState.selectedLayerId
+        ? layers.find((l) => l.id === routeState.selectedLayerId)
+        : null;
+      const routeLayerVisible =
+        !routeSelectedLayer ||
+        (routeSelectedLayer.visible !== false &&
+          getZoomVisibility(routeSelectedLayer));
+      if (routeState.pathResult && routeLayerVisible) {
+        routeLayers.push(
+          new PathLayer({
+            id: "route-path-glow",
+            data: [routeState.pathResult.path],
+            getPath: (d: [number, number][]) => d,
+            getColor: [245, 158, 11, 60],
+            getWidth: 12,
+            widthUnits: "pixels",
+            jointRounded: true,
+            capRounded: true,
+            pickable: false,
+          }),
+        );
+        routeLayers.push(
+          new PathLayer({
+            id: "route-path-main",
+            data: [routeState.pathResult.path],
+            getPath: (d: [number, number][]) => d,
+            getColor: [245, 158, 11, 255],
+            getWidth: 4,
+            widthUnits: "pixels",
+            jointRounded: true,
+            capRounded: true,
+            pickable: false,
+          }),
+        );
+      }
+      const markerData: {
+        position: [number, number];
+        color: [number, number, number];
+        label: string;
+      }[] = [];
+      if (routeState.snappedA) {
+        markerData.push({
+          position: routeState.snappedA,
+          color: [34, 197, 94],
+          label: "A",
+        });
+      }
+      if (routeState.snappedB) {
+        markerData.push({
+          position: routeState.snappedB,
+          color: [239, 68, 68],
+          label: "B",
+        });
+      }
+      if (markerData.length > 0 && routeLayerVisible) {
+        routeLayers.push(
+          new ScatterplotLayer({
+            id: "route-markers-outer",
+            data: markerData,
+            getPosition: (d: any) => d.position,
+            getRadius: 14,
+            radiusUnits: "pixels",
+            getFillColor: (d: any) =>
+              [d.color[0], d.color[1], d.color[2], 50] as [
+                number,
+                number,
+                number,
+                number,
+              ],
+            pickable: false,
+          }),
+        );
+        routeLayers.push(
+          new ScatterplotLayer({
+            id: "route-markers-inner",
+            data: markerData,
+            getPosition: (d: any) => d.position,
+            getRadius: 8,
+            radiusUnits: "pixels",
+            getFillColor: (d: any) => d.color,
+            pickable: false,
+          }),
+        );
+        routeLayers.push(
+          new TextLayer({
+            id: "route-markers-labels",
+            data: markerData,
+            getPosition: (d: any) => d.position,
+            getText: (d: any) => d.label,
+            getSize: 12,
+            getColor: [255, 255, 255, 255],
+            getTextAnchor: "middle",
+            getAlignmentBaseline: "center",
+            fontWeight: 700,
+            pickable: false,
+          }),
+        );
+      }
+    }
+
     // Return layers (user location will be added separately after default layers)
-    return [...deckLayers, ...previewLayers];
+    return [...deckLayers, ...previewLayers, ...routeLayers];
   }, [
     layers,
     networkLayersVisible,
@@ -3906,6 +4213,11 @@ const MapComponent = ({
     closeRing,
     roundedZoom, // Use roundedZoom (0.5 intervals) to reduce update frequency
     getZoomVisibility, // Include zoom visibility helper
+    isRoutePanelOpen,
+    routeState.pathResult,
+    routeState.snappedA,
+    routeState.snappedB,
+    routeState.selectedLayerId,
   ]);
 
   return (
@@ -3924,8 +4236,8 @@ const MapComponent = ({
 
       {measurementPreview && (
         <div
-          className="absolute right-4 z-40 w-64 rounded-lg border border-black/10 bg-white shadow-xl p-3 space-y-2"
-          style={{ top: notificationsActive ? 40 : 16 }}
+          className="absolute right-2 z-40 w-64 rounded-lg border border-black/10 bg-white shadow-xl p-3 space-y-2"
+          style={{ top: 54 }}
         >
           <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
             <span>Drawing Measurements</span>
@@ -3950,7 +4262,7 @@ const MapComponent = ({
               {measurementPreview.segments.length > 0 && (
                 <>
                   <div className="text-xs text-gray-500">Segments</div>
-                  <div className="space-y-1 max-h-64 overflow-y-auto text-sm text-gray-700">
+                  <div className="measurement-scrollbar space-y-1 max-h-38 overflow-y-auto pr-1 text-sm text-gray-700">
                     {measurementPreview.segments.map((segment, idx) => (
                       <div
                         key={`${segment.label}-${idx}`}
@@ -4015,9 +4327,7 @@ const MapComponent = ({
               </div>
               <div className="text-xs space-y-1 text-gray-700">
                 <div>Failed to connect to UDP server</div>
-                <div className="text-gray-600">
-                  Port: 40074 (fixed)
-                </div>
+                <div className="text-gray-600">Port: {UDP_PORT} (fixed)</div>
                 <div className="text-gray-500 text-[10px] mt-1">
                   {connectionError.includes("Error:")
                     ? connectionError.split("Error:")[1]?.trim()
@@ -4058,9 +4368,7 @@ const MapComponent = ({
               </div>
               <div className="text-xs space-y-1 text-gray-700">
                 <div>{noDataWarning}</div>
-                <div className="text-gray-600">
-                  Port: 40074 (fixed)
-                </div>
+                <div className="text-gray-600">Port: {UDP_PORT} (fixed)</div>
               </div>
             </div>
             <button
@@ -4086,25 +4394,6 @@ const MapComponent = ({
         </div>
       )}
 
-      {/* UDP Connection Status Indicator */}
-      {networkLayersVisible && isConnected && !connectionError && (
-        <div
-          className="absolute bottom-4 left-4 z-50 rounded-sm shadow-lg px-2 py-1 flex items-center gap-2"
-          style={{
-            background: "rgba(0, 0, 0, 0.4)",
-            pointerEvents: "none",
-          }}
-        >
-          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-          <span
-            className="text-[10px] md:text-xs font-mono text-gray-700 font-bold capitalize "
-            style={{ color: "rgb(255, 255, 255)", letterSpacing: "0.08em" }}
-          >
-            UDP:40074
-          </span>
-        </div>
-      )}
-
       {isMeasurementBoxOpen && (
         <MeasurementBox onClose={() => setIsMeasurementBoxOpen(false)} />
       )}
@@ -4113,10 +4402,27 @@ const MapComponent = ({
         <NetworkBox onClose={() => setIsNetworkBoxOpen(false)} />
       )}
 
+      {isRoutePanelOpen && (
+        <RouteBox
+          onClose={() => {
+            setIsRoutePanelOpen(false);
+            setRouteState(initialRouteToolState);
+            if (dijkstraWorkerRef.current) {
+              dijkstraWorkerRef.current.terminate();
+              dijkstraWorkerRef.current = null;
+            }
+          }}
+          routeState={routeState}
+          setRouteState={setRouteState}
+          workerRef={dijkstraWorkerRef}
+          mapZoom={mapZoom}
+        />
+      )}
+
       <Map
         ref={mapRef}
         style={{ width: "100%", height: "100%" }}
-        mapboxAccessToken="pk.eyJ1IjoibmlraGlsc2FyYWYiLCJhIjoiY2xlc296YjRjMDA5dDNzcXphZjlzamFmeSJ9.7ZDaMZKecY3-70p9pX9-GQ"
+        mapboxAccessToken={MAPBOX_ACCESS_TOKEN}
         mapStyle={undefined}
         // Don't use mapStyle prop - we load style manually after modifying tile URLs
         renderWorldCopies={false}
@@ -4125,15 +4431,15 @@ const MapComponent = ({
         dragRotate={true}
         pitchWithRotate={true}
         initialViewState={{
-          longitude: tileServerUrl ? 81.5 : 81.5, // World center (0) when using tile server, India center (home view) otherwise
-          latitude: tileServerUrl ? 81.5 : 20.5, // Equator (0) when using tile server, India center (home view) otherwise
-          zoom: tileServerUrl ? 3 : 3, // World view (zoom 2) when using tile server, India view (zoom 3 - home view) otherwise
+          longitude: DEFAULT_CENTER[0],
+          latitude: DEFAULT_CENTER[1],
+          zoom: DEFAULT_ZOOM,
           pitch: pitch,
           bearing: 0,
         }}
-        minZoom={0}
-        maxZoom={18}
-        maxPitch={85}
+        minZoom={MAP_MIN_ZOOM}
+        maxZoom={MAP_MAX_ZOOM}
+        maxPitch={MAP_MAX_PITCH}
         onLoad={async (map: any) => {
           const mapInstance = map.target;
 
@@ -4174,7 +4480,7 @@ const MapComponent = ({
 
               if (!response.ok) {
                 throw new Error(
-                  `Failed to fetch style.json: ${response.status}`
+                  `Failed to fetch style.json: ${response.status}`,
                 );
               }
 
@@ -4185,7 +4491,6 @@ const MapComponent = ({
                 Object.keys(styleJson.sources).forEach((sourceKey) => {
                   const source = styleJson.sources[sourceKey];
                   if (source.type === "vector" && source.tiles) {
-                   
                     source.tiles = source.tiles.map((tileUrl: string) => {
                       // Extract the tile path (e.g., /3/5/3.pbf from any URL format)
                       let tilePath = tileUrl;
@@ -4219,10 +4524,9 @@ const MapComponent = ({
 
                       // Always use tile server URL
                       const finalUrl = `${serverUrl}${tilePath}`;
-                    
+
                       return finalUrl;
                     });
-                   
                   }
                 });
               }
@@ -4235,17 +4539,15 @@ const MapComponent = ({
               } else if (
                 styleJson.layers &&
                 styleJson.layers.some(
-                  (layer: any) => layer.layout && layer.layout["text-field"]
+                  (layer: any) => layer.layout && layer.layout["text-field"],
                 )
               ) {
                 // If glyphs is missing but text layers exist, set default glyphs path
                 styleJson.glyphs = `${serverUrl}/fonts/{fontstack}/{range}.pbf`;
-               
               }
 
               // Set up style.load handler BEFORE applying style
               mapInstance.once("style.load", () => {
-
                 // Double-check and force update tile URLs after style loads
                 const currentStyle = mapInstance.getStyle();
                 if (currentStyle && currentStyle.sources) {
@@ -4254,14 +4556,13 @@ const MapComponent = ({
                     if (source) {
                       const sourceData = source as any;
                       if (sourceData.type === "vector" && sourceData.tiles) {
-                        
                         // Check if any tile URL doesn't start with serverUrl
                         const needsUpdate = sourceData.tiles.some(
-                          (url: string) => !url.startsWith(serverUrl)
+                          (url: string) => !url.startsWith(serverUrl),
                         );
                         if (needsUpdate) {
                           console.warn(
-                            `[Map] Source ${sourceKey} has incorrect tile URLs, updating...`
+                            `[Map] Source ${sourceKey} has incorrect tile URLs, updating...`,
                           );
                           const updatedTiles = sourceData.tiles.map(
                             (tileUrl: string) => {
@@ -4282,22 +4583,21 @@ const MapComponent = ({
                               if (!tilePath.startsWith("/"))
                                 tilePath = "/" + tilePath;
                               return `${serverUrl}${tilePath}`;
-                            }
+                            },
                           );
                           try {
                             mapInstance.removeSource(sourceKey);
                             mapInstance.addSource(sourceKey, {
                               type: "vector",
                               tiles: updatedTiles,
-                              minzoom: 0,
-                              maxzoom: 18,
-                              maxNativeZoom: 5,
+                              minzoom: MAP_MIN_ZOOM,
+                              maxzoom: MAP_MAX_ZOOM,
+                              maxNativeZoom: TILE_SOURCE_MAX_NATIVE_ZOOM,
                             });
-                           
                           } catch (e) {
                             console.error(
                               `[Map] Failed to correct source ${sourceKey}:`,
-                              e
+                              e,
                             );
                           }
                         }
@@ -4308,12 +4608,13 @@ const MapComponent = ({
               });
 
               // Apply the modified style
-             
-             
+
               mapInstance.setStyle(styleJson);
             } catch (error) {
               console.error("[Map] Failed to fetch and apply style:", error);
-              // Fallback: use a minimal style if tile server fails
+              setTileDataError(
+                `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
+              );
               mapInstance.setStyle({
                 version: 8,
                 sources: {},
@@ -4321,12 +4622,22 @@ const MapComponent = ({
               });
             }
           } else {
-            // No tile server - use default Mapbox style
-            mapInstance.setStyle("mapbox://styles/mapbox/streets-v12");
+            // No tile server available — show empty map and prompt user
+            mapInstance.setStyle({
+              version: 8,
+              sources: {},
+              layers: [],
+            });
+            setTileDataError(
+              `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
+            );
           }
 
           mapInstance.once("style.error", (e: any) => {
             console.error("[Map] Style loading error:", e);
+            setTileDataError(
+              "Failed to load map style. The tile data may be missing or corrupted at the expected location.",
+            );
           });
 
           mapInstance.setMaxBounds(null);
@@ -4435,10 +4746,10 @@ const MapComponent = ({
         bearing={mapBearing}
         onToggleLayersBox={() => {
           const willBeOpen = !(isLayersBoxOpen ?? false);
-          // If opening layers box, close other panels
           if (willBeOpen) {
             setIsMeasurementBoxOpen(false);
             setIsNetworkBoxOpen(false);
+            setIsRoutePanelOpen(false);
           }
           onToggleLayersBox?.();
         }}
@@ -4447,25 +4758,26 @@ const MapComponent = ({
         isNetworkBoxOpen={isNetworkBoxOpen}
         onToggleMeasurementBox={() => {
           const willBeOpen = !isMeasurementBoxOpen;
-          // If opening measurement box, close other panels
           if (willBeOpen) {
             onCloseLayersBox?.();
             setIsNetworkBoxOpen(false);
+            setIsRoutePanelOpen(false);
           }
           setIsMeasurementBoxOpen((prev) => !prev);
         }}
         onToggleNetworkBox={() => {
           const willBeOpen = !isNetworkBoxOpen;
-          // If opening network box, close other panels
           if (willBeOpen) {
             onCloseLayersBox?.();
             setIsMeasurementBoxOpen(false);
+            setIsRoutePanelOpen(false);
           }
           setIsNetworkBoxOpen((prev) => !prev);
         }}
         onUpload={handleUpload}
         onExportLayers={handleExportLayers}
         onSaveSession={handleSaveSession}
+        onFlushSession={handleFlushSession}
         onRestoreSession={handleRestoreSession}
         onToggleUserLocation={handleToggleUserLocation}
         onResetHome={handleResetHome}
@@ -4481,13 +4793,17 @@ const MapComponent = ({
           onCreatePoint: createPointLayer,
         }}
         alertButtonProps={{
-          visible: Boolean(
-            networkLayersVisible && (connectionError || noDataWarning)
+          visible: !(
+            layers.some(
+              (l) =>
+                l.type === "nodes" ||
+                (l.name || "").includes("Network") ||
+                (l.name || "").includes("Connection"),
+            ) ||
+            (udpLayers != null && udpLayers.length > 0)
           ),
-          severity: connectionError ? "error" : "warning",
-          title: connectionError
-            ? "Connection Error - Click to view details"
-            : "No Data Warning - Click to view details",
+          severity: "warning",
+          title: "No network layers on map",
           onClick: () => setShowConnectionError((prev) => !prev),
         }}
         igrsToggleProps={{
@@ -4496,9 +4812,67 @@ const MapComponent = ({
         }}
         rubberBandMode={rubberBandMode}
         onToggleRubberBand={() => setRubberBandMode((prev) => !prev)}
+        isRoutePanelOpen={isRoutePanelOpen}
+        onToggleRoutePanel={() => {
+          const willBeOpen = !isRoutePanelOpen;
+          if (willBeOpen) {
+            onCloseLayersBox?.();
+            setIsMeasurementBoxOpen(false);
+            setIsNetworkBoxOpen(false);
+          } else {
+            setRouteState(initialRouteToolState);
+            if (dijkstraWorkerRef.current) {
+              dijkstraWorkerRef.current.terminate();
+              dijkstraWorkerRef.current = null;
+            }
+          }
+          setIsRoutePanelOpen((prev) => !prev);
+        }}
       />
 
       {/* UDP Config Dialog removed - port is now fixed at 40074, data arrives automatically */}
+
+      <Dialog
+        open={tileDataError !== null}
+        onOpenChange={(open) => {
+          if (!open) setTileDataError(null);
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Map Data Not Found</DialogTitle>
+            <DialogDescription>{tileDataError}</DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground space-y-1">
+            <p className="font-medium text-foreground">Expected location:</p>
+            <p className="font-mono text-xs break-all">{expectedTilePath}</p>
+            <p className="mt-2">
+              Copy the map tiles folder to the above location and restart the
+              application.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTileDataError(null)}>
+              Dismiss
+            </Button>
+            <Button
+              onClick={async () => {
+                setTileDataError(null);
+                const url = await initializeTileServer(true);
+                if (url) {
+                  setTileServerUrl(url);
+                } else {
+                  setTileDataError(
+                    "Still unable to find map tile data. Please verify the tiles folder exists at the expected location.",
+                  );
+                }
+              }}
+            >
+              Retry
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

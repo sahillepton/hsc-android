@@ -25,6 +25,17 @@ class OfflineTileServerPlugin : Plugin() {
         // Always start with default path - React will update if needed
         initializeServer()
     }
+
+    private fun stopExistingTileServer() {
+        val existing = tileServer ?: return
+        try {
+            existing.stop()
+        } catch (e: Exception) {
+            android.util.Log.w("TileServer", "stop existing server: ${e.message}")
+        } finally {
+            tileServer = null
+        }
+    }
     
     private fun getDefaultTilesDir(): File {
         // Default path: Internal storage/Documents/tiles (public)
@@ -38,6 +49,9 @@ class OfflineTileServerPlugin : Plugin() {
     
     private fun initializeServer() {
         try {
+            // Activity/config recreation can call load() again; release :8080 before rebinding.
+            stopExistingTileServer()
+
             // Check storage permission first (Android 11+)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
                 if (!android.os.Environment.isExternalStorageManager()) {

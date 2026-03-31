@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   deleteFile: (p: string) => ipcRenderer.invoke("fs:deleteFile", p),
   deleteFileInDir: (rel: string, dir: string) => ipcRenderer.invoke("fs:deleteFileInDir", rel, dir),
   mkdir: (rel: string, dir: string) => ipcRenderer.invoke("fs:mkdir", rel, dir),
+  rmdir: (dirPath: string) => ipcRenderer.invoke("fs:rmdir", dirPath),
   readdirInDir: (rel: string, dir: string) => ipcRenderer.invoke("fs:readdirInDir", rel, dir),
   existsInDir: (rel: string, dir: string) => ipcRenderer.invoke("fs:existsInDir", rel, dir),
   stat: (p: string) => ipcRenderer.invoke("fs:stat", p),

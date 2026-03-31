@@ -82,7 +82,7 @@ const ActionDialog = () => {
                 size="default"
               >
                 <img
-                  src="/icons/walkie-talkie.png"
+                  src="icons/walkie-talkie.png"
                   alt="Call"
                   className="w-4 h-4 mr-2"
                 />

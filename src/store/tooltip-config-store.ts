@@ -26,8 +26,7 @@ export const useTooltipConfigStore = create<TooltipConfigState>()(
       tooltipFontSize: 12,
       tooltipHeadingColor: "#2563eb",
       tooltipValueColor: "#111827",
-      setTooltipFontFamily: (font: string) =>
-        set({ tooltipFontFamily: font }),
+      setTooltipFontFamily: (font: string) => set({ tooltipFontFamily: font }),
       setTooltipFontSize: (size: number) =>
         set({ tooltipFontSize: Math.max(10, Math.min(18, size)) }),
       setTooltipHeadingColor: (color: string) =>
@@ -37,7 +36,6 @@ export const useTooltipConfigStore = create<TooltipConfigState>()(
     }),
     {
       name: "tooltip-config-storage",
-    }
-  )
+    },
+  ),
 );
-

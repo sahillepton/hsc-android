@@ -12,7 +12,6 @@ import LayerPopover from "./layer-popover";
 import LayerCardSkeleton from "./layer-card-skeleton";
 import type { LayerProps } from "@/lib/definitions";
 
-// Component to handle skeleton transition for individual layer items
 type LayerCardItemProps = {
   layer: LayerProps;
   isSelected: boolean;
@@ -194,7 +193,6 @@ const LayersList = ({
     }
   }, [focusedLayerId, layers]);
 
-  // Reset rendered items when layers change significantly
   useEffect(() => {
     const layerIds = new Set(layers.map((l) => l.id));
     setRenderedItems((prev) => {
@@ -321,23 +319,21 @@ const LayersList = ({
         )}
         {filteredLayers.length > 0 && (
           <div
-            className="overflow-y-auto"
             style={{
               height: `${Math.min(
-                filteredLayers.length * 120 + 24,
-                windowHeight * 0.9
+                filteredLayers.length * 120 + 20,
+                windowHeight * 0.55
               )}px`,
             }}
           >
             <Virtuoso
               style={{ height: "100%" }}
               data={filteredLayers.sort((a, b) => {
-                // Sort by uploadedAt/createdAt timestamp (newest first)
                 const aTime =
                   (a as any).uploadedAt || (a as any).createdAt || 0;
                 const bTime =
                   (b as any).uploadedAt || (b as any).createdAt || 0;
-                return bTime - aTime; // Descending order (newest first)
+                return bTime - aTime;
               })}
               increaseViewportBy={280}
               itemContent={(_, layer) => {

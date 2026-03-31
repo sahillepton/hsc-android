@@ -15,7 +15,8 @@
     "electron:build": "vite build --config vite.config.electron.ts",
     "build:electron": "node scripts/build-electron.js",
     "electron": "yarn build:electron && electron .",
-    "package": "yarn electron:build && yarn build:electron && electron-builder"
+    "package": "yarn electron:build && yarn build:electron && electron-builder",
+    "sync:mcsa-gis-android-sync": "node scripts/sync-integration-assets.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.3",

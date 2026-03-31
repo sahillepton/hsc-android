@@ -4,6 +4,82 @@ import { useNetworkLayersVisible } from "@/store/layers-store";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
 import { useUdpDataStore } from "@/store/udp-data-store";
 import { Udp } from "../../plugins/udp";
+import {
+  UDP_PORT,
+  UDP_NO_DATA_TIMEOUT_MS,
+  UDP_STALE_CHECK_INTERVAL_MS,
+  UDP_STALE_THRESHOLD_MS,
+} from "@/lib/constants";
+
+/**
+ * TODO(REVERT): When true, ignore socket payload and parse this fixed buffer instead.
+ * Use this for testing — works with Vite HMR without rebuilding `dist-electron/main.cjs`.
+ * (Electron main.ts changes are NOT applied until `yarn build:electron`.)
+ */
+const UDP_USE_TEST_BUFFER = false;
+const UDP_TEST_BUFFER = new Uint8Array(
+  [
+    "22",
+    "0",
+    "56",
+    "1",
+    "3",
+    "192",
+    "168",
+    "148",
+    "20",
+    "4",
+    "1",
+    "3",
+    "20",
+    "1",
+    "181",
+    "237",
+    "96",
+    "4",
+    "161",
+    "155",
+    "160",
+    "0",
+    "180",
+    "192",
+    "168",
+    "148",
+    "20",
+    "2",
+    "1",
+    "3",
+    "100",
+    "1",
+    "178",
+    "224",
+    "32",
+    "4",
+    "158",
+    "142",
+    "96",
+    "0",
+    "120",
+    "192",
+    "168",
+    "148",
+    "20",
+    "3",
+    "1",
+    "4",
+    "20",
+    "1",
+    "180",
+    "102",
+    "192",
+    "4",
+    "160",
+    "21",
+    "0",
+    "0",
+    "150",
+  ].map((h) => parseInt(h, 16)),
+);
 
 // Shared connection state to prevent multiple instances from creating duplicate connections
 const globalConnectionState = {
@@ -15,9 +91,17 @@ const globalConnectionState = {
   lastMessageTime: null as number | null,
 };
 
+/** Log effective topology UDP payload once per page load (dev/debug). */
+let rawTopologyPacketLoggedOnce = false;
+/** Log wire INT32 lat/lon per fused node once per page load (dev/debug). */
+let rawLatLonPerMemberLoggedOnce = false;
+
 // UdpLayerData interface is now defined in udp-data-store.ts
 
 type BinaryInput = ArrayBuffer | Uint8Array;
+
+/** Wire INT32 lat/lon → decimal degrees (`public/network-topology-struct.md`). */
+const TOPO_LATLON_RAW_TO_DEG = 0.000000083819;
 
 /**
  * Parse topology binary data from UDP server (NEW FORMAT)
@@ -37,13 +121,13 @@ type BinaryInput = ArrayBuffer | Uint8Array;
  *         - UINT8 id (1 byte)
  *         - UINT8 snr (1 byte)
  *     - positional:
- *       - INT32 latitude (4 bytes, big-endian, microdegrees)
- *       - INT32 longitude (4 bytes, big-endian, microdegrees)
+ *       - INT32 latitude (4 bytes, big-endian; degrees = raw × TOPO_LATLON_RAW_TO_DEG)
+ *       - INT32 longitude (4 bytes, big-endian; same scale)
  *       - UINT16 altitude (2 bytes, big-endian)
- *     - int8_t RSSI (1 byte, signed, -128 to 127)
+ *     (no RSSI — entry ends after altitude)
  */
 const parseTopologyBinary = (
-  buffer: BinaryInput
+  buffer: BinaryInput,
 ): {
   motherNodeId: number | null;
   nodes: Map<
@@ -54,7 +138,6 @@ const parseTopologyBinary = (
       lat: number;
       long: number;
       altitude: number;
-      rssi: number;
       neighbors: Array<{ id: number; snr: number }>;
     }
   >;
@@ -69,14 +152,18 @@ const parseTopologyBinary = (
     return offset + bytesNeeded <= bufferLength;
   };
 
-  const emptyResult = { motherNodeId: null as number | null, nodes: new Map() as Map<number, any>, connections: new Map() as Map<string, number> };
+  const emptyResult = {
+    motherNodeId: null as number | null,
+    nodes: new Map() as Map<number, any>,
+    connections: new Map() as Map<string, number>,
+  };
 
   // --- Header ---
 
   // ExtMsgType (1 byte)
   if (!hasEnoughBytes(1)) {
     console.warn(
-      "[Topology Parser] Buffer too small: cannot read ext_msg_type"
+      "[Topology Parser] Buffer too small: cannot read ext_msg_type",
     );
     return emptyResult;
   }
@@ -85,7 +172,7 @@ const parseTopologyBinary = (
   // payload_length (2 bytes, big-endian)
   if (!hasEnoughBytes(2)) {
     console.warn(
-      "[Topology Parser] Buffer too small: cannot read payload_length"
+      "[Topology Parser] Buffer too small: cannot read payload_length",
     );
     return emptyResult;
   }
@@ -104,7 +191,7 @@ const parseTopologyBinary = (
   // numFusedNodes (1 byte)
   if (!hasEnoughBytes(1)) {
     console.warn(
-      "[Topology Parser] Buffer too small: cannot read numFusedNodes"
+      "[Topology Parser] Buffer too small: cannot read numFusedNodes",
     );
     return emptyResult;
   }
@@ -119,7 +206,6 @@ const parseTopologyBinary = (
       lat: number;
       long: number;
       altitude: number;
-      rssi: number;
       neighbors: Array<{ id: number; snr: number }>;
     }
   >();
@@ -130,7 +216,7 @@ const parseTopologyBinary = (
     // IP[4] (4 bytes, big-endian / network byte order)
     if (!hasEnoughBytes(4)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read IP`
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read IP`,
       );
       break;
     }
@@ -140,7 +226,7 @@ const parseTopologyBinary = (
     // topology.id (1 byte)
     if (!hasEnoughBytes(1)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read topology id`
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read topology id`,
       );
       break;
     }
@@ -150,7 +236,7 @@ const parseTopologyBinary = (
     // topology.numNeighbors (1 byte)
     if (!hasEnoughBytes(1)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read numNeighbors`
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read numNeighbors`,
       );
       break;
     }
@@ -162,7 +248,7 @@ const parseTopologyBinary = (
     for (let j = 0; j < numNeighbors; j++) {
       if (!hasEnoughBytes(2)) {
         console.warn(
-          `[Topology Parser] Buffer too small at node ${nodeId}, neighbor ${j + 1}/${numNeighbors}`
+          `[Topology Parser] Buffer too small at node ${nodeId}, neighbor ${j + 1}/${numNeighbors}`,
         );
         break;
       }
@@ -178,48 +264,50 @@ const parseTopologyBinary = (
       connections.set(`${smallerId}_${largerId}`, snr);
     }
 
-    // positional.latitude (INT32, big-endian, microdegrees)
+    // positional.latitude (INT32, big-endian → degrees via struct scale)
     if (!hasEnoughBytes(4)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read latitude`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read latitude`,
       );
       break;
     }
-    const lat = view.getInt32(offset, false) / 1000000;
+
+    const latRaw = view.getInt32(offset, false);
     offset += 4;
 
-    // positional.longitude (INT32, big-endian, microdegrees)
+    // positional.longitude (INT32, big-endian, same scale as latitude)
     if (!hasEnoughBytes(4)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read longitude`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read longitude`,
       );
       break;
     }
-    const long = view.getInt32(offset, false) / 1000000;
+    const lonRaw = view.getInt32(offset, false);
     offset += 4;
+
+    if (!rawLatLonPerMemberLoggedOnce) {
+      console.log(
+        `[Topology] node id=${nodeId} raw lat (INT32)=${latRaw} raw lon (INT32)=${lonRaw}`,
+      );
+    }
+
+    const lat = latRaw * TOPO_LATLON_RAW_TO_DEG;
+    const long = lonRaw * TOPO_LATLON_RAW_TO_DEG;
 
     // positional.altitude (UINT16, big-endian)
     if (!hasEnoughBytes(2)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read altitude`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read altitude`,
       );
       break;
     }
     const altitude = view.getUint16(offset, false);
     offset += 2;
 
-    // RSSI (int8_t, signed, -128 to 127)
-    if (!hasEnoughBytes(1)) {
-      console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read RSSI`
-      );
-      break;
-    }
-    const rssi = view.getInt8(offset);
-    offset += 1;
-
-    nodes.set(nodeId, { id: nodeId, ip, lat, long, altitude, rssi, neighbors });
+    nodes.set(nodeId, { id: nodeId, ip, lat, long, altitude, neighbors });
   }
+
+  rawLatLonPerMemberLoggedOnce = true;
 
   return { motherNodeId, nodes, connections };
 };
@@ -244,7 +332,7 @@ const hexToRgb = (hex: string): [number, number, number] => {
  */
 const getSnrColor = (
   snr: number,
-  colors: [string, string, string] = ["#FF0000", "#FFFF00", "#00FF00"]
+  colors: [string, string, string] = ["#FF0000", "#FFFF00", "#00FF00"],
 ): [number, number, number, number] => {
   const normalized = Math.max(0, Math.min(1, snr / 100));
 
@@ -281,7 +369,7 @@ const getSnrColor = (
  */
 const getSnrWidth = (
   snr: number,
-  widths: [number, number, number] = [1, 3, 5]
+  widths: [number, number, number] = [1, 3, 5],
 ): number => {
   const normalized = Math.max(0, Math.min(1, snr / 100));
   if (normalized < 0.5) {
@@ -300,18 +388,25 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
   const setUdpData = useUdpDataStore((state) => state.setUdpData);
   const connectionError = useUdpDataStore((state) => state.connectionError);
   const setConnectionError = useUdpDataStore(
-    (state) => state.setConnectionError
+    (state) => state.setConnectionError,
   );
   const noDataWarning = useUdpDataStore((state) => state.noDataWarning);
   const setNoDataWarning = useUdpDataStore((state) => state.setNoDataWarning);
   const isConnected = useUdpDataStore((state) => state.isConnected);
   const setIsConnected = useUdpDataStore((state) => state.setIsConnected);
   const resetConnectionState = useUdpDataStore(
-    (state) => state.resetConnectionState
+    (state) => state.resetConnectionState,
   );
   const { networkLayersVisible } = useNetworkLayersVisible();
-  const { getNodeSymbol, getLayerSymbol, getGroupSymbol, nodeSymbols, motherNodeSymbol, snrColors, snrLineWidths } =
-    useUdpSymbolsStore();
+  const {
+    getNodeSymbol,
+    getLayerSymbol,
+    getGroupSymbol,
+    nodeSymbols,
+    motherNodeSymbol,
+    snrColors,
+    snrLineWidths,
+  } = useUdpSymbolsStore();
   const groupSymbols = useUdpSymbolsStore((state) => state.groupSymbols);
 
   useEffect(() => {
@@ -353,9 +448,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
     const scheduleUdpUpdate = (updater: UdpUpdater) => {
       const previous = pendingUpdater;
-      pendingUpdater = previous
-        ? (state) => updater(previous(state))
-        : updater;
+      pendingUpdater = previous ? (state) => updater(previous(state)) : updater;
 
       if (rafHandle === null) {
         rafHandle = requestAnimationFrame(() => {
@@ -367,7 +460,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
     const connectUdp = async () => {
       try {
-        // Create UDP socket bound to port 40074 (handled in native plugin)
+        // Create UDP socket bound to UDP_PORT (handled in native plugin)
         await Udp.create({});
         connectionEstablished = true;
         globalConnectionState.isConnected = true;
@@ -378,11 +471,11 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         // Check for no data after 5 seconds
         noDataTimeout = setTimeout(() => {
           setNoDataWarning(
-            "No data received on port 40074. Please check network connectivity."
+            `No data received on port ${UDP_PORT}. Please check network connectivity.`,
           );
           setIsConnected(false);
           globalConnectionState.isConnected = false;
-        }, 5000);
+        }, UDP_NO_DATA_TIMEOUT_MS);
         globalConnectionState.noDataTimeout = noDataTimeout;
 
         // No registration message needed - data arrives automatically from intranet
@@ -394,7 +487,10 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         globalConnectionState.staleCheckInterval = setInterval(() => {
           if (globalConnectionState.lastMessageTime === null) return;
           const now = Date.now();
-          if (now - globalConnectionState.lastMessageTime > 5000) {
+          if (
+            now - globalConnectionState.lastMessageTime >
+            UDP_STALE_THRESHOLD_MS
+          ) {
             globalConnectionState.lastMessageTime = null;
             firstMessageHandled = false;
             scheduleUdpUpdate((prev) => ({
@@ -406,12 +502,12 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               },
             }));
           }
-        }, 2000);
+        }, UDP_STALE_CHECK_INTERVAL_MS);
       } catch (error: any) {
         console.error("❌ UDP connection error:", error);
         const errorMessage =
           error?.message || error?.toString() || "Unknown error";
-        const fullErrorMessage = `Failed to bind UDP socket on port 40074!\n\nError: ${errorMessage}\n\nPlease check network permissions.`;
+        const fullErrorMessage = `Failed to bind UDP socket on port ${UDP_PORT}!\n\nError: ${errorMessage}\n\nPlease check network permissions.`;
         setIsConnected(false);
         globalConnectionState.isConnected = false;
         globalConnectionState.isConnecting = false;
@@ -422,7 +518,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
     // Helper function to handle binary messages
     const handleBinaryMessage = (
-      buffer: ArrayBuffer | number[] | Uint8Array
+      buffer: ArrayBuffer | number[] | Uint8Array,
     ) => {
       // Track last message time for stale detection
       globalConnectionState.lastMessageTime = Date.now();
@@ -439,6 +535,15 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
       } else {
         console.error("[Topology] Unknown buffer type:", typeof buffer);
         return;
+      }
+
+      if (UDP_USE_TEST_BUFFER) {
+        packet = UDP_TEST_BUFFER;
+      }
+
+      if (!rawTopologyPacketLoggedOnce) {
+        rawTopologyPacketLoggedOnce = true;
+        console.log("packet", packet);
       }
 
       // Topology-only UDP mode.
@@ -558,14 +663,14 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           typeof d.longitude === "number" &&
           typeof d.latitude === "number" &&
           !isNaN(d.longitude) &&
-          !isNaN(d.latitude)
+          !isNaN(d.latitude),
       );
 
       // Build connections based on controllingNodeId
       validMembers.forEach((member: any) => {
         if (member.controllingNodeId && member.controllingNodeId !== 0) {
           const controller = validMembers.find(
-            (m: any) => m.globalId === member.controllingNodeId
+            (m: any) => m.globalId === member.controllingNodeId,
           );
 
           if (controller) {
@@ -595,7 +700,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           widthUnits: "pixels",
           widthMinPixels: 1,
           widthMaxPixels: 4,
-        })
+        }),
       );
     }
 
@@ -608,7 +713,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             typeof d.longitude === "number" &&
             typeof d.latitude === "number" &&
             !isNaN(d.longitude) &&
-            !isNaN(d.latitude)
+            !isNaN(d.latitude),
         )
         .map((d: any) => ({
           globalId: d.globalId,
@@ -633,7 +738,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
                 "naval_unit",
               ].includes(symbol);
               return {
-                url: `/icons/${symbol}.svg`,
+                url: `icons/${symbol}.svg`,
                 width: isRectangularIcon ? 28 : 32,
                 height: isRectangularIcon ? 20 : 32,
                 anchorY: isRectangularIcon ? 10 : 16,
@@ -654,7 +759,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               getPosition: [udpData.networkMembers.length],
               getIcon: [udpData.networkMembers.length, nodeSymbols],
             },
-          })
+          }),
         );
       }
     }
@@ -668,7 +773,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             typeof d.longitude === "number" &&
             typeof d.latitude === "number" &&
             !isNaN(d.longitude) &&
-            !isNaN(d.latitude)
+            !isNaN(d.latitude),
         )
         .map((d: any) => ({
           globalId: d.globalId,
@@ -693,7 +798,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
                 "naval_unit",
               ].includes(symbol);
               return {
-                url: `/icons/${symbol}.svg`,
+                url: `icons/${symbol}.svg`,
                 width: isRectangularIcon ? 28 : 32,
                 height: isRectangularIcon ? 20 : 32,
                 anchorY: isRectangularIcon ? 10 : 16,
@@ -714,7 +819,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               getPosition: [udpData.targets.length],
               getIcon: [udpData.targets.length, nodeSymbols],
             },
-          })
+          }),
         );
       }
     }
@@ -727,7 +832,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           typeof d.longitude === "number" &&
           typeof d.latitude === "number" &&
           !isNaN(d.longitude) &&
-          !isNaN(d.latitude)
+          !isNaN(d.latitude),
       );
 
       if (validGeoMessages.length > 0) {
@@ -739,7 +844,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             parameters: { depthTest: false, depthMask: false },
             getIcon: (_d: any) => {
               return {
-                url: `/icons/unknown_aircraft.svg`,
+                url: `icons/unknown_aircraft.svg`,
                 width: 32,
                 height: 32,
                 anchorY: 16,
@@ -759,7 +864,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             updateTriggers: {
               getPosition: [udpData.geoMessages.length],
             },
-          })
+          }),
         );
       }
     }
@@ -800,7 +905,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             widthUnits: "pixels",
             widthMinPixels: 1,
             widthMaxPixels: 12,
-          })
+          }),
         );
       }
     }
@@ -812,7 +917,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           typeof node.long === "number" &&
           typeof node.lat === "number" &&
           !isNaN(node.long) &&
-          !isNaN(node.lat)
+          !isNaN(node.lat),
       );
 
       if (topologyNodes.length > 0) {
@@ -917,7 +1022,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               if (d.isMotherNode) {
                 const mSymbol = motherNodeSymbol || "mother-fighter";
                 return {
-                  url: `/icons/${mSymbol}.svg`,
+                  url: `icons/${mSymbol}.svg`,
                   width: 48,
                   height: 48,
                   anchorY: 24,
@@ -936,7 +1041,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
                 "naval_unit",
               ].includes(symbol);
               return {
-                url: `/icons/${symbol}.svg`,
+                url: `icons/${symbol}.svg`,
                 width: isRectangularIcon ? 42 : 48,
                 height: isRectangularIcon ? 30 : 48,
                 anchorY: isRectangularIcon ? 15 : 24,
@@ -958,9 +1063,14 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             sizeMaxPixels: 64,
             updateTriggers: {
               getPosition: [udpData.topology.nodes.size],
-              getIcon: [udpData.topology.nodes.size, nodeSymbols, groupSymbols, motherNodeSymbol],
+              getIcon: [
+                udpData.topology.nodes.size,
+                nodeSymbols,
+                groupSymbols,
+                motherNodeSymbol,
+              ],
             },
-          })
+          }),
         );
       }
     }

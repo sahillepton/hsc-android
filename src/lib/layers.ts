@@ -6,6 +6,7 @@ import {
   formatDistance,
   calculateIgrs,
 } from "./utils";
+import { EARTH_RADIUS_M, METERS_PER_DEGREE_LAT } from "./constants";
 
 export const computeLayerBounds = (layer: LayerProps) => {
   const points: [number, number][] = [];
@@ -122,7 +123,7 @@ export const calculateDistanceMeters = (
   a: [number, number],
   b: [number, number]
 ) => {
-  const R = 6371000;
+  const R = EARTH_RADIUS_M;
   const lat1 = toRadians(a[1]);
   const lat2 = toRadians(b[1]);
   const dLat = toRadians(b[1] - a[1]);
@@ -193,8 +194,8 @@ export const makeSectorPolygon = (
 ): [number, number][] => {
   const [lng, lat] = center;
   const latRad = toRadians(lat);
-  const metersPerDegLat = 111320; // approx
-  const metersPerDegLng = 111320 * Math.cos(latRad);
+  const metersPerDegLat = METERS_PER_DEGREE_LAT;
+  const metersPerDegLng = METERS_PER_DEGREE_LAT * Math.cos(latRad);
   const dLat = radiusMeters / metersPerDegLat;
   const dLng = radiusMeters / metersPerDegLng;
 
@@ -230,7 +231,7 @@ export const destinationPoint = (
     return center;
   }
 
-  const R = 6371000;
+  const R = EARTH_RADIUS_M;
   const δ = distanceMeters / R;
   const θ = toRadians(bearingDeg);
   const φ1 = toRadians(center[1]);

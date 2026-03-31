@@ -58,13 +58,20 @@ const NetworkLayersPanel = ({
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const topologyData = useUdpDataStore((state) => state.udpData.topology);
-  const { motherNodeSymbol, setMotherNodeSymbol, groupSymbols, snrColors, setSnrColors, snrLineWidths, setSnrLineWidths } =
-    useUdpSymbolsStore();
+  const {
+    motherNodeSymbol,
+    setMotherNodeSymbol,
+    groupSymbols,
+    snrColors,
+    setSnrColors,
+    snrLineWidths,
+    setSnrLineWidths,
+  } = useUdpSymbolsStore();
   const [showMotherIconPicker, setShowMotherIconPicker] = useState(false);
 
   // Get UDP layer data - only network members
   const networkMembersLayer = udpLayers.find(
-    (layer: any) => layer?.id === "udp-network-members-layer"
+    (layer: any) => layer?.id === "udp-network-members-layer",
   );
 
   const networkMembersData = networkMembersLayer?.props?.data || [];
@@ -120,7 +127,7 @@ const NetworkLayersPanel = ({
               const exists = groupConnections.some(
                 (c) =>
                   (c.from === smallerId && c.to === largerId) ||
-                  (c.from === largerId && c.to === smallerId)
+                  (c.from === largerId && c.to === smallerId),
               );
               if (!exists) {
                 groupConnections.push({ from: smallerId, to: largerId, snr });
@@ -207,7 +214,7 @@ const NetworkLayersPanel = ({
       const lngSpan = maxLng - minLng;
       const latSpan = maxLat - minLat;
       const maxSpan = Math.max(lngSpan, latSpan);
-      
+
       // Calculate appropriate maxZoom based on bounding box size
       let calculatedMaxZoom: number;
       if (maxSpan < 0.001) {
@@ -237,7 +244,7 @@ const NetworkLayersPanel = ({
           duration: 2000, // Smooth, slower duration
           maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
           linear: false, // Use default easing (smooth)
-        }
+        },
       );
     }
   };
@@ -282,7 +289,7 @@ const NetworkLayersPanel = ({
       const lngSpan = maxLng - minLng;
       const latSpan = maxLat - minLat;
       const maxSpan = Math.max(lngSpan, latSpan);
-      
+
       // Calculate appropriate maxZoom based on bounding box size
       let calculatedMaxZoom: number;
       if (maxSpan < 0.001) {
@@ -310,7 +317,7 @@ const NetworkLayersPanel = ({
           duration: 2000,
           maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
           linear: false,
-        }
+        },
       );
     }
   };
@@ -375,8 +382,7 @@ const NetworkLayersPanel = ({
   };
   topologyGroups.forEach((group) => {
     const key = `topology-group-${group.id}`;
-    const sym =
-      groupSymbols[key] || defaultGroupIcons[group.id] || "fighter1";
+    const sym = groupSymbols[key] || defaultGroupIcons[group.id] || "fighter1";
     activeGroupIconSet.add(sym);
   });
 
@@ -446,7 +452,7 @@ const NetworkLayersPanel = ({
                             const newColor = e.target.value.toUpperCase();
                             // Check for duplicate colors
                             const otherColors = snrColors.filter(
-                              (_, i) => i !== idx
+                              (_, i) => i !== idx,
                             );
                             if (otherColors.includes(newColor)) return;
                             const updated = [...snrColors] as [
@@ -500,7 +506,11 @@ const NetworkLayersPanel = ({
                         <button
                           onClick={() => {
                             if (widthValue <= 1) return;
-                            const updated = [...snrLineWidths] as [number, number, number];
+                            const updated = [...snrLineWidths] as [
+                              number,
+                              number,
+                              number,
+                            ];
                             updated[idx] = widthValue - 1;
                             setSnrLineWidths(updated);
                           }}
@@ -515,7 +525,11 @@ const NetworkLayersPanel = ({
                         <button
                           onClick={() => {
                             if (widthValue >= 12) return;
-                            const updated = [...snrLineWidths] as [number, number, number];
+                            const updated = [...snrLineWidths] as [
+                              number,
+                              number,
+                              number,
+                            ];
                             updated[idx] = widthValue + 1;
                             setSnrLineWidths(updated);
                           }}
@@ -550,7 +564,7 @@ const NetworkLayersPanel = ({
             {/* Mother Node */}
             <div className="flex items-center gap-1.5">
               <img
-                src={`/icons/${currentMotherIcon}.svg`}
+                src={`icons/${currentMotherIcon}.svg`}
                 alt="Mother Node"
                 className="w-5 h-5"
               />
@@ -560,7 +574,7 @@ const NetworkLayersPanel = ({
             {/* Topology Node */}
             <div className="flex items-center gap-1.5">
               <img
-                src={`/icons/${sampleGroupIcon}.svg`}
+                src={`icons/${sampleGroupIcon}.svg`}
                 alt="Topology Node"
                 className="w-5 h-5"
               />
@@ -579,7 +593,7 @@ const NetworkLayersPanel = ({
                 className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-border/60 hover:bg-zinc-50 transition-colors"
               >
                 <img
-                  src={`/icons/${currentMotherIcon}.svg`}
+                  src={`icons/${currentMotherIcon}.svg`}
                   alt="Current"
                   className="w-4 h-4"
                 />
@@ -619,8 +633,8 @@ const NetworkLayersPanel = ({
                         isSelected
                           ? "border-blue-500 bg-blue-100 ring-2 ring-blue-400"
                           : isUsedByGroup && iconName !== "mother-fighter"
-                          ? "border-gray-200 bg-gray-100 opacity-40 cursor-not-allowed"
-                          : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
+                            ? "border-gray-200 bg-gray-100 opacity-40 cursor-not-allowed"
+                            : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
                       }`}
                       title={
                         isUsedByGroup && iconName !== "mother-fighter"
@@ -629,7 +643,7 @@ const NetworkLayersPanel = ({
                       }
                     >
                       <img
-                        src={`/icons/${iconName}.svg`}
+                        src={`icons/${iconName}.svg`}
                         alt={iconName}
                         className="w-4 h-4"
                       />
@@ -814,7 +828,7 @@ const NetworkLayersPanel = ({
                         style={{
                           height: `${Math.min(
                             networkMembersData.length * 48 + 2,
-                            384
+                            384,
                           )}px`,
                           width: "100% !important",
                         }}
@@ -824,7 +838,7 @@ const NetworkLayersPanel = ({
                           const globalId = item.globalId ?? item.id ?? idx;
                           const coord = formatCoordinate(
                             item.latitude,
-                            item.longitude
+                            item.longitude,
                           );
 
                           return (

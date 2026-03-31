@@ -24,10 +24,7 @@ export const TooltipHeading = ({
         {title}
       </div>
       {subtitle && (
-        <div
-          className="text-gray-500 mt-0.5"
-          style={{ fontSize: "0.9em" }}
-        >
+        <div className="text-gray-500 mt-0.5" style={{ fontSize: "0.9em" }}>
           {subtitle}
         </div>
       )}
@@ -51,10 +48,7 @@ export const TooltipProperty = ({
   const { tooltipHeadingColor, tooltipValueColor } = useTooltipConfigStore();
   return (
     <div
-      className={cn(
-        "flex flex-col items-start gap-1 py-1",
-        className
-      )}
+      className={cn("flex flex-col items-start gap-1 py-1", className)}
       style={{ fontSize: "inherit", fontFamily: "inherit" }}
     >
       <span
@@ -140,7 +134,7 @@ export const TooltipBox = ({
       className={cn(
         "bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl p-2 overflow-hidden min-w-[180px]",
         maxWidth,
-        className
+        className,
       )}
       style={{
         fontFamily: tooltipFontFamily,

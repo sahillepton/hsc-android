@@ -4,6 +4,11 @@ import * as turf from "@turf/turf";
 import Papa from "papaparse";
 import shp from "shpjs";
 import proj4 from "proj4";
+import {
+  DEM_NO_DATA_VALUE,
+  DEM_MIN_VALID_ELEVATION,
+  DEM_MAX_VALID_ELEVATION,
+} from "./constants";
 // geotiff is optional; we will dynamic import when needed
 
 // --- LCC projection helpers ---
@@ -1295,13 +1300,10 @@ async function parseHGTFile(file: File): Promise<DemRasterResult> {
   const elevationData = new Float32Array(width * height);
   let minVal = Infinity;
   let maxVal = -Infinity;
-  const NO_DATA_VALUE = -32768;
-
   for (let i = 0; i < width * height; i++) {
-    // Read 16-bit signed integer (big-endian)
-    const elevation = dataView.getInt16(i * 2, false); // false = big-endian
+    const elevation = dataView.getInt16(i * 2, false);
 
-    if (elevation === NO_DATA_VALUE || elevation < -1000 || elevation > 9000) {
+    if (elevation === DEM_NO_DATA_VALUE || elevation < DEM_MIN_VALID_ELEVATION || elevation > DEM_MAX_VALID_ELEVATION) {
       // Invalid or no data
       elevationData[i] = minVal !== Infinity ? minVal : 0;
     } else {
