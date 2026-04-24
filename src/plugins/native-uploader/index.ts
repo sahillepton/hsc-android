@@ -20,6 +20,17 @@ export type SaveExtractedFileResult = {
   mimeType: string;
 };
 
+export type UploadProgressEvent = {
+  fileIndex: number;
+  bytesWritten: number;
+  totalBytes: number; // -1 if unknown
+  originalName: string;
+};
+
+export type PickerClosedEvent = {
+  count: number;
+};
+
 export interface NativeUploaderPlugin {
   pickAndStageMany(options?: {
     maxFiles?: 1 | 2;
@@ -35,12 +46,12 @@ export interface NativeUploaderPlugin {
 
   addListener(
     eventName: "uploadProgress",
-    listenerFunc: (event: {
-      fileIndex: number;
-      bytesWritten: number;
-      totalBytes: number; // -1 if unknown
-      originalName: string;
-    }) => void
+    listenerFunc: (event: UploadProgressEvent) => void,
+  ): Promise<{ remove: () => void }>;
+
+  addListener(
+    eventName: "pickerClosed",
+    listenerFunc: (event: PickerClosedEvent) => void,
   ): Promise<{ remove: () => void }>;
 }
 
@@ -67,16 +78,30 @@ function createDesktopPlugin(): NativeUploaderPlugin {
       return await api().nativeSaveExtractedFile(
         options.base64Data,
         options.fileName,
-        options.mimeType
+        options.mimeType,
       );
     },
-    async addListener(
-      _eventName: "uploadProgress",
-      _listenerFunc: (event: any) => void
-    ) {
-      // On desktop, file copy is near-instant, so no progress events needed.
+    addListener: (async (
+      eventName: "uploadProgress" | "pickerClosed",
+      listenerFunc: (event: UploadProgressEvent | PickerClosedEvent) => void,
+    ) => {
+      const electronApi = api();
+      if (eventName === "uploadProgress") {
+        const unsubscribe: () => void =
+          electronApi.nativeUploaderOnUploadProgress?.(
+            listenerFunc as (ev: UploadProgressEvent) => void,
+          ) ?? (() => {});
+        return { remove: () => unsubscribe() };
+      }
+      if (eventName === "pickerClosed") {
+        const unsubscribe: () => void =
+          electronApi.nativeUploaderOnPickerClosed?.(
+            listenerFunc as (ev: PickerClosedEvent) => void,
+          ) ?? (() => {});
+        return { remove: () => unsubscribe() };
+      }
       return { remove: () => {} };
-    },
+    }) as NativeUploaderPlugin["addListener"],
   };
 }
 

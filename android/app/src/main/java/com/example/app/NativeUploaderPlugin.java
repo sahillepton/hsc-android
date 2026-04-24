@@ -170,6 +170,18 @@ public class NativeUploaderPlugin extends Plugin {
 
         final List<Uri> finalUris = uris;
 
+        // Signal the renderer that the picker has closed and staging is
+        // about to start, before we even dispatch to the IO thread. Large
+        // files spend seconds in the copy loop below, and without this event
+        // the JS "Opening file picker…" overlay keeps showing the whole time
+        // (the UI feels like the picker itself is stuck open). This fires
+        // from the main thread and is cheap.
+        {
+            JSObject closedEv = new JSObject();
+            closedEv.put("count", finalUris.size());
+            notifyListeners("pickerClosed", closedEv);
+        }
+
         ioExecutor.execute(() -> {
             try {
                 File docsRoot = getContext().getExternalFilesDir(null);
@@ -203,6 +215,22 @@ public class NativeUploaderPlugin extends Plugin {
                     long written = 0L;
                     long lastEmitMs = 0L;
 
+                    // Emit an initial 0-byte progress event before any bytes
+                    // are actually read. Without this, the very first
+                    // uploadProgress event for a large file only fires after
+                    // ~250ms of data has been copied, so the JS overlay
+                    // stays on "Opening file picker…" for that window even
+                    // though the picker UI has already dismissed.
+                    {
+                        JSObject initialEv = new JSObject();
+                        initialEv.put("fileIndex", idx);
+                        initialEv.put("bytesWritten", 0L);
+                        initialEv.put("totalBytes", expectedSize);
+                        initialEv.put("originalName", originalName);
+                        notifyOnMain("uploadProgress", initialEv);
+                        lastEmitMs = SystemClock.uptimeMillis();
+                    }
+
                     try (InputStream in = getContext().getContentResolver().openInputStream(uri);
                          FileOutputStream out = new FileOutputStream(partial)) {
 
@@ -224,6 +252,17 @@ public class NativeUploaderPlugin extends Plugin {
                                 ev.put("originalName", originalName);
                                 notifyOnMain("uploadProgress", ev);
                             }
+                        }
+                        // Final 100% progress event so the overlay doesn't
+                        // appear to stall at 99% while the stream flushes /
+                        // the file is renamed into place.
+                        {
+                            JSObject finalEv = new JSObject();
+                            finalEv.put("fileIndex", idx);
+                            finalEv.put("bytesWritten", written);
+                            finalEv.put("totalBytes", expectedSize);
+                            finalEv.put("originalName", originalName);
+                            notifyOnMain("uploadProgress", finalEv);
                         }
                         out.flush();
                     }

@@ -21,8 +21,11 @@ export async function stagedPathToFile(params: {
   if (isElectron()) {
     // Electron: read binary via IPC (structured clone — zero base64)
     const api = (window as any).electronAPI;
-    const uint8: Uint8Array | null = await api.readFileBinary(params.absolutePath);
-    if (!uint8) throw new Error(`Failed to read staged file: ${params.absolutePath}`);
+    const uint8: Uint8Array | null = await api.readFileBinary(
+      params.absolutePath,
+    );
+    if (!uint8)
+      throw new Error(`Failed to read staged file: ${params.absolutePath}`);
     const mime = params.mimeType || "application/octet-stream";
     return new File([uint8], params.originalName, { type: mime });
   }

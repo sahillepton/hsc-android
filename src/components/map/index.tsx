@@ -737,8 +737,34 @@ const MapComponent = ({
     setIsProcessingFiles(true);
     const toastId = toast.loading("Opening file picker...");
     let progressListener: { remove: () => void } | null = null;
+    let pickerClosedListener: { remove: () => void } | null = null;
 
     try {
+      // Flip the overlay out of "Opening file picker…" the moment the
+      // native dialog actually dismisses, even before any bytes have been
+      // read. Without this, for large files the overlay appeared stuck on
+      // "Opening file picker…" for many seconds while the native side was
+      // actually already streaming the copy.
+      try {
+        pickerClosedListener = await NativeUploader.addListener(
+          "pickerClosed",
+          (event) => {
+            if (event.count > 0) {
+              toast.update(
+                toastId,
+                `Staging ${event.count} file(s)…`,
+                "loading",
+              );
+            }
+          },
+        );
+      } catch (listenerError) {
+        console.warn(
+          "[FileUpload] Failed to add pickerClosed listener:",
+          listenerError,
+        );
+      }
+
       // Set up progress listener for upload
       let currentUploadProgress = 0;
       try {
@@ -755,6 +781,11 @@ const MapComponent = ({
                 `Uploading File: ${currentUploadProgress}/100 %`,
                 "loading",
               );
+            } else {
+              // Unknown size (content provider didn't report SIZE): at
+              // least swap the message so the user sees activity.
+              const mb = (event.bytesWritten / (1024 * 1024)).toFixed(1);
+              toast.update(toastId, `Uploading file: ${mb} MB…`, "loading");
             }
           },
         );
@@ -773,6 +804,9 @@ const MapComponent = ({
       if (progressListener) {
         await progressListener.remove();
       }
+      if (pickerClosedListener) {
+        await pickerClosedListener.remove();
+      }
 
       if (!result.files || result.files.length === 0) {
         toast.update(toastId, "No files selected", "error");
@@ -781,6 +815,26 @@ const MapComponent = ({
 
       // Track if any files were actually valid
       let hasValidFiles = false;
+      // Remember the reason the most-recent file was rejected so the
+      // end-of-loop fallback toast can report something actionable instead
+      // of the misleading "No valid files found" when every file hit a
+      // specific gate (size cap, blocked extension, etc.).
+      let lastRejectionMessage: string | null = null;
+
+      // Per-type size caps (MB). Raster rasters are now aggressively
+      // downsampled at decode time (GPU-safe 4096px cap), so a multi-gigabyte
+      // GeoTIFF no longer blows up memory on the render side — the only real
+      // cost is buffering the bytes once into an ArrayBuffer for the worker.
+      // Desktop Electron (64-bit V8) handles ~2 GB comfortably; keep vectors
+      // conservative since a 1 GB GeoJSON would be unusable anyway.
+      const RASTER_SIZE_CAP_MB = 4096;
+      const GENERIC_SIZE_CAP_MB = 4096;
+      const rasterExtensionsForCap = new Set(["tif", "tiff", "hgt", "dett"]);
+      const extOf = (name: string) => {
+        const lower = name.toLowerCase();
+        const dot = lower.lastIndexOf(".");
+        return dot >= 0 ? lower.slice(dot + 1) : "";
+      };
 
       // Process files sequentially
       for (let i = 0; i < result.files.length; i++) {
@@ -792,11 +846,9 @@ const MapComponent = ({
           const { isFileExtensionAllowed, getBlockedFileMessage } =
             await import("@/lib/allowed-file-extensions");
           if (!isFileExtensionAllowed(stagedFile.originalName)) {
-            toast.update(
-              toastId,
-              getBlockedFileMessage(stagedFile.originalName),
-              "error",
-            );
+            const msg = getBlockedFileMessage(stagedFile.originalName);
+            lastRejectionMessage = msg;
+            toast.update(toastId, msg, "error");
             continue; // Skip this file
           }
 
@@ -806,19 +858,35 @@ const MapComponent = ({
           // Step 2: Wait a bit for file to be fully written to disk
           await new Promise((resolve) => setTimeout(resolve, 500));
 
-          // Step 3: Check file size before reading (prevent memory issues)
+          // Step 3: Check file size before reading (prevent memory issues).
+          // Rasters get a higher cap than other file types because the decoder
+          // pipeline subsamples huge TIFFs at read time.
           const fileSizeMB = stagedFile.size / (1024 * 1024);
-          if (fileSizeMB > 500) {
-            toast.update(
-              toastId,
-              `File ${
-                stagedFile.originalName
-              } is too large (${fileSizeMB.toFixed(
-                2,
-              )} MB). Maximum size is 500 MB.`,
-              "error",
-            );
+          const ext = extOf(stagedFile.originalName);
+          const sizeCapMB = rasterExtensionsForCap.has(ext)
+            ? RASTER_SIZE_CAP_MB
+            : GENERIC_SIZE_CAP_MB;
+          if (fileSizeMB > sizeCapMB) {
+            const msg = `File ${
+              stagedFile.originalName
+            } is too large (${fileSizeMB.toFixed(
+              2,
+            )} MB). Maximum size is ${sizeCapMB} MB for ${
+              rasterExtensionsForCap.has(ext) ? "raster" : "this file type"
+            }.`;
+            lastRejectionMessage = msg;
+            toast.update(toastId, msg, "error");
             continue; // Skip this file
+          }
+          if (rasterExtensionsForCap.has(ext) && fileSizeMB > 1024) {
+            // Inform the user that a very large TIFF may take longer — it's
+            // still going to work, but the ArrayBuffer copy + worker transfer
+            // is not instant at this size.
+            toast.notification(
+              `Large raster (${fileSizeMB.toFixed(
+                0,
+              )} MB). Processing may take up to a few minutes…`,
+            );
           }
 
           // Step 3: Convert staged file to File object (with error handling and timeout)
@@ -841,11 +909,9 @@ const MapComponent = ({
             console.error("[FileUpload] Error reading file:", fileError);
             const errorMsg =
               fileError instanceof Error ? fileError.message : "Unknown error";
-            toast.update(
-              toastId,
-              `Error reading file ${stagedFile.originalName}: ${errorMsg}`,
-              "error",
-            );
+            const msg = `Error reading file ${stagedFile.originalName}: ${errorMsg}`;
+            lastRejectionMessage = msg;
+            toast.update(toastId, msg, "error");
             continue; // Skip this file and move to next
           }
 
@@ -1251,8 +1317,10 @@ const MapComponent = ({
             const isVector = vectorExtensions.includes(ext);
 
             if (!isRaster && !isVector) {
-              console.error(`[FileUpload] Unsupported file type: ${ext}`);
-              toast.update(toastId, `Unsupported file type: ${ext}`, "error");
+              const msg = `Unsupported file type: ${ext}`;
+              console.error(`[FileUpload] ${msg}`);
+              lastRejectionMessage = msg;
+              toast.update(toastId, msg, "error");
               continue;
             }
 
@@ -1317,15 +1385,13 @@ const MapComponent = ({
               toast.dismiss(renderToastId);
             } catch (renderError) {
               console.error("[FileUpload] Error rendering file:", renderError);
-              toast.update(
-                renderToastId,
-                `Error rendering: ${
-                  renderError instanceof Error
-                    ? renderError.message
-                    : "Unknown error"
-                }`,
-                "error",
-              );
+              const renderMsg = `Error rendering ${stagedFile.originalName}: ${
+                renderError instanceof Error
+                  ? renderError.message
+                  : "Unknown error"
+              }`;
+              lastRejectionMessage = renderMsg;
+              toast.update(renderToastId, renderMsg, "error");
               // Don't throw - continue with next file
             }
           }
@@ -1334,22 +1400,24 @@ const MapComponent = ({
             `[FileUpload] Error processing file ${fileNum}:`,
             fileError,
           );
-          toast.update(
-            toastId,
-            `Error processing file ${fileNum}: ${
-              fileError instanceof Error ? fileError.message : "Unknown error"
-            }`,
-            "error",
-          );
+          const procMsg = `Error processing file ${fileNum}: ${
+            fileError instanceof Error ? fileError.message : "Unknown error"
+          }`;
+          lastRejectionMessage = procMsg;
+          toast.update(toastId, procMsg, "error");
           // Continue with next file
         }
       }
 
-      // Check if any files were actually valid
+      // Check if any files were actually valid. If not, surface the most
+      // recent specific rejection reason (size cap, blocked extension, etc.)
+      // so the user understands why — the generic "only GIS files allowed"
+      // message was misleading when a valid TIFF was rejected for size.
       if (!hasValidFiles) {
         toast.update(
           toastId,
-          "No valid files found. Only GIS-related files are allowed.",
+          lastRejectionMessage ??
+            "No valid files found. Only GIS-related files are allowed.",
           "error",
         );
         return;
@@ -1388,6 +1456,16 @@ const MapComponent = ({
         } catch (removeError) {
           console.warn(
             "[FileUpload] Error removing progress listener in finally:",
+            removeError,
+          );
+        }
+      }
+      if (pickerClosedListener) {
+        try {
+          pickerClosedListener.remove();
+        } catch (removeError) {
+          console.warn(
+            "[FileUpload] Error removing pickerClosed listener in finally:",
             removeError,
           );
         }

@@ -104,6 +104,7 @@ app/src/main/res/xml/config.xml
 
 
 public/tiles/**/*.pbf
+public/TIFF/**/*.tif
 
 # Electron build artifacts
 dist-electron/

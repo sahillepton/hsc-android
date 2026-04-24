@@ -24,7 +24,7 @@ type LCCProjectionParams = {
 };
 
 const detectLCCProjection = (
-  projectionString: string | undefined | null
+  projectionString: string | undefined | null,
 ): LCCProjectionParams | null => {
   if (!projectionString) return null;
   const upper = projectionString.toUpperCase();
@@ -37,27 +37,27 @@ const detectLCCProjection = (
   if (!isLcc) return null;
 
   const stdPar1Match = projectionString.match(
-    /standard_parallel_1["\s]*([\d.+-]+)/i
+    /standard_parallel_1["\s]*([\d.+-]+)/i,
   );
   const stdPar2Match = projectionString.match(
-    /standard_parallel_2["\s]*([\d.+-]+)/i
+    /standard_parallel_2["\s]*([\d.+-]+)/i,
   );
   const centralMeridianMatch = projectionString.match(
-    /central_meridian["\s]*([\d.+-]+)/i
+    /central_meridian["\s]*([\d.+-]+)/i,
   );
   const latOriginMatch = projectionString.match(
-    /latitude_of_origin["\s]*([\d.+-]+)/i
+    /latitude_of_origin["\s]*([\d.+-]+)/i,
   );
   const falseEastingMatch = projectionString.match(
-    /false_easting["\s]*([\d.+-]+)/i
+    /false_easting["\s]*([\d.+-]+)/i,
   );
   const falseNorthingMatch = projectionString.match(
-    /false_northing["\s]*([\d.+-]+)/i
+    /false_northing["\s]*([\d.+-]+)/i,
   );
 
   let datum = "WGS84";
   const geogcsMatch = projectionString.match(
-    /GEOGCS\["[^"]*",\s*DATUM\["([^"]+)"/i
+    /GEOGCS\["[^"]*",\s*DATUM\["([^"]+)"/i,
   );
   if (geogcsMatch) {
     const d = geogcsMatch[1].toUpperCase();
@@ -185,7 +185,7 @@ const detectLCCFromGeoKeys = (image: any): LCCProjectionParams | null => {
 const convertLCCToWGS84 = (
   x: number,
   y: number,
-  lcc: LCCProjectionParams
+  lcc: LCCProjectionParams,
 ): [number, number] => {
   const units = lcc.units || "m";
   const def = `+proj=lcc +lat_1=${lcc.standardParallel1} +lat_2=${
@@ -202,7 +202,7 @@ const convertLCCToWGS84 = (
 
 const convertGeoJSONCoordinates = (
   coords: any,
-  lcc: LCCProjectionParams
+  lcc: LCCProjectionParams,
 ): any => {
   if (Array.isArray(coords)) {
     if (
@@ -220,7 +220,7 @@ const convertGeoJSONCoordinates = (
 
 const convertGeoJSONFromLCC = (
   fc: GeoJSON.FeatureCollection,
-  lcc: LCCProjectionParams
+  lcc: LCCProjectionParams,
 ): GeoJSON.FeatureCollection => ({
   ...fc,
   features: fc.features.map((f) => {
@@ -233,7 +233,7 @@ const convertGeoJSONFromLCC = (
         ...f.geometry,
         coordinates: convertGeoJSONCoordinates(
           (f.geometry as any).coordinates,
-          lcc
+          lcc,
         ),
       },
     };
@@ -302,7 +302,7 @@ export function cn(...inputs: ClassValue[]) {
 export const base64ToFile = (
   base64Data: string,
   fileName: string,
-  mimeType: string
+  mimeType: string,
 ): File => {
   const byteString = atob(base64Data);
   const ab = new ArrayBuffer(byteString.length);
@@ -333,7 +333,7 @@ export const collectCoordinates = (coordinates: any): [number, number][] => {
 };
 
 export const extractGeometryCoordinates = (
-  geometry: GeoJSON.Geometry
+  geometry: GeoJSON.Geometry,
 ): [number, number][] => {
   if (!geometry) return [];
 
@@ -350,7 +350,7 @@ export const extractGeometryCoordinates = (
       return collectCoordinates(geometry.coordinates);
     case "GeometryCollection":
       return geometry.geometries.flatMap((child) =>
-        extractGeometryCoordinates(child)
+        extractGeometryCoordinates(child),
       );
     default:
       return [];
@@ -358,7 +358,7 @@ export const extractGeometryCoordinates = (
 };
 
 export function rgbToHex(
-  rgb: [number, number, number] | [number, number, number, number]
+  rgb: [number, number, number] | [number, number, number, number],
 ): string {
   const [r, g, b, a] = rgb;
 
@@ -540,7 +540,7 @@ export function getPolygonArea(polygon: [number, number][][]) {
 
 export function getDistance(
   point1: [number, number],
-  point2: [number, number]
+  point2: [number, number],
 ) {
   const from = turf.point([point1[0], point1[1]]);
   const to = turf.point([point2[0], point2[1]]);
@@ -626,13 +626,13 @@ export const calculateIgrs = (lon: number, lat: number): string | null => {
     Math.tan(PI / 4 - num8 / 2) /
     Math.pow(
       (1 - num6 * Math.sin(num8)) / (1 + num6 * Math.sin(num8)),
-      num6 / 2
+      num6 / 2,
     );
   const a5 =
     Math.tan(PI / 4 - num9 / 2) /
     Math.pow(
       (1 - num6 * Math.sin(num9)) / (1 + num6 * Math.sin(num9)),
-      num6 / 2
+      num6 / 2,
     );
   const x1 =
     Math.tan(PI / 4 - a1 / 2) /
@@ -730,7 +730,7 @@ export function formatLabel(key: string): string {
 export function csvToGeoJSON(
   csvString: string,
   latField = "latitude",
-  lonField = "longitude"
+  lonField = "longitude",
 ) {
   const result = Papa.parse(csvString, { header: true, skipEmptyLines: true });
 
@@ -768,7 +768,7 @@ export function csvToGeoJSON(
   if (!latColumn || !lonColumn) {
     throw new Error(
       `Could not find required columns "${latField}" and "${lonField}" (case-insensitive). ` +
-        `Found columns: ${Object.keys(firstRow).join(", ")}`
+        `Found columns: ${Object.keys(firstRow).join(", ")}`,
     );
   }
 
@@ -808,7 +808,7 @@ export async function shpToGeoJSON(file: File) {
       throw new Error(
         "Shapefiles require multiple component files (.shp, .shx, .dbf) to work properly. " +
           "Please compress all shapefile components (.shp, .shx, .dbf, and optionally .prj) into a ZIP file and upload that instead. " +
-          "A standalone .shp file cannot be processed without its companion files."
+          "A standalone .shp file cannot be processed without its companion files.",
       );
     }
 
@@ -819,7 +819,7 @@ export async function shpToGeoJSON(file: File) {
         const JSZip = (await import("jszip")).default;
         const zip = await JSZip.loadAsync(arrayBuffer);
         const prjName = Object.keys(zip.files).find((n) =>
-          n.toLowerCase().endsWith(".prj")
+          n.toLowerCase().endsWith(".prj"),
         );
         if (prjName) {
           prjContent = await zip.files[prjName].async("string");
@@ -895,13 +895,13 @@ export async function shpToGeoJSON(file: File) {
         throw new Error(
           "Failed to process shapefile. Please ensure the file is a valid ZIP archive containing " +
             "all required shapefile components (.shp, .shx, .dbf). If uploading a single .shp file, " +
-            "please compress all related files into a ZIP archive first."
+            "please compress all related files into a ZIP archive first.",
         );
       }
       throw error;
     }
     throw new Error(
-      "Failed to process shapefile. Please ensure it is a valid ZIP archive."
+      "Failed to process shapefile. Please ensure it is a valid ZIP archive.",
     );
   }
 }
@@ -1008,7 +1008,7 @@ export function gpxToGeoJSON(gpxText: string): GeoJSON.FeatureCollection {
 
 // Parse KML to GeoJSON
 export async function kmlToGeoJSON(
-  kmlText: string
+  kmlText: string,
 ): Promise<GeoJSON.FeatureCollection> {
   const parser = new DOMParser();
   const kmlDoc = parser.parseFromString(kmlText, "text/xml");
@@ -1125,7 +1125,7 @@ export async function kmlToGeoJSON(
 
 // Extract KMZ (ZIP containing KML)
 export async function kmzToGeoJSON(
-  file: File
+  file: File,
 ): Promise<GeoJSON.FeatureCollection> {
   // Use JSZip-like approach or parse as ZIP
   // For now, try to read as text first (some KMZ files can be read as text)
@@ -1136,7 +1136,7 @@ export async function kmzToGeoJSON(
     // If that fails, it's a proper ZIP - would need JSZip library
     // For now, throw error suggesting to extract KML first
     throw new Error(
-      "KMZ (compressed KML) files require extraction. Please extract the KML file from the KMZ archive and upload the .kml file instead."
+      "KMZ (compressed KML) files require extraction. Please extract the KML file from the KMZ archive and upload the .kml file instead.",
     );
   }
 }
@@ -1213,23 +1213,149 @@ export async function fileToGeoJSON(file: File) {
   if (ext === "prj") {
     // PRJ alone has no geometry; reject with a clear message
     throw new Error(
-      "This file is a projection definition (.prj) without geometry. Upload it together with the geometry data (e.g., shapefile set or GeoJSON)."
+      "This file is a projection definition (.prj) without geometry. Upload it together with the geometry data (e.g., shapefile set or GeoJSON).",
     );
   }
 
   throw new Error(
-    `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, Shapefile, GPX, KML, WKT`
+    `Unsupported file type: .${ext}. Supported formats: GeoJSON, CSV, Shapefile, GPX, KML, WKT`,
   );
 }
 
 export interface DemRasterResult {
+  kind: "dem" | "color";
   canvas: HTMLCanvasElement;
   bounds: [number, number, number, number];
   width: number;
   height: number;
-  data: Float32Array;
-  min: number;
-  max: number;
+  // Elevation fields only populated for single-band numeric DEM rasters.
+  // Color TIFFs (RGB/RGBA/Palette) leave these undefined.
+  data?: Float32Array;
+  min?: number;
+  max?: number;
+}
+
+// Tag-based classifier used by the main-thread fallback. Mirrors the worker's
+// classifyTiff so a worker failure still renders colored TIFFs correctly.
+type MainTiffClassification = {
+  kind: "dem" | "color";
+  mode: "rgb" | "rgba" | "palette" | "dem";
+  samplesPerPixel: number;
+  bitsPerSample: number[];
+  photometric: number;
+  colorMap: number[] | Uint16Array | null;
+};
+
+function classifyTiffMain(image: {
+  fileDirectory?: Record<string, unknown>;
+  getSamplesPerPixel?: () => number;
+}): MainTiffClassification {
+  const fd = (image.fileDirectory ?? {}) as Record<string, unknown>;
+  const sppRaw =
+    typeof image.getSamplesPerPixel === "function"
+      ? image.getSamplesPerPixel()
+      : fd.SamplesPerPixel;
+  const spp = Number.isFinite(sppRaw as number) ? Number(sppRaw) : 1;
+
+  const bitsRaw = fd.BitsPerSample;
+  const bitsPerSample: number[] = Array.isArray(bitsRaw)
+    ? (bitsRaw as unknown[]).map((v) => Number(v))
+    : bitsRaw != null
+      ? [Number(bitsRaw)]
+      : [8];
+
+  const fmtRaw = fd.SampleFormat;
+  const sampleFormats: number[] = Array.isArray(fmtRaw)
+    ? (fmtRaw as unknown[]).map((v) => Number(v))
+    : fmtRaw != null
+      ? [Number(fmtRaw)]
+      : [1];
+
+  const photoRaw = fd.PhotometricInterpretation;
+  const photometric = Array.isArray(photoRaw)
+    ? Number((photoRaw as unknown[])[0])
+    : photoRaw != null
+      ? Number(photoRaw)
+      : 1;
+
+  const extraRaw = fd.ExtraSamples;
+  const extraSamples: number[] = Array.isArray(extraRaw)
+    ? (extraRaw as unknown[]).map((v) => Number(v))
+    : extraRaw != null
+      ? [Number(extraRaw)]
+      : [];
+  const hasAlpha =
+    (spp === 4 && photometric === 2) ||
+    extraSamples.some((v) => v === 1 || v === 2);
+
+  const colorMap = (fd.ColorMap as number[] | Uint16Array | undefined) ?? null;
+
+  if (photometric === 3 && colorMap) {
+    return {
+      kind: "color",
+      mode: "palette",
+      samplesPerPixel: spp,
+      bitsPerSample,
+      photometric,
+      colorMap,
+    };
+  }
+
+  if (photometric === 2 && spp >= 3) {
+    return {
+      kind: "color",
+      mode: hasAlpha || spp >= 4 ? "rgba" : "rgb",
+      samplesPerPixel: spp,
+      bitsPerSample,
+      photometric,
+      colorMap: null,
+    };
+  }
+
+  // YCbCr (6), CIELab (8), ICCLab (9), ITULab (10), CMYK (5) — color spaces
+  // that geotiff's readRGB() will convert to sRGB for us. JPEG-compressed
+  // TIFFs are typically YCbCr.
+  if (
+    photometric === 5 ||
+    photometric === 6 ||
+    photometric === 8 ||
+    photometric === 9 ||
+    photometric === 10
+  ) {
+    return {
+      kind: "color",
+      mode: "rgb",
+      samplesPerPixel: spp,
+      bitsPerSample,
+      photometric,
+      colorMap: null,
+    };
+  }
+
+  // Single-band numeric rasters stay on the DEM path.
+  const fmt0 = sampleFormats[0] ?? 1;
+  const isFloatOrIntDem = spp === 1 && (fmt0 === 2 || fmt0 === 3);
+  const is16BitSingleUint =
+    spp === 1 && fmt0 === 1 && (bitsPerSample[0] ?? 8) >= 16;
+  if (isFloatOrIntDem || is16BitSingleUint || spp === 1) {
+    return {
+      kind: "dem",
+      mode: "dem",
+      samplesPerPixel: spp,
+      bitsPerSample,
+      photometric,
+      colorMap: null,
+    };
+  }
+
+  return {
+    kind: "color",
+    mode: spp >= 4 ? "rgba" : "rgb",
+    samplesPerPixel: spp,
+    bitsPerSample,
+    photometric,
+    colorMap: null,
+  };
 }
 
 // Parse HGT file (SRTM format)
@@ -1260,7 +1386,7 @@ async function parseHGTFile(file: File): Promise<DemRasterResult> {
 
     if (width * height * 2 !== fileSize) {
       throw new Error(
-        `Invalid HGT file size: ${fileSize} bytes. Expected size for 1201x1201 or 3601x3601 grid.`
+        `Invalid HGT file size: ${fileSize} bytes. Expected size for 1201x1201 or 3601x3601 grid.`,
       );
     }
   }
@@ -1292,7 +1418,7 @@ async function parseHGTFile(file: File): Promise<DemRasterResult> {
     maxLat = 37.0;
     maxLng = 97.0;
     console.warn(
-      `Could not parse coordinates from HGT filename "${file.name}". Using default bounds.`
+      `Could not parse coordinates from HGT filename "${file.name}". Using default bounds.`,
     );
   }
 
@@ -1303,7 +1429,11 @@ async function parseHGTFile(file: File): Promise<DemRasterResult> {
   for (let i = 0; i < width * height; i++) {
     const elevation = dataView.getInt16(i * 2, false);
 
-    if (elevation === DEM_NO_DATA_VALUE || elevation < DEM_MIN_VALID_ELEVATION || elevation > DEM_MAX_VALID_ELEVATION) {
+    if (
+      elevation === DEM_NO_DATA_VALUE ||
+      elevation < DEM_MIN_VALID_ELEVATION ||
+      elevation > DEM_MAX_VALID_ELEVATION
+    ) {
       // Invalid or no data
       elevationData[i] = minVal !== Infinity ? minVal : 0;
     } else {
@@ -1343,6 +1473,7 @@ async function parseHGTFile(file: File): Promise<DemRasterResult> {
 
   // Return bounds as [minLng, minLat, maxLng, maxLat]
   return {
+    kind: "dem",
     canvas,
     bounds: [minLng, minLat, maxLng, maxLat],
     width,
@@ -1375,7 +1506,7 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
 
   if (ext !== "tif" && ext !== "tiff" && ext !== "dett") {
     throw new Error(
-      "Unsupported DEM format. Only GeoTIFF (.tif, .tiff, .dett) and SRTM HGT (.hgt) are supported."
+      "Unsupported DEM format. Only GeoTIFF (.tif, .tiff, .dett) and SRTM HGT (.hgt) are supported.",
     );
   }
 
@@ -1389,7 +1520,7 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     geotiff = await import("geotiff");
   } catch (error) {
     throw new Error(
-      "Failed to load GeoTIFF library. Please ensure the file is a valid GeoTIFF format."
+      "Failed to load GeoTIFF library. Please ensure the file is a valid GeoTIFF format.",
     );
   }
 
@@ -1399,7 +1530,7 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     throw new Error(
       `Failed to read file: ${
         error instanceof Error ? error.message : "Unknown error"
-      }`
+      }`,
     );
   }
 
@@ -1409,7 +1540,7 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     throw new Error(
       `Invalid GeoTIFF file. The file may be corrupted or not a valid TIFF format: ${
         error instanceof Error ? error.message : "Unknown error"
-      }`
+      }`,
     );
   }
 
@@ -1419,7 +1550,7 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     throw new Error(
       `Failed to read image from GeoTIFF: ${
         error instanceof Error ? error.message : "Unknown error"
-      }`
+      }`,
     );
   }
 
@@ -1438,21 +1569,60 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
     throw new Error(
       `Failed to get image dimensions: ${
         error instanceof Error ? error.message : "Unknown error"
-      }`
+      }`,
     );
   }
 
-  try {
-    raster = await image.readRasters({ interleave: true, samples: [0] });
-    if (!raster || !raster.length || raster.length !== width * height) {
-      throw new Error("Invalid raster data");
+  // Classify the TIFF from tags — O(1), no raster pass. Determines whether
+  // this is a single-band elevation DEM or a color (RGB / RGBA / Palette) raster.
+  const tiffClass = classifyTiffMain(image);
+
+  // For the DEM path we still need a single-sample raster read here (so the rest
+  // of the existing georeferencing / debug code can reference it). The color
+  // path skips this read entirely and does a single multi-sample read below.
+  //
+  // We cap the decode dimensions at MAX_TEXTURE_DIM_DEM (4096). Without this,
+  // a large single-band GeoTIFF (e.g. 20k × 20k RSRP coverage grid exported as
+  // grayscale) would allocate ~1.6 GB Float32 for the elevation buffer plus
+  // another ~1.6 GB Uint8Clamped for the grayscale canvas, AND upload a
+  // texture larger than the WebGL MAX_TEXTURE_SIZE. That consistently kills
+  // the Chromium GPU process ("exit_code=34") and leaves luma.gl's shader
+  // source plastered on the map.
+  const MAX_TEXTURE_DIM_DEM = 4096;
+  const demMaxDim = Math.max(width, height);
+  const demScale =
+    demMaxDim > MAX_TEXTURE_DIM_DEM ? MAX_TEXTURE_DIM_DEM / demMaxDim : 1;
+  const demTexWidth =
+    demScale === 1 ? width : Math.max(1, Math.round(width * demScale));
+  const demTexHeight =
+    demScale === 1 ? height : Math.max(1, Math.round(height * demScale));
+  const demPixelCount = demTexWidth * demTexHeight;
+
+  if (tiffClass.kind === "dem") {
+    if (demScale !== 1) {
+      console.log(
+        `[fileToDEMRaster] Downsampling DEM TIFF ${width}x${height} -> ${demTexWidth}x${demTexHeight} (GPU max-texture-dim cap ${MAX_TEXTURE_DIM_DEM}).`,
+      );
     }
-  } catch (error) {
-    throw new Error(
-      `Failed to read raster data from GeoTIFF: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`
-    );
+    try {
+      raster = (await image.readRasters({
+        interleave: true,
+        samples: [0],
+        width: demTexWidth,
+        height: demTexHeight,
+      } as unknown as Parameters<
+        typeof image.readRasters
+      >[0])) as typeof raster;
+      if (!raster || !raster.length || raster.length !== demPixelCount) {
+        throw new Error("Invalid raster data");
+      }
+    } catch (error) {
+      throw new Error(
+        `Failed to read raster data from GeoTIFF: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      );
+    }
   }
 
   // Try to get bounding box using different methods
@@ -1578,7 +1748,7 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
         bounds = defaultBounds;
 
         console.warn(
-          "GeoTIFF file does not contain georeferencing information. Using default bounds (India). The DEM will be displayed but may not be correctly positioned. Please use a properly georeferenced GeoTIFF file for accurate positioning."
+          "GeoTIFF file does not contain georeferencing information. Using default bounds (India). The DEM will be displayed but may not be correctly positioned. Please use a properly georeferenced GeoTIFF file for accurate positioning.",
         );
       }
     }
@@ -1625,15 +1795,282 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
   //   // ignore logging errors
   // }
 
+  // Color branch: RGB / RGBA / Palette / YCbCr / CMYK / CIELab TIFF → render
+  // true colors and capture sample-0 values into a Float32 elevation buffer in
+  // the same pass so the hover tooltip uses the same layout as DEM rasters.
+  //
+  // We cap the decoded dimensions at MAX_TEXTURE_DIM_MAIN (4096) — the minimum
+  // guaranteed WebGL MAX_TEXTURE_SIZE. geotiff subsamples during decode via its
+  // width/height options, so large JPEG TIFFs never allocate a full-res buffer
+  // and the deck.gl BitmapLayer never hits "Desired resource size > max texture
+  // size" (which silently produces a black texture).
+  if (tiffClass.kind === "color") {
+    const MAX_TEXTURE_DIM_MAIN = 4096;
+    const maxDim = Math.max(width, height);
+    const scale =
+      maxDim > MAX_TEXTURE_DIM_MAIN ? MAX_TEXTURE_DIM_MAIN / maxDim : 1;
+    const texWidth =
+      scale === 1 ? width : Math.max(1, Math.round(width * scale));
+    const texHeight =
+      scale === 1 ? height : Math.max(1, Math.round(height * scale));
+    const texPixelCount = texWidth * texHeight;
+
+    if (scale !== 1) {
+      console.log(
+        `[fileToDEMRaster] Downsampling color TIFF ${width}x${height} -> ${texWidth}x${texHeight} (GPU max-texture-dim cap ${MAX_TEXTURE_DIM_MAIN}).`,
+      );
+    }
+
+    // GDAL_NODATA sentinel — pixels at this value become transparent. This
+    // matters most for palette TIFFs (RSRP/coverage maps) where the palette
+    // index 0 is typically opaque black, so a pure nodata area would render
+    // as a big black box.
+    const gdalNoDataRaw = (
+      image as unknown as { fileDirectory?: { GDAL_NODATA?: unknown } }
+    ).fileDirectory?.GDAL_NODATA;
+    const gdalNoDataValue: number | null = (() => {
+      if (gdalNoDataRaw == null) return null;
+      if (typeof gdalNoDataRaw === "number") {
+        return Number.isFinite(gdalNoDataRaw) ? gdalNoDataRaw : null;
+      }
+      if (typeof gdalNoDataRaw === "string") {
+        const parsed = parseFloat(gdalNoDataRaw.replace(/\0/g, "").trim());
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      return null;
+    })();
+    if (gdalNoDataValue !== null) {
+      console.log(
+        `[fileToDEMRaster] GDAL_NODATA sentinel = ${gdalNoDataValue} — pixels matching this value will be rendered transparent.`,
+      );
+    }
+
+    const canvasC = document.createElement("canvas");
+    canvasC.width = texWidth;
+    canvasC.height = texHeight;
+    const ctxC = canvasC.getContext("2d")!;
+    const imgDataC = ctxC.createImageData(texWidth, texHeight);
+    const rgba = imgDataC.data;
+    const elevation = new Float32Array(texPixelCount);
+    let minVal = Infinity;
+    let maxVal = -Infinity;
+    let nodataPixels = 0;
+    let decoded = false;
+
+    // Branch 1: Palette — manual decode so we can mark nodata transparent.
+    if (!decoded && tiffClass.mode === "palette" && tiffClass.colorMap) {
+      const idxRaster = (await image.readRasters({
+        interleave: true,
+        samples: [0],
+        width: texWidth,
+        height: texHeight,
+      } as unknown as Parameters<typeof image.readRasters>[0])) as unknown as
+        | Uint8Array
+        | Uint16Array;
+      if (!idxRaster || idxRaster.length !== texPixelCount) {
+        throw new Error("Invalid palette raster data");
+      }
+      const cm = tiffClass.colorMap as number[] | Uint16Array;
+      const cmLength = (cm as { length: number }).length;
+      const paletteSize = Math.floor(cmLength / 3);
+      for (let i = 0; i < texPixelCount; i++) {
+        const index = idxRaster[i] as number;
+        const isNodata = gdalNoDataValue !== null && index === gdalNoDataValue;
+        const o = i * 4;
+        if (isNodata) {
+          rgba[o] = 0;
+          rgba[o + 1] = 0;
+          rgba[o + 2] = 0;
+          rgba[o + 3] = 0;
+          nodataPixels++;
+        } else {
+          const safeIdx = index >= 0 && index < paletteSize ? index : 0;
+          rgba[o] = ((cm[safeIdx] as number) >> 8) & 0xff;
+          rgba[o + 1] = ((cm[safeIdx + paletteSize] as number) >> 8) & 0xff;
+          rgba[o + 2] = ((cm[safeIdx + 2 * paletteSize] as number) >> 8) & 0xff;
+          rgba[o + 3] = 255;
+        }
+        elevation[i] = index;
+        if (!isNodata) {
+          if (index < minVal) minVal = index;
+          if (index > maxVal) maxVal = index;
+        }
+      }
+      decoded = true;
+    }
+
+    // Branch 2: RGB / RGBA — manual decode with nodata on sample 0.
+    if (
+      !decoded &&
+      (tiffClass.mode === "rgb" || tiffClass.mode === "rgba") &&
+      (tiffClass.photometric === 2 ||
+        tiffClass.photometric === 1 ||
+        tiffClass.photometric === 0)
+    ) {
+      const wantAlpha = tiffClass.mode === "rgba";
+      const samples = wantAlpha ? [0, 1, 2, 3] : [0, 1, 2];
+      const rawC = (await image.readRasters({
+        interleave: true,
+        samples,
+        width: texWidth,
+        height: texHeight,
+      } as unknown as Parameters<typeof image.readRasters>[0])) as unknown as
+        | Uint8Array
+        | Uint8ClampedArray
+        | Uint16Array
+        | Int16Array
+        | Float32Array;
+      const channels = samples.length;
+      if (!rawC || rawC.length !== texPixelCount * channels) {
+        throw new Error("Invalid color raster data");
+      }
+      const bits = tiffClass.bitsPerSample[0] ?? 8;
+      const shift = Math.max(0, bits - 8);
+      for (let i = 0; i < texPixelCount; i++) {
+        const s = i * channels;
+        const o = i * 4;
+        const r0 = rawC[s] as number;
+        const isNodata = gdalNoDataValue !== null && r0 === gdalNoDataValue;
+        if (isNodata) {
+          rgba[o] = 0;
+          rgba[o + 1] = 0;
+          rgba[o + 2] = 0;
+          rgba[o + 3] = 0;
+          nodataPixels++;
+        } else if (bits <= 8) {
+          rgba[o] = r0;
+          rgba[o + 1] = rawC[s + 1] as number;
+          rgba[o + 2] = rawC[s + 2] as number;
+          rgba[o + 3] = channels === 4 ? (rawC[s + 3] as number) : 255;
+        } else {
+          rgba[o] = (r0 >> shift) & 0xff;
+          rgba[o + 1] = ((rawC[s + 1] as number) >> shift) & 0xff;
+          rgba[o + 2] = ((rawC[s + 2] as number) >> shift) & 0xff;
+          rgba[o + 3] =
+            channels === 4 ? ((rawC[s + 3] as number) >> shift) & 0xff : 255;
+        }
+        elevation[i] = r0;
+        if (!isNodata) {
+          if (r0 < minVal) minVal = r0;
+          if (r0 > maxVal) maxVal = r0;
+        }
+      }
+      decoded = true;
+    }
+
+    // Branch 3: exotic photometrics (YCbCr JPEG, CMYK, CIELab, …). readRGB
+    // handles colour-space conversion internally.
+    if (!decoded) {
+      const imageAny = image as unknown as {
+        readRGB?: (opts?: {
+          interleave?: boolean;
+          enableAlpha?: boolean;
+          width?: number;
+          height?: number;
+        }) => Promise<ArrayLike<number>>;
+      };
+      if (typeof imageAny.readRGB !== "function") {
+        throw new Error(
+          "Unsupported TIFF photometric and readRGB unavailable in geotiff.js",
+        );
+      }
+      const rgb = (await imageAny.readRGB({
+        interleave: true,
+        enableAlpha: true,
+        width: texWidth,
+        height: texHeight,
+      })) as ArrayLike<number>;
+      const total = rgb.length;
+      const channels = total === texPixelCount * 4 ? 4 : 3;
+      if (total !== texPixelCount * channels) {
+        throw new Error(
+          `readRGB returned unexpected length ${total} (expected ${texPixelCount * 3} or ${texPixelCount * 4})`,
+        );
+      }
+      for (let i = 0; i < texPixelCount; i++) {
+        const s = i * channels;
+        const o = i * 4;
+        const r = rgb[s] as number;
+        rgba[o] = r;
+        rgba[o + 1] = rgb[s + 1] as number;
+        rgba[o + 2] = rgb[s + 2] as number;
+        rgba[o + 3] = channels === 4 ? (rgb[s + 3] as number) : 255;
+        elevation[i] = r;
+        if (r < minVal) minVal = r;
+        if (r > maxVal) maxVal = r;
+      }
+      decoded = true;
+    }
+
+    // Post-decode sanity diagnostic.
+    let nonZeroRGB = 0;
+    const sampleStride = Math.max(1, Math.floor(texPixelCount / 10000));
+    for (let i = 0; i < texPixelCount; i += sampleStride) {
+      const o = i * 4;
+      if ((rgba[o] | rgba[o + 1] | rgba[o + 2]) !== 0 && rgba[o + 3] !== 0) {
+        nonZeroRGB++;
+      }
+    }
+    console.log(
+      `[fileToDEMRaster] Color decode complete: ${texWidth}x${texHeight}, nodata pixels = ${nodataPixels} (${((nodataPixels / texPixelCount) * 100).toFixed(1)}%), non-zero sampled = ${nonZeroRGB}.`,
+    );
+    if (nonZeroRGB === 0 && nodataPixels < texPixelCount) {
+      console.warn(
+        "[fileToDEMRaster] Decoded RGBA buffer has no visible pixels (all zeros) despite the raster not being fully nodata. Check palette entries or photometric interpretation.",
+      );
+    }
+
+    ctxC.putImageData(imgDataC, 0, 0);
+
+    if (
+      !Number.isFinite(minVal) ||
+      !Number.isFinite(maxVal) ||
+      minVal === maxVal
+    ) {
+      minVal = 0;
+      maxVal = 1;
+    }
+
+    return {
+      kind: "color",
+      canvas: canvasC,
+      bounds,
+      width: texWidth,
+      height: texHeight,
+      data: elevation,
+      min: minVal,
+      max: maxVal,
+    };
+  }
+
+  // Honour GDAL_NODATA: exclude sentinel pixels from min/max (otherwise a
+  // -9999 / 255 / etc. sentinel pulls the normalisation window wide open and
+  // the actual data collapses to near-black) and render those pixels
+  // transparent rather than solid "low-elevation" grayscale.
+  const demGdalNoDataRaw = (
+    image as unknown as { fileDirectory?: { GDAL_NODATA?: unknown } }
+  ).fileDirectory?.GDAL_NODATA;
+  const demNoData: number | null = (() => {
+    if (demGdalNoDataRaw == null) return null;
+    if (typeof demGdalNoDataRaw === "number") {
+      return Number.isFinite(demGdalNoDataRaw) ? demGdalNoDataRaw : null;
+    }
+    if (typeof demGdalNoDataRaw === "string") {
+      const parsed = parseFloat(demGdalNoDataRaw.replace(/\0/g, "").trim());
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  })();
+
   // Create a color ramp (simple grayscale)
   let minVal = Infinity;
   let maxVal = -Infinity;
   for (let i = 0; i < raster.length; i++) {
     const v = raster[i] as number;
-    if (Number.isFinite(v)) {
-      if (v < minVal) minVal = v;
-      if (v > maxVal) maxVal = v;
-    }
+    if (!Number.isFinite(v)) continue;
+    if (demNoData !== null && v === demNoData) continue;
+    if (v < minVal) minVal = v;
+    if (v > maxVal) maxVal = v;
   }
   if (
     !Number.isFinite(minVal) ||
@@ -1645,18 +2082,26 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
   }
 
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = demTexWidth;
+  canvas.height = demTexHeight;
   const ctx = canvas.getContext("2d")!;
-  const imgData = ctx.createImageData(width, height);
-  for (let i = 0; i < width * height; i++) {
+  const imgData = ctx.createImageData(demTexWidth, demTexHeight);
+  for (let i = 0; i < demPixelCount; i++) {
     const v = raster[i] as number;
-    const t = Number.isFinite(v) ? (v - minVal) / (maxVal - minVal) : 0;
-    const shade = Math.max(0, Math.min(255, Math.round(t * 255)));
-    imgData.data[i * 4 + 0] = shade;
-    imgData.data[i * 4 + 1] = shade;
-    imgData.data[i * 4 + 2] = shade;
-    imgData.data[i * 4 + 3] = 255;
+    const isNodata = demNoData !== null && v === demNoData;
+    if (isNodata) {
+      imgData.data[i * 4 + 0] = 0;
+      imgData.data[i * 4 + 1] = 0;
+      imgData.data[i * 4 + 2] = 0;
+      imgData.data[i * 4 + 3] = 0;
+    } else {
+      const t = Number.isFinite(v) ? (v - minVal) / (maxVal - minVal) : 0;
+      const shade = Math.max(0, Math.min(255, Math.round(t * 255)));
+      imgData.data[i * 4 + 0] = shade;
+      imgData.data[i * 4 + 1] = shade;
+      imgData.data[i * 4 + 2] = shade;
+      imgData.data[i * 4 + 3] = 255;
+    }
   }
   ctx.putImageData(imgData, 0, 0);
 
@@ -1670,7 +2115,7 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
         [bounds[2], bounds[3]],
       ];
       const converted = corners.map(([x, y]) =>
-        convertLCCToWGS84(x, y, lccParams!)
+        convertLCCToWGS84(x, y, lccParams!),
       );
       const lngs = converted.map((c) => c[0]);
       const lats = converted.map((c) => c[1]);
@@ -1688,17 +2133,19 @@ export async function fileToDEMRaster(file: File): Promise<DemRasterResult> {
   // Return bounds as [minLng, minLat, maxLng, maxLat]
   // Note: GeoTIFF bounds might be in different coordinate systems
   // Ensure the order is correct for Mapbox (longitude, latitude)
-  const elevationData = new Float32Array(width * height);
-  for (let i = 0; i < width * height; i++) {
+  const elevationData = new Float32Array(demPixelCount);
+  for (let i = 0; i < demPixelCount; i++) {
     const v = raster[i] as number;
-    elevationData[i] = Number.isFinite(v) ? v : minVal;
+    const isNodata = demNoData !== null && v === demNoData;
+    elevationData[i] = Number.isFinite(v) && !isNodata ? v : minVal;
   }
 
   return {
+    kind: "dem",
     canvas,
     bounds,
-    width,
-    height,
+    width: demTexWidth,
+    height: demTexHeight,
     data: elevationData,
     min: minVal,
     max: maxVal,
@@ -1715,7 +2162,7 @@ export function generateMeshFromElevation(
     max: number;
   },
   bounds: [[number, number], [number, number]],
-  elevationScale: number = 1.0
+  elevationScale: number = 1.0,
 ): {
   positions: Float32Array;
   normals: Float32Array;
@@ -1835,7 +2282,7 @@ export function generateMeshFromElevation(
     const length = Math.sqrt(
       normalArray[i] * normalArray[i] +
         normalArray[i + 1] * normalArray[i + 1] +
-        normalArray[i + 2] * normalArray[i + 2]
+        normalArray[i + 2] * normalArray[i + 2],
     );
     if (length > 0) {
       const invLength = 1 / length;

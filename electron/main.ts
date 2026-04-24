@@ -330,10 +330,25 @@ ipcMain.handle(
     });
 
     if (r.canceled || r.filePaths.length === 0) {
+      // Still notify the renderer that the picker closed so the overlay
+      // can exit the "Opening file picker…" state promptly.
+      mainWindow?.webContents.send("nativeUploader:pickerClosed", {
+        count: 0,
+      });
       return { files: [] };
     }
 
     const filePaths = maxFiles ? r.filePaths.slice(0, maxFiles) : r.filePaths;
+
+    // Fire pickerClosed IMMEDIATELY after the dialog resolves so the
+    // renderer can switch the overlay off of "Opening file picker…" the
+    // moment the OS dialog has actually dismissed. Without this, for large
+    // files the overlay appeared stuck on that message while we quietly
+    // copied bytes in the background.
+    mainWindow?.webContents.send("nativeUploader:pickerClosed", {
+      count: filePaths.length,
+    });
+
     const filesDir = getSessionFilesDir();
     await fs.mkdir(filesDir, { recursive: true });
 
@@ -345,13 +360,65 @@ ipcMain.handle(
       status: "staged";
       originalName: string;
     }> = [];
+
     for (let i = 0; i < filePaths.length; i++) {
       const src = filePaths[i];
       const originalName = path.basename(src);
       const stamp = `${Date.now()}_${i}_${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       const dest = path.join(filesDir, stamp);
 
-      await fs.copyFile(src, dest);
+      // Stream the copy so the renderer can show real upload progress
+      // for multi-gigabyte rasters. Blocking fs.copyFile made the
+      // "Opening file picker…" overlay appear stuck for tens of seconds.
+      let totalBytes = 0;
+      try {
+        const srcStat = await fs.stat(src);
+        totalBytes = srcStat.size;
+      } catch {
+        totalBytes = -1;
+      }
+
+      const emitProgress = (bytesWritten: number) => {
+        mainWindow?.webContents.send("nativeUploader:uploadProgress", {
+          fileIndex: i,
+          bytesWritten,
+          totalBytes,
+          originalName,
+        });
+      };
+
+      // Initial 0-byte event so the overlay switches off "Opening file
+      // picker…" the instant staging begins, even before the first data
+      // chunk has been read.
+      emitProgress(0);
+
+      await new Promise<void>((resolve, reject) => {
+        const readStream = fsSync.createReadStream(src, {
+          highWaterMark: 1024 * 1024,
+        });
+        const writeStream = fsSync.createWriteStream(dest);
+        let written = 0;
+        let lastEmitMs = Date.now();
+
+        readStream.on("error", reject);
+        writeStream.on("error", reject);
+        readStream.on("data", (chunk: Buffer | string) => {
+          const len =
+            typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+          written += len;
+          const now = Date.now();
+          if (now - lastEmitMs >= 100) {
+            lastEmitMs = now;
+            emitProgress(written);
+          }
+        });
+        writeStream.on("finish", () => {
+          emitProgress(written);
+          resolve();
+        });
+        readStream.pipe(writeStream);
+      });
+
       const stat = await fs.stat(dest);
       const ext = path.extname(originalName);
 

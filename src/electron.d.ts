@@ -2,16 +2,33 @@ export interface ElectronAPI {
   // Filesystem
   readFile: (path: string, encoding?: string) => Promise<string>;
   readFileBinary: (path: string) => Promise<Uint8Array | null>;
-  readFileInDir: (relativePath: string, directory: string, encoding?: string) => Promise<string | null>;
-  readFileInDirBinary: (relativePath: string, directory: string) => Promise<Uint8Array | null>;
+  readFileInDir: (
+    relativePath: string,
+    directory: string,
+    encoding?: string,
+  ) => Promise<string | null>;
+  readFileInDirBinary: (
+    relativePath: string,
+    directory: string,
+  ) => Promise<Uint8Array | null>;
   writeFile: (path: string, data: string) => Promise<string>;
-  writeFileInDir: (relativePath: string, directory: string, data: string, encoding?: string) => Promise<string>;
+  writeFileInDir: (
+    relativePath: string,
+    directory: string,
+    data: string,
+    encoding?: string,
+  ) => Promise<string>;
   deleteFile: (path: string) => Promise<void>;
   deleteFileInDir: (relativePath: string, directory: string) => Promise<void>;
   mkdir: (relativePath: string, directory: string) => Promise<void>;
-  readdirInDir: (relativePath: string, directory: string) => Promise<Array<{ name: string; type: string }>>;
+  readdirInDir: (
+    relativePath: string,
+    directory: string,
+  ) => Promise<Array<{ name: string; type: string }>>;
   existsInDir: (relativePath: string, directory: string) => Promise<boolean>;
-  stat: (path: string) => Promise<{ size: number; ctime: string; mtime: string }>;
+  stat: (
+    path: string,
+  ) => Promise<{ size: number; ctime: string; mtime: string }>;
 
   // Preferences
   getPreference: (key: string) => Promise<string | null>;
@@ -29,7 +46,11 @@ export interface ElectronAPI {
   resolveDirectory: (directory: string) => Promise<string>;
 
   // Screenshot
-  captureScreenshot: () => Promise<{ success: boolean; path?: string; error?: string }>;
+  captureScreenshot: () => Promise<{
+    success: boolean;
+    path?: string;
+    error?: string;
+  }>;
 
   // Shell
   showItemInFolder: (path: string) => Promise<void>;
@@ -46,7 +67,11 @@ export interface ElectronAPI {
     }>;
   }>;
   nativeDeleteFile: (absolutePath: string) => Promise<void>;
-  nativeSaveExtractedFile: (base64Data: string, fileName: string, mimeType?: string) => Promise<{
+  nativeSaveExtractedFile: (
+    base64Data: string,
+    fileName: string,
+    mimeType?: string,
+  ) => Promise<{
     absolutePath: string;
     logicalPath: string;
     size: number;
@@ -54,7 +79,10 @@ export interface ElectronAPI {
   }>;
 
   // ZipFolder
-  zipExtractRecursive: (zipPath: string, outputDir?: string) => Promise<{
+  zipExtractRecursive: (
+    zipPath: string,
+    outputDir?: string,
+  ) => Promise<{
     files: Array<{
       absolutePath: string;
       name: string;
@@ -62,8 +90,14 @@ export interface ElectronAPI {
       size: number;
     }>;
   }>;
-  zipHscSessionsFolder: () => Promise<{ absolutePath: string; fileName: string; size: number }>;
-  zipManifestFiles: (files: Array<{ absolutePath: string; originalName: string }>) => Promise<{
+  zipHscSessionsFolder: () => Promise<{
+    absolutePath: string;
+    fileName: string;
+    size: number;
+  }>;
+  zipManifestFiles: (
+    files: Array<{ absolutePath: string; originalName: string }>,
+  ) => Promise<{
     absolutePath: string;
     fileName: string;
     size: number;
@@ -71,7 +105,11 @@ export interface ElectronAPI {
 
   // TileCache
   tileCacheSetDir: (tilePath: string) => Promise<{ success: boolean }>;
-  tileCacheGetTile: (z: string, x: string, y: string) => Promise<{ data: string; fromCache: boolean }>;
+  tileCacheGetTile: (
+    z: string,
+    x: string,
+    y: string,
+  ) => Promise<{ data: string; fromCache: boolean }>;
   tileCacheClear: () => Promise<{ success: boolean }>;
   tileCachePickDir: () => Promise<{ path: string }>;
 
@@ -79,11 +117,15 @@ export interface ElectronAPI {
   udpCreate: () => Promise<{ ok: boolean; port: number }>;
   udpSend: (data: string) => Promise<{ ok: boolean }>;
   udpCloseAll: () => Promise<{ ok: boolean }>;
-  udpOnMessage: (callback: (event: { buffer: Uint8Array; byteLength: number }) => void) => () => void;
+  udpOnMessage: (
+    callback: (event: { buffer: Uint8Array; byteLength: number }) => void,
+  ) => () => void;
 
   // Tile Server
   tileServerGetUrl: () => Promise<{ baseUrl: string; port: number }>;
-  tileServerUpdateFolder: (folderPath: string) => Promise<{ baseUrl: string; port: number }>;
+  tileServerUpdateFolder: (
+    folderPath: string,
+  ) => Promise<{ baseUrl: string; port: number }>;
   tileServerCheckPermission: () => Promise<{ hasPermission: boolean }>;
   tileServerSelectFolder: () => Promise<{ uri: string }>;
   tileServerGetSavedFolder: () => Promise<{ uri: string | null }>;
@@ -96,4 +138,3 @@ declare global {
 }
 
 export {};
-

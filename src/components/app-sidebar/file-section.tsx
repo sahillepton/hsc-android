@@ -47,15 +47,25 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
         ],
         bitmap: dem.canvas,
         texture: dem.canvas,
-        elevationData: {
+        uploadedAt: Date.now(),
+      } as LayerProps & { uploadedAt: number };
+
+      // Elevation data only exists for single-band DEM rasters. Color TIFFs
+      // (RGB/RGBA/Palette) leave elevation fields undefined by design.
+      if (
+        dem.kind === "dem" &&
+        dem.data &&
+        typeof dem.min === "number" &&
+        typeof dem.max === "number"
+      ) {
+        newLayer.elevationData = {
           data: dem.data,
           width: dem.width,
           height: dem.height,
           min: dem.min,
           max: dem.max,
-        },
-        uploadedAt: Date.now(),
-      } as LayerProps & { uploadedAt: number };
+        };
+      }
       // Use addLayer to ensure proper state updates and prevent overwriting
       addLayer(newLayer);
 
