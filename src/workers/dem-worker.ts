@@ -999,7 +999,7 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
   const demGdalNoDataRaw = (
     image as unknown as { fileDirectory?: { GDAL_NODATA?: unknown } }
   ).fileDirectory?.GDAL_NODATA;
-  const demNoData: number | null = (() => {
+  let demNoData: number | null = (() => {
     if (demGdalNoDataRaw == null) return null;
     if (typeof demGdalNoDataRaw === "number") {
       return Number.isFinite(demGdalNoDataRaw) ? demGdalNoDataRaw : null;
@@ -1018,13 +1018,42 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
 
   let minVal = Infinity;
   let maxVal = -Infinity;
+  let validCount = 0;
   for (let i = 0; i < raster.length; i++) {
     const v = raster[i] as number;
     if (!Number.isFinite(v)) continue;
     if (demNoData !== null && v === demNoData) continue;
+    validCount++;
     if (v < minVal) minVal = v;
     if (v > maxVal) maxVal = v;
   }
+
+  // Safety: if NoData==0 and the filter would erase a meaningful fraction
+  // of the image (>=50 %), the declared NoData is almost certainly wrong
+  // for this file — e.g. SAR amplitude tiles where 0 is actually a valid
+  // "no-signal" reading, or coverage maps where most pixels are zero by
+  // design. Re-include those pixels as data so the user sees *something*
+  // instead of an all-transparent texture. Only auto-disable for the
+  // common "0" pitfall — a sentinel like -32767 or 9999 is almost
+  // certainly an actual NoData value and must be honoured.
+  if (
+    demNoData === 0 &&
+    validCount < raster.length * 0.5
+  ) {
+    console.warn(
+      `[dem-worker] NoData=0 would render ${(100 * (1 - validCount / raster.length)).toFixed(1)}% of pixels transparent — likely misset, disabling NoData treatment.`,
+    );
+    demNoData = null;
+    minVal = Infinity;
+    maxVal = -Infinity;
+    for (let i = 0; i < raster.length; i++) {
+      const v = raster[i] as number;
+      if (!Number.isFinite(v)) continue;
+      if (v < minVal) minVal = v;
+      if (v > maxVal) maxVal = v;
+    }
+  }
+
   if (
     !Number.isFinite(minVal) ||
     !Number.isFinite(maxVal) ||

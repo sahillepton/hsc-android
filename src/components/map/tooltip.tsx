@@ -26,6 +26,7 @@ import {
   TooltipDivider,
 } from "@/lib/tooltip-components";
 import MemberAction from "@/plugins/member-action";
+import { useTileSampler } from "@/lib/tiling/hover";
 
 const isMeaningfulPropertyValue = (value: unknown): boolean => {
   if (value === null || value === undefined) return false;
@@ -115,6 +116,42 @@ const Tooltip = () => {
   const tooltipRafRef = useRef<number | null>(null);
   const lastTooltipPositionRef = useRef<{ x: number; y: number } | null>(null);
   const mapRef = (window as any).mapRef;
+  // Precise per-pixel sampler used for tiled-raster layers (>300 MB).
+  // Returns the actual source value (palette index, Float dBm, etc.) via
+  // the gdal-async worker. Debounced 200 ms.
+  const tileSampler = useTileSampler(200);
+
+  // Fire the tile sampler whenever hover lands on a tiled layer with
+  // valid lon/lat. Hover off a tiled layer → clear cached value.
+  useEffect(() => {
+    if (!hoverInfo) {
+      tileSampler.request(null);
+      return;
+    }
+    const deckLayerId = hoverInfo.layer?.id as string | undefined;
+    if (!deckLayerId) {
+      tileSampler.request(null);
+      return;
+    }
+    const baseId = deckLayerId
+      .replace(/-icon-layer$/, "")
+      .replace(/-signal-overlay$/, "")
+      .replace(/-bitmap$/, "")
+      .replace(/-mesh$/, "");
+    const matched = layers.find((l) => l.id === baseId);
+    if (!matched?.tilesUrl) {
+      tileSampler.request(null);
+      return;
+    }
+    const coord = hoverInfo.coordinate;
+    if (!coord || coord.length < 2) {
+      tileSampler.request(null);
+      return;
+    }
+    tileSampler.request({ layerId: matched.id, lon: coord[0], lat: coord[1] });
+    // tileSampler is stable across renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hoverInfo, layers]);
 
   // Update tooltip position when map moves/zooms
   useEffect(() => {
@@ -409,6 +446,73 @@ const Tooltip = () => {
               ]}
             />
           )}
+        </TooltipBox>
+      );
+    }
+
+    // ── Tiled raster layers — precise value via the gdal-async worker ──
+    if (
+      layerInfo?.type === "dem" &&
+      layerInfo.tilesUrl &&
+      layerInfo.bounds
+    ) {
+      let lng: number | undefined;
+      let lat: number | undefined;
+      if (hoverInfo.coordinate) {
+        [lng, lat] = hoverInfo.coordinate;
+      }
+      if (lng === undefined || lat === undefined) return null;
+
+      const { value, dtype, loading } = tileSampler.state;
+      const min = layerInfo.sourceValueMin;
+      const max = layerInfo.sourceValueMax;
+
+      const properties = [
+        {
+          label: useIgrs ? "IGRS" : "Latitude",
+          value: useIgrs
+            ? (calculateIgrs(lng, lat) ?? "—")
+            : `${lat.toFixed(5)}°`,
+        },
+      ];
+      if (!useIgrs) {
+        properties.push({ label: "Longitude", value: `${lng.toFixed(5)}°` });
+      }
+
+      let valueLabel = "Value";
+      if (dtype && /Float/i.test(dtype)) valueLabel = "Value";
+      else if (layerInfo.sourceDtype === "Byte") valueLabel = "Class";
+
+      const hasValue = value !== null && value !== undefined && Number.isFinite(value);
+      let valueStr = "—";
+      if (hasValue) {
+        valueStr = Number.isInteger(value as number)
+          ? String(value)
+          : (value as number).toFixed(2);
+      } else if (loading) {
+        valueStr = "…";
+      }
+
+      properties.push({
+        label: valueLabel,
+        value: valueStr,
+      });
+      if (typeof min === "number" && typeof max === "number") {
+        properties.push({
+          label: "Range",
+          value: `${min.toFixed(2)} – ${max.toFixed(2)}`,
+        });
+      }
+      if (layerInfo.sourceCrs) {
+        properties.push({ label: "CRS", value: String(layerInfo.sourceCrs) });
+      }
+
+      return (
+        <TooltipBox maxWidth="max-w-[220px]">
+          {layerInfo.name && (
+            <TooltipHeading title={layerInfo.name.toUpperCase()} />
+          )}
+          <TooltipProperties properties={properties} />
         </TooltipBox>
       );
     }

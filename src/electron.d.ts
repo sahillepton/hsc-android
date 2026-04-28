@@ -129,6 +129,49 @@ export interface ElectronAPI {
   tileServerCheckPermission: () => Promise<{ hasPermission: boolean }>;
   tileServerSelectFolder: () => Promise<{ uri: string }>;
   tileServerGetSavedFolder: () => Promise<{ uri: string | null }>;
+
+  // Raster tiling (gdal-async via child Node worker)
+  tilingProbe: (absolutePath: string) => Promise<TilingProbeResult>;
+  tilingBuildOverviews: (
+    absolutePath: string,
+  ) => Promise<TilingBuildOverviewsResult>;
+  tilingRegisterLayer: (
+    layerId: string,
+    absolutePath: string,
+  ) => Promise<{ ok: boolean }>;
+  tilingUnregisterLayer: (layerId: string) => Promise<{ ok: boolean }>;
+  tilingSampleAt: (args: {
+    layerId: string;
+    lon: number;
+    lat: number;
+  }) => Promise<{ value: number | null; dtype: string }>;
+  tilingGetTileBaseUrl: () => Promise<string | null>;
+  tilingCloseAll: () => Promise<{ closed: boolean }>;
+}
+
+export interface TilingBuildOverviewsResult {
+  built: boolean;
+  reason?: "already-exists" | "too-small";
+  kind?: string;
+  levels?: number[];
+  count?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface TilingProbeResult {
+  width: number;
+  height: number;
+  bands: number;
+  dtype: string;
+  sourceCrs: string | null;
+  boundsWgs84: [number, number, number, number] | null;
+  palette: number[][] | null;
+  min: number;
+  max: number;
+  pixelSize: number;
+  nativeZoom: number;
+  colorInterp: string;
 }
 
 declare global {

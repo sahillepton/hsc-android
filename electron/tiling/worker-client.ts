@@ -1,0 +1,335 @@
+// Spawns and talks to the long-running Node child that holds gdal-async.
+// One worker per app session. Auto-restarts on unexpected exit.
+//
+// Wire protocol mirrors electron/tiling/worker.cjs:
+//   request:  {"id": <number>, "cmd": "<verb>", ...args}\n
+//   response: {"id": <number>, "ok": true|false, ...}\n
+//
+// Usage from main:
+//   import { workerProbe, workerRenderTile, workerSampleAt } from './tiling/worker-client';
+//   const meta = await workerProbe(absolutePath);
+//   const png  = await workerRenderTile({ path, z, x, y });
+
+import { spawn, type ChildProcess } from "child_process";
+import { app } from "electron";
+import path from "path";
+import readline from "readline";
+
+interface PendingRequest {
+  resolve: (data: any) => void;
+  reject: (err: Error) => void;
+  cmd: string;
+}
+
+let child: ChildProcess | null = null;
+let nextId = 1;
+const pending = new Map<number, PendingRequest>();
+let readyPromise: Promise<void> | null = null;
+let restartAttempts = 0;
+const MAX_RESTARTS = 5;
+
+/** Resolve the worker script path in dev (repo), built (dist-electron), and prod (extraResources). */
+function resolveWorkerScript(): string {
+  const fs = require("fs") as typeof import("fs");
+  const candidates = [
+    // Dev: source tree
+    path.join(app.getAppPath(), "electron", "tiling", "worker.cjs"),
+    // Built (yarn build:electron): copied next to main.cjs
+    path.join(app.getAppPath(), "dist-electron", "tiling", "worker.cjs"),
+    // Prod packaged: shipped as extraResources
+    process.resourcesPath
+      ? path.join(process.resourcesPath, "tiling", "worker.cjs")
+      : "",
+    // When main.cjs runs from inside dist-electron/, __dirname resolves there.
+    path.join(__dirname, "tiling", "worker.cjs"),
+  ];
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return c;
+  }
+  throw new Error(
+    `Tiling worker script not found. Looked in:\n  ${candidates.filter(Boolean).join("\n  ")}`,
+  );
+}
+
+/** Resolve the Node binary to spawn. Prefer bundled, then system PATH. */
+function resolveNodeBin(): string {
+  const fs = require("fs") as typeof import("fs");
+  // Production installer: ship node.exe via extraResources at
+  // process.resourcesPath/node.exe (configured in package.json build).
+  // For now this is opt-in; if not present we fall back to system Node,
+  // which is fine for source-shared development.
+  if (process.resourcesPath) {
+    const bundled = path.join(process.resourcesPath, "node.exe");
+    if (fs.existsSync(bundled)) {
+      console.log(`[Tiling] using bundled Node at ${bundled}`);
+      return bundled;
+    }
+  }
+  return "node";
+}
+
+function startWorker(): Promise<void> {
+  if (readyPromise) return readyPromise;
+
+  readyPromise = new Promise((resolve, reject) => {
+    const script = resolveWorkerScript();
+    const nodeBin = resolveNodeBin();
+    console.log(`[Tiling] spawning ${nodeBin} ${script}`);
+
+    const proc = spawn(nodeBin, [script], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      env: process.env,
+    });
+    child = proc;
+
+    const rl = readline.createInterface({ input: proc.stdout! });
+    let readyAcked = false;
+
+    rl.on("line", (line) => {
+      if (!line.trim()) return;
+      let msg: any;
+      try {
+        msg = JSON.parse(line);
+      } catch (e) {
+        console.error("[Tiling worker] bad JSON line:", line);
+        return;
+      }
+      // First message from worker on successful start: {id:0, ok:true, ready:true, gdal:"3.x"}
+      if (!readyAcked && msg.ready) {
+        readyAcked = true;
+        console.log(`[Tiling worker] ready, GDAL ${msg.gdal}`);
+        restartAttempts = 0;
+        resolve();
+        return;
+      }
+      // Routed responses
+      const req = pending.get(msg.id);
+      if (!req) {
+        // Stray response (worker restart, races, etc.) — ignore.
+        return;
+      }
+      pending.delete(msg.id);
+      if (msg.ok) {
+        const { id, ok, ...result } = msg;
+        req.resolve(result);
+      } else {
+        req.reject(new Error(msg.error || `worker.${req.cmd} failed`));
+      }
+    });
+
+    proc.stderr?.on("data", (b: Buffer) => {
+      const s = b.toString("utf8").trim();
+      if (s) console.error("[Tiling worker stderr]", s);
+    });
+
+    proc.on("error", (err) => {
+      console.error("[Tiling worker spawn error]", err);
+      if (!readyAcked) reject(err);
+      cleanupAfterExit(err.message);
+    });
+
+    proc.on("exit", (code, signal) => {
+      console.warn(
+        `[Tiling worker] exited code=${code} signal=${signal}`,
+      );
+      cleanupAfterExit(`worker exited (${code}/${signal})`);
+    });
+  });
+
+  return readyPromise;
+}
+
+function cleanupAfterExit(reason: string) {
+  child = null;
+  readyPromise = null;
+  // Reject any in-flight requests so the renderer doesn't hang.
+  for (const [id, req] of pending) {
+    req.reject(new Error(`Tiling worker died: ${reason}`));
+    pending.delete(id);
+  }
+  // Auto-restart up to MAX_RESTARTS.
+  if (restartAttempts < MAX_RESTARTS) {
+    restartAttempts++;
+    console.log(
+      `[Tiling worker] auto-restart attempt ${restartAttempts}/${MAX_RESTARTS}`,
+    );
+    setTimeout(() => {
+      startWorker().catch((e) =>
+        console.error("[Tiling worker] restart failed", e),
+      );
+    }, 500);
+  } else {
+    console.error(
+      `[Tiling worker] max restarts (${MAX_RESTARTS}) exceeded — disabling`,
+    );
+  }
+}
+
+async function request<T = any>(cmd: string, args: object = {}): Promise<T> {
+  // renderTile is the only verb that can blow up GDAL mutex contention.
+  // Other verbs (probe, sampleAt, ping, close) are fast — let them through.
+  const throttle = cmd === "renderTile";
+  if (throttle) await acquireRenderSlot();
+  try {
+    await startWorker();
+    if (!child || !child.stdin || !child.stdin.writable) {
+      throw new Error("Tiling worker not available");
+    }
+    const id = nextId++;
+    const payload = JSON.stringify({ id, cmd, ...args }) + "\n";
+    return await new Promise<T>((resolve, reject) => {
+      pending.set(id, { resolve, reject, cmd });
+      child!.stdin!.write(payload, (err) => {
+        if (err) {
+          pending.delete(id);
+          reject(err);
+        }
+      });
+    });
+  } finally {
+    if (throttle) releaseRenderSlot();
+  }
+}
+
+// ── Concurrency throttle for renderTile ──────────────────────────────────
+// Without this, Mapbox spraying 30+ tile requests at once keeps the GDAL
+// global mutex held continuously. Sync GDAL calls (close, vsimem.release,
+// srs setter) then block the worker's event loop for 10-20 seconds, which
+// stops responses from flowing back. Result: tiles render but main never
+// hears about it, Mapbox times out, retries, snowballs.
+//
+// Capping in-flight renders at 4 lets the mutex breathe between batches so
+// sync calls finish quickly and responses get back to main promptly.
+const MAX_INFLIGHT_RENDERS = 4;
+let renderInflight = 0;
+const renderQueue: Array<() => void> = [];
+
+function acquireRenderSlot(): Promise<void> {
+  if (renderInflight < MAX_INFLIGHT_RENDERS) {
+    renderInflight++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) =>
+    renderQueue.push(() => {
+      renderInflight++;
+      resolve();
+    }),
+  );
+}
+
+function releaseRenderSlot() {
+  renderInflight--;
+  const next = renderQueue.shift();
+  if (next) next();
+}
+
+// In-flight tile dedup: if the same (path,z,x,y) is already rendering,
+// piggy-back on its promise instead of dispatching a fresh worker request.
+// Mapbox often re-requests tiles after small timeouts; without dedup, every
+// retry doubles the worker load.
+const inFlightTiles = new Map<string, Promise<Buffer>>();
+
+// ── Public API ────────────────────────────────────────────────────────────
+
+export interface ProbeResult {
+  width: number;
+  height: number;
+  bands: number;
+  dtype: string;
+  sourceCrs: string | null;
+  boundsWgs84: [number, number, number, number] | null;
+  palette: number[][] | null;
+  min: number;
+  max: number;
+  pixelSize: number;
+  nativeZoom: number;
+  colorInterp: string;
+}
+
+export interface SampleResult {
+  value: number | null;
+  dtype: string;
+}
+
+export function workerPing() {
+  return request<{ pong: boolean; version: string }>("ping");
+}
+
+export function workerProbe(path: string): Promise<ProbeResult> {
+  return request<ProbeResult>("probe", { path });
+}
+
+export async function workerRenderTile(args: {
+  path: string;
+  z: number;
+  x: number;
+  y: number;
+}): Promise<Buffer> {
+  // Dedup: if the exact same tile is already rendering, share its result.
+  // Mapbox often re-requests tiles on map idle / after timeout, and without
+  // dedup every retry would spawn a fresh render.
+  const key = `${args.path}|${args.z}/${args.x}/${args.y}`;
+  let p = inFlightTiles.get(key);
+  if (!p) {
+    p = (async () => {
+      // Worker now returns { image, format } (WebP). The legacy `png` field
+      // is read as a fallback so older worker builds still work.
+      const r = await request<{ image?: string; png?: string; format?: string }>(
+        "renderTile",
+        args,
+      );
+      const b64 = r.image ?? r.png;
+      if (!b64) throw new Error("renderTile returned no image bytes");
+      return Buffer.from(b64, "base64");
+    })();
+    inFlightTiles.set(key, p);
+    void p.finally(() => {
+      // Only clear if it's still the same promise (defensive — couldn't be
+      // overwritten while in flight, but just in case of races).
+      if (inFlightTiles.get(key) === p) inFlightTiles.delete(key);
+    });
+  }
+  return p;
+}
+
+export interface BuildOverviewsResult {
+  built: boolean;
+  reason?: "already-exists" | "too-small";
+  kind?: string;
+  levels?: number[];
+  count?: number;
+  width?: number;
+  height?: number;
+}
+
+/** Build internal overview pyramid for a raster (one-time per file). */
+export function workerBuildOverviews(
+  path: string,
+): Promise<BuildOverviewsResult> {
+  return request<BuildOverviewsResult>("buildOverviews", { path });
+}
+
+export function workerSampleAt(args: {
+  path: string;
+  lon: number;
+  lat: number;
+}): Promise<SampleResult> {
+  return request<SampleResult>("sampleAt", args);
+}
+
+export function workerCloseAllDatasets() {
+  return request<{ closed: boolean }>("close");
+}
+
+/** Best-effort shutdown on app quit. */
+export function shutdownWorker() {
+  if (child) {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* noop */
+    }
+    child = null;
+  }
+}

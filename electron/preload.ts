@@ -142,4 +142,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("tileServer:selectTileFolder"),
   tileServerGetSavedFolder: () =>
     ipcRenderer.invoke("tileServer:getSavedFolderUri"),
+
+  // Raster tiling (via gdal-async child Node worker)
+  tilingProbe: (absolutePath: string) =>
+    ipcRenderer.invoke("tiling:probe", absolutePath),
+  tilingBuildOverviews: (absolutePath: string) =>
+    ipcRenderer.invoke("tiling:buildOverviews", absolutePath),
+  tilingRegisterLayer: (layerId: string, absolutePath: string) =>
+    ipcRenderer.invoke("tiling:registerLayer", layerId, absolutePath),
+  tilingUnregisterLayer: (layerId: string) =>
+    ipcRenderer.invoke("tiling:unregisterLayer", layerId),
+  tilingSampleAt: (args: { layerId: string; lon: number; lat: number }) =>
+    ipcRenderer.invoke("tiling:sampleAt", args),
+  tilingGetTileBaseUrl: () => ipcRenderer.invoke("tiling:getTileBaseUrl"),
+  tilingCloseAll: () => ipcRenderer.invoke("tiling:closeAll"),
 });

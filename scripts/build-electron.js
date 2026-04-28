@@ -1,5 +1,6 @@
 // Build electron main + preload using esbuild (no electron-vite needed)
 import { build } from "esbuild";
+import { promises as fs } from "fs";
 
 async function buildElectron() {
   // Build main process
@@ -10,7 +11,13 @@ async function buildElectron() {
     target: "node20",
     outfile: "dist-electron/main.cjs",
     format: "cjs",
-    external: ["electron"],
+    external: [
+      "electron",
+      // gdal-async is loaded by the child Node worker, not by Electron main.
+      // It must remain external so esbuild doesn't try to bundle the native
+      // .node binary.
+      "gdal-async",
+    ],
     sourcemap: true,
   });
 
@@ -26,7 +33,17 @@ async function buildElectron() {
     sourcemap: true,
   });
 
+  // Copy the tiling worker script (loaded at runtime via child_process.spawn,
+  // not via require) so it ships next to main.cjs and is reachable inside
+  // a packaged build via process.resourcesPath / app.getAppPath().
+  await fs.mkdir("dist-electron/tiling", { recursive: true });
+  await fs.copyFile(
+    "electron/tiling/worker.cjs",
+    "dist-electron/tiling/worker.cjs",
+  );
+
   console.log("✅ Electron main & preload built to dist-electron/");
+  console.log("✅ Tiling worker copied to dist-electron/tiling/worker.cjs");
 }
 
 buildElectron().catch((err) => {

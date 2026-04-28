@@ -9,6 +9,7 @@ import {
   PathLayer,
   PolygonLayer,
   ScatterplotLayer,
+  SolidPolygonLayer,
   TextLayer,
 } from "@deck.gl/layers";
 import unkinkPolygon from "@turf/unkink-polygon";
@@ -115,6 +116,13 @@ import {
   createVectorLayer,
 } from "@/utils/parser";
 import { generateRandomColor } from "@/lib/utils";
+import { shouldTile } from "@/lib/tiling/threshold";
+import { runTilingUpload } from "@/lib/tiling/upload";
+import {
+  addOrUpdateTiledRaster,
+  removeTiledRaster,
+} from "@/lib/tiling/render";
+import { waitForRasterTilesLoaded } from "@/lib/tiling/wait-for-tiles";
 import { Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -539,6 +547,92 @@ const MapComponent = ({
     };
   }, []);
 
+  // After a tiled layer is added, snap the camera to its bounds so the user
+  // immediately sees something (and Mapbox actually starts requesting tiles).
+  const focusTiledLayer = useCallback(
+    (layer: LayerProps) => {
+      const b = layer.tileBoundsWgs84;
+      if (!b) return;
+      const [w, s, e, n] = b;
+      setFocusLayerRequest({
+        layerId: layer.id,
+        bounds: [w, s, e, n],
+        center: [(w + e) / 2, (s + n) / 2],
+        isSinglePoint: false,
+        timestamp: Date.now(),
+      });
+    },
+    [setFocusLayerRequest],
+  );
+
+  // Fire-and-forget: keep `toastId` in loading state until Mapbox has
+  // actually rendered the layer's visible tiles. Without this, the upload
+  // flow ack'd "ready" the moment `runTilingUpload` returned — long before
+  // any pixel hit the canvas.
+  const waitAndAckTiledLayer = useCallback(
+    (layerId: string, displayName: string, toastId: any) => {
+      const map = mapRef.current?.getMap?.();
+      if (!map) {
+        toast.dismiss(toastId);
+        return;
+      }
+      void waitForRasterTilesLoaded(map, layerId).then((ok) => {
+        if (ok) {
+          toast.update(toastId, `${displayName} loaded`, "success");
+        } else {
+          // Hit the timeout — tiles likely still rendering. Don't claim
+          // success; just drop the toast so the UI doesn't show a stale
+          // "Tiling..." forever. The user sees ongoing visual progress
+          // as tiles continue to fill in.
+          toast.dismiss(toastId);
+        }
+      });
+    },
+    [],
+  );
+
+  // ── Tiled raster Mapbox source/layer manager ──────────────────────────
+  // For every layer with `tilesUrl`, add (or update) a Mapbox raster
+  // source pointing at the local tile server. Track which sources we own
+  // so we tear them down when the layer is removed.
+  const ownedTiledLayerIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const map = mapRef.current.getMap?.();
+    if (!map) return;
+
+    const apply = () => {
+      const liveIds = new Set<string>();
+      for (const l of layers) {
+        if (!l.tilesUrl) continue;
+        liveIds.add(l.id);
+        try {
+          addOrUpdateTiledRaster(map, l);
+        } catch (err) {
+          console.warn(`[TiledRaster] add ${l.id} failed:`, err);
+        }
+      }
+      // Remove sources whose layers are gone (or no longer tiled).
+      for (const oldId of ownedTiledLayerIdsRef.current) {
+        if (!liveIds.has(oldId)) {
+          try {
+            removeTiledRaster(map, oldId);
+          } catch {
+            /* noop */
+          }
+        }
+      }
+      ownedTiledLayerIdsRef.current = liveIds;
+    };
+
+    if (map.isStyleLoaded?.()) {
+      apply();
+    } else {
+      map.once?.("load", apply);
+      map.once?.("style.load", apply);
+    }
+  }, [layers]);
+
   // Reload style when tileServerUrl changes (after map is loaded)
   useEffect(() => {
     if (!tileServerUrl || !mapRef.current) return;
@@ -889,30 +983,44 @@ const MapComponent = ({
             );
           }
 
-          // Step 3: Convert staged file to File object (with error handling and timeout)
-          let file: File;
-          try {
-            file = await Promise.race([
-              stagedPathToFile({
-                absolutePath: stagedFile.absolutePath,
-                originalName: stagedFile.originalName,
-                mimeType: stagedFile.mimeType,
-              }),
-              new Promise<never>((_, reject) =>
-                setTimeout(
-                  () => reject(new Error("File read timeout (30 seconds)")),
-                  30000,
+          // Step 3: Convert staged file to a File object — but skip the
+          // binary read for tiled rasters. The gdal-async worker opens the
+          // file by absolute path, so the renderer never needs the bytes.
+          // (Without this guard, files >2 GB blow up Node's
+          // ERR_FS_FILE_TOO_LARGE on fs:readFileBinary.)
+          const stagedNameLower = stagedFile.originalName.toLowerCase();
+          const isTiffExt =
+            stagedNameLower.endsWith(".tif") ||
+            stagedNameLower.endsWith(".tiff");
+          const willTile = isTiffExt && shouldTile(stagedFile.size);
+
+          let file: File = null as unknown as File;
+          if (!willTile) {
+            try {
+              file = await Promise.race([
+                stagedPathToFile({
+                  absolutePath: stagedFile.absolutePath,
+                  originalName: stagedFile.originalName,
+                  mimeType: stagedFile.mimeType,
+                }),
+                new Promise<never>((_, reject) =>
+                  setTimeout(
+                    () => reject(new Error("File read timeout (30 seconds)")),
+                    30000,
+                  ),
                 ),
-              ),
-            ]);
-          } catch (fileError) {
-            console.error("[FileUpload] Error reading file:", fileError);
-            const errorMsg =
-              fileError instanceof Error ? fileError.message : "Unknown error";
-            const msg = `Error reading file ${stagedFile.originalName}: ${errorMsg}`;
-            lastRejectionMessage = msg;
-            toast.update(toastId, msg, "error");
-            continue; // Skip this file and move to next
+              ]);
+            } catch (fileError) {
+              console.error("[FileUpload] Error reading file:", fileError);
+              const errorMsg =
+                fileError instanceof Error
+                  ? fileError.message
+                  : "Unknown error";
+              const msg = `Error reading file ${stagedFile.originalName}: ${errorMsg}`;
+              lastRejectionMessage = msg;
+              toast.update(toastId, msg, "error");
+              continue; // Skip this file and move to next
+            }
           }
 
           // Step 4: Check if file is ZIP and handle accordingly
@@ -1122,34 +1230,92 @@ const MapComponent = ({
                   });
 
                   if (extractedFile.type === "tiff") {
-                    // Process DEM file
-                    const demResult = await parseDemFile(file, {
-                      layerId: layerId,
-                      layerName: layerName,
-                      onProgress: (percent) => {
-                        toast.update(
-                          progressToastId,
-                          `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
-                          "loading",
-                        );
-                      },
-                    });
+                    if (shouldTile(extractedFile.size)) {
+                      // Large raster from ZIP → on-demand tiling.
+                      toast.update(
+                        progressToastId,
+                        `Tiling ${extractedFile.name}…`,
+                        "loading",
+                      );
+                      const newLayer = await runTilingUpload(
+                        {
+                          layerId,
+                          layerName,
+                          absolutePath: extractedFile.absolutePath,
+                        },
+                        {
+                          onPhase: (phase) => {
+                            const msg =
+                              phase === "probing"
+                                ? `Probing ${extractedFile.name}…`
+                                : phase === "optimizing"
+                                  ? `Optimizing ${extractedFile.name} (one-time, may take a few minutes)…`
+                                  : `Tiling ${extractedFile.name}…`;
+                            toast.update(progressToastId, msg, "loading");
+                          },
+                        },
+                      );
+                      addLayer(newLayer);
+                      focusTiledLayer(newLayer);
+                      const {
+                        updateManifestColor,
+                        upsertTempManifestEntry,
+                      } = await import("@/sessions/manifestStore");
+                      await updateManifestColor(layerId, newLayer.color);
+                      await upsertTempManifestEntry({
+                        layerId,
+                        layerName,
+                        path: `DOCUMENTS/${getHscFilesDir()}/${extractedFile.name}`,
+                        absolutePath: extractedFile.absolutePath,
+                        originalName: extractedFile.name,
+                        size: extractedFile.size,
+                        status: "staged",
+                        type: "tiff",
+                        createdAt: Date.now(),
+                        tileSourcePath: extractedFile.absolutePath,
+                        tileMinZoom: newLayer.tileMinZoom,
+                        tileMaxZoom: newLayer.tileMaxZoom,
+                        tileBoundsWgs84: newLayer.tileBoundsWgs84,
+                        sourceCrs: newLayer.sourceCrs,
+                        sourceDtype: newLayer.sourceDtype,
+                      });
+                      // Don't claim "tiled" yet — wait for actual tiles to
+                      // hit the canvas before flipping the toast to success.
+                      waitAndAckTiledLayer(
+                        layerId,
+                        extractedFile.name,
+                        progressToastId,
+                      );
+                    } else {
+                      // Process DEM file
+                      const demResult = await parseDemFile(file, {
+                        layerId: layerId,
+                        layerName: layerName,
+                        onProgress: (percent) => {
+                          toast.update(
+                            progressToastId,
+                            `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
+                            "loading",
+                          );
+                        },
+                      });
 
-                    const newLayer = createDemLayer(demResult, {
-                      layerId: layerId,
-                      layerName: layerName,
-                    });
-                    addLayer(newLayer);
-                    // Update manifest with layer color
-                    const { updateManifestColor } =
-                      await import("@/sessions/manifestStore");
-                    await updateManifestColor(layerId, newLayer.color);
+                      const newLayer = createDemLayer(demResult, {
+                        layerId: layerId,
+                        layerName: layerName,
+                      });
+                      addLayer(newLayer);
+                      // Update manifest with layer color
+                      const { updateManifestColor } =
+                        await import("@/sessions/manifestStore");
+                      await updateManifestColor(layerId, newLayer.color);
 
-                    toast.update(
-                      progressToastId,
-                      `DEM: ${extractedFile.name}`,
-                      "success",
-                    );
+                      toast.update(
+                        progressToastId,
+                        `DEM: ${extractedFile.name}`,
+                        "success",
+                      );
+                    }
                     hasValidFiles = true; // Mark that we have at least one valid file overall
                   } else if (
                     extractedFile.type === "vector" ||
@@ -1330,26 +1496,77 @@ const MapComponent = ({
 
             try {
               if (isRaster) {
-                const demResult = await parseDemFile(file, {
-                  layerId,
-                  layerName,
-                  onProgress: (percent) => {
-                    toast.update(
-                      renderToastId,
-                      `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
-                      "loading",
-                    );
-                  },
-                });
-                const newLayer = createDemLayer(demResult, {
-                  layerId,
-                  layerName,
-                });
-                addLayer(newLayer);
-                // Update manifest with layer color
-                const { updateManifestColor } =
-                  await import("@/sessions/manifestStore");
-                await updateManifestColor(layerId, newLayer.color);
+                if (shouldTile(stagedFile.size)) {
+                  // Large raster (>300 MB) → on-demand tiling via gdal-async
+                  // child worker. parseDemFile is skipped entirely; the layer
+                  // gets a `tilesUrl` instead of a bitmap.
+                  toast.update(
+                    renderToastId,
+                    `Tiling ${stagedFile.originalName}…`,
+                    "loading",
+                  );
+                  const newLayer = await runTilingUpload(
+                    {
+                      layerId,
+                      layerName,
+                      absolutePath: stagedFile.absolutePath,
+                    },
+                    {
+                      onPhase: (phase) => {
+                        const msg =
+                          phase === "probing"
+                            ? `Probing ${stagedFile.originalName}…`
+                            : phase === "optimizing"
+                              ? `Optimizing ${stagedFile.originalName} (one-time, may take a few minutes)…`
+                              : `Tiling ${stagedFile.originalName}…`;
+                        toast.update(renderToastId, msg, "loading");
+                      },
+                    },
+                  );
+                  addLayer(newLayer);
+                  focusTiledLayer(newLayer);
+                  const { updateManifestColor, upsertTempManifestEntry } =
+                    await import("@/sessions/manifestStore");
+                  await updateManifestColor(layerId, newLayer.color);
+                  await upsertTempManifestEntry({
+                    ...manifestEntry,
+                    type: "tiff",
+                    tileSourcePath: stagedFile.absolutePath,
+                    tileMinZoom: newLayer.tileMinZoom,
+                    tileMaxZoom: newLayer.tileMaxZoom,
+                    tileBoundsWgs84: newLayer.tileBoundsWgs84,
+                    sourceCrs: newLayer.sourceCrs,
+                    sourceDtype: newLayer.sourceDtype,
+                  });
+                  // Don't claim success yet — keep the toast in "Tiling…"
+                  // state until Mapbox has actually drawn the visible tiles.
+                  waitAndAckTiledLayer(
+                    layerId,
+                    stagedFile.originalName,
+                    renderToastId,
+                  );
+                } else {
+                  const demResult = await parseDemFile(file, {
+                    layerId,
+                    layerName,
+                    onProgress: (percent) => {
+                      toast.update(
+                        renderToastId,
+                        `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
+                        "loading",
+                      );
+                    },
+                  });
+                  const newLayer = createDemLayer(demResult, {
+                    layerId,
+                    layerName,
+                  });
+                  addLayer(newLayer);
+                  // Update manifest with layer color
+                  const { updateManifestColor } =
+                    await import("@/sessions/manifestStore");
+                  await updateManifestColor(layerId, newLayer.color);
+                }
               } else {
                 const featureCollection = await parseVectorFile(file, {
                   layerId,
@@ -1655,27 +1872,49 @@ const MapComponent = ({
             continue;
           }
 
-          // Convert absolute path to File object
-          let file: File;
-          try {
-            file = await stagedPathToFile({
-              absolutePath: entry.absolutePath,
-              originalName: entry.originalName,
-              mimeType: entry.mimeType || "application/octet-stream",
-            });
-          } catch (fileError) {
-            // File doesn't exist (404) - skip it
-            console.warn(
-              `[SessionRestore] File not found (may have been deleted): ${entry.originalName} at ${entry.absolutePath}`,
-            );
-            toast.update(
-              progressToastId,
-              `Skipping ${entry.originalName} (file not found)`,
-              "error",
-            );
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            toast.dismiss(progressToastId);
-            continue;
+          // Convert absolute path to File object — but skip the binary
+          // read when this entry will go through the tiling path (the
+          // gdal-async worker reads the file by absolute path, and Node's
+          // fs:readFileBinary blows up on files >2 GB with
+          // ERR_FS_FILE_TOO_LARGE — that's why the WB_2G 3.4 GB file was
+          // being "skipped" during restore).
+          const restoreNameLower = entry.originalName.toLowerCase();
+          const restoreIsTiff =
+            restoreNameLower.endsWith(".tif") ||
+            restoreNameLower.endsWith(".tiff");
+          const restoreWillTile =
+            restoreIsTiff &&
+            (entry.tileSourcePath !== undefined ||
+              (typeof entry.size === "number" && shouldTile(entry.size)));
+
+          let file: File = null as unknown as File;
+          if (!restoreWillTile) {
+            try {
+              file = await stagedPathToFile({
+                absolutePath: entry.absolutePath,
+                originalName: entry.originalName,
+                mimeType: entry.mimeType || "application/octet-stream",
+              });
+            } catch (fileError) {
+              // Distinguish "missing" from "too large" so the user knows
+              // why a particular entry got dropped.
+              const reason =
+                fileError instanceof Error &&
+                /ERR_FS_FILE_TOO_LARGE/.test(fileError.message)
+                  ? "file too large for this code path (>2 GB)"
+                  : "file not found";
+              console.warn(
+                `[SessionRestore] Skipping ${entry.originalName} — ${reason} at ${entry.absolutePath}`,
+              );
+              toast.update(
+                progressToastId,
+                `Skipping ${entry.originalName} (${reason})`,
+                "error",
+              );
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+              toast.dismiss(progressToastId);
+              continue;
+            }
           }
 
           // Determine file type
@@ -1713,34 +1952,63 @@ const MapComponent = ({
             entry.type === "vector" || vectorExtensions.includes(ext);
 
           if (isRaster) {
-            const demResult = await parseDemFile(file, {
-              layerId: entry.layerId,
-              layerName: entry.layerName,
-              onProgress: (percent) => {
-                toast.update(
-                  progressToastId,
-                  `Restoring File ${i + 1}/${
-                    savedEntries.length
-                  }: ${percent}/100 %`,
-                  "loading",
-                );
-              },
-            });
-            const newLayer = createDemLayer(demResult, {
-              layerId: entry.layerId,
-              layerName: entry.layerName,
-            });
-            // Use createdAt from manifest instead of current time
-            if (entry.createdAt) {
-              (newLayer as any).uploadedAt = entry.createdAt;
+            // Tiled (large) rasters: re-register with the tile server +
+            // probe to rebuild the LayerProps. The original .tif on disk
+            // is still there; we don't re-decode anything.
+            if (
+              entry.tileSourcePath ||
+              (typeof entry.size === "number" && shouldTile(entry.size))
+            ) {
+              toast.update(
+                progressToastId,
+                `Restoring tiled raster ${i + 1}/${savedEntries.length}: ${entry.originalName}`,
+                "loading",
+              );
+              const newLayer = await runTilingUpload({
+                layerId: entry.layerId,
+                layerName: entry.layerName,
+                absolutePath: entry.absolutePath,
+                color: entry.color,
+              });
+              if (entry.createdAt) {
+                (newLayer as any).uploadedAt = entry.createdAt;
+              }
+              if (entry.color) {
+                newLayer.color = entry.color;
+              }
+              addLayer(newLayer);
+              existingLayerIds.add(entry.layerId);
+              restoredFileCount++;
+            } else {
+              const demResult = await parseDemFile(file, {
+                layerId: entry.layerId,
+                layerName: entry.layerName,
+                onProgress: (percent) => {
+                  toast.update(
+                    progressToastId,
+                    `Restoring File ${i + 1}/${
+                      savedEntries.length
+                    }: ${percent}/100 %`,
+                    "loading",
+                  );
+                },
+              });
+              const newLayer = createDemLayer(demResult, {
+                layerId: entry.layerId,
+                layerName: entry.layerName,
+              });
+              // Use createdAt from manifest instead of current time
+              if (entry.createdAt) {
+                (newLayer as any).uploadedAt = entry.createdAt;
+              }
+              // Use color from manifest if available
+              if (entry.color) {
+                newLayer.color = entry.color;
+              }
+              addLayer(newLayer);
+              existingLayerIds.add(entry.layerId);
+              restoredFileCount++;
             }
-            // Use color from manifest if available
-            if (entry.color) {
-              newLayer.color = entry.color;
-            }
-            addLayer(newLayer);
-            existingLayerIds.add(entry.layerId);
-            restoredFileCount++;
           } else if (isShapefileZip) {
             // Explicitly handle shapefile ZIPs using shpToGeoJSON
 
@@ -1894,6 +2162,15 @@ const MapComponent = ({
   const handleFlushSession = async () => {
     const toastId = toast.loading("Clearing all session data...");
     try {
+      // Release every gdal-async Dataset held by the tiling worker before
+      // we try to unlink the source `.tif`s. On Windows an open file
+      // handle blocks unlink with EBUSY/EPERM.
+      try {
+        await window.electronAPI?.tilingCloseAll?.();
+      } catch (err) {
+        console.warn("[FlushSession] tilingCloseAll failed (continuing):", err);
+      }
+
       const { flushAllSessionFiles } = await import("@/lib/autosave");
 
       await flushAllSessionFiles();
@@ -3298,6 +3575,51 @@ const MapComponent = ({
       const [minLng, minLat] = layer.bounds[0];
       const [maxLng, maxLat] = layer.bounds[1];
 
+      const isVisible = layer.visible !== false && getZoomVisibility(layer);
+
+      // Tiled rasters: pixels come from a Mapbox raster source added in a
+      // separate effect. We push an invisible SolidPolygonLayer over the
+      // bounds so deck.gl picking still fires `handleLayerHover` (which
+      // resolves to a tile-server sampleAt for the precise value).
+      //
+      // Why SolidPolygonLayer and not BitmapLayer:
+      //   BitmapLayer's fragment shader writes fragColor.a = texAlpha *
+      //   layer.opacity, and the picking pass uses that same alpha. With
+      //   opacity 0 (or a transparent texture) the picking framebuffer
+      //   pixel becomes alpha-0, which deck.gl reads as "no pick" — so
+      //   hover events stop firing. SolidPolygonLayer's picking pass
+      //   writes its picking color independently of the visible
+      //   fillColor's alpha, so a fully transparent fillColor still
+      //   picks reliably.
+      if (layer.tilesUrl) {
+        deckLayers.push(
+          new SolidPolygonLayer({
+            id: `${layer.id}-bitmap`,
+            data: [
+              {
+                polygon: [
+                  [minLng, minLat],
+                  [maxLng, minLat],
+                  [maxLng, maxLat],
+                  [minLng, maxLat],
+                ],
+              },
+            ],
+            getPolygon: (d: any) => d.polygon,
+            getFillColor: [0, 0, 0, 0],
+            pickable: true,
+            visible: isVisible,
+            stroked: false,
+            filled: true,
+            onHover: handleLayerHover,
+            updateTriggers: {
+              visible: [roundedZoom, layer.visible],
+            },
+          }),
+        );
+        return;
+      }
+
       // Ensure we hand BitmapLayer a canvas (avoid createImageBitmap on blobs)
       const image =
         ensureCanvasImage(layer.bitmap) ||
@@ -3307,8 +3629,6 @@ const MapComponent = ({
       if (!image) {
         return;
       }
-
-      const isVisible = layer.visible !== false && getZoomVisibility(layer);
 
       deckLayers.push(
         new BitmapLayer({

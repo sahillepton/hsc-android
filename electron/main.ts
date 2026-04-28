@@ -5,6 +5,26 @@ import fsSync from "fs";
 import http from "http";
 import dgram from "dgram";
 import JSZip from "jszip";
+import {
+  workerProbe,
+  workerRenderTile,
+  workerSampleAt,
+  workerBuildOverviews,
+  workerCloseAllDatasets,
+  shutdownWorker,
+} from "./tiling/worker-client";
+import {
+  registerLayer as registerTiledLayer,
+  unregisterLayer as unregisterTiledLayer,
+  lookupSource as lookupTiledLayerSource,
+} from "./tiling/registry";
+import {
+  readCachedTile,
+  writeCachedTile,
+  deleteCacheDir,
+  configureCache,
+  enforceCacheBudget,
+} from "./tiling/cache";
 
 let mainWindow: BrowserWindow | null = null;
 let tileServer: http.Server | null = null;
@@ -901,6 +921,69 @@ function startTileServer(
       }
 
       const urlPath = decodeURIComponent(req.url || "/");
+
+      // ── /layers/<layerId>/{z}/{x}/{y}.webp — tiled raster route ──
+      // Resolves the layerId via registry to its source raster, then
+      // returns a cached WebP or asks the worker to render one.
+      // (Legacy `.png` extension still accepted so in-flight requests
+      // from a previously-loaded page don't 404 after a hot reload.)
+      const layerMatch = urlPath.match(
+        /^\/layers\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.(?:webp|png)$/,
+      );
+      if (layerMatch) {
+        const layerId = layerMatch[1];
+        const z = parseInt(layerMatch[2], 10);
+        const x = parseInt(layerMatch[3], 10);
+        const y = parseInt(layerMatch[4], 10);
+        const sourcePath = lookupTiledLayerSource(layerId);
+        if (!sourcePath) {
+          res.writeHead(404);
+          res.end("Layer not registered");
+          return;
+        }
+        (async () => {
+          const t0 = Date.now();
+          // Tiles are content-addressed by (layerId, z, x, y) and never
+          // mutate (each upload gets a fresh layerId). Tell the browser
+          // it can cache forever — without this, Mapbox re-fetches the
+          // same tile on every revisit, ballooning network traffic 5–10×.
+          const tileHeaders: Record<string, string> = {
+            "Content-Type": "image/webp",
+            "Cache-Control": "public, max-age=31536000, immutable",
+          };
+          try {
+            const cached = await readCachedTile(sourcePath, z, x, y);
+            if (cached) {
+              console.log(
+                `[Tiling] ${layerId} z=${z} x=${x} y=${y} cache-hit (${cached.length}B)`,
+              );
+              res.writeHead(200, tileHeaders);
+              res.end(cached);
+              return;
+            }
+            console.log(
+              `[Tiling] ${layerId} z=${z} x=${x} y=${y} rendering…`,
+            );
+            const png = await workerRenderTile({ path: sourcePath, z, x, y });
+            // Write-through to disk cache (best-effort).
+            void writeCachedTile(sourcePath, z, x, y, png);
+            console.log(
+              `[Tiling] ${layerId} z=${z} x=${x} y=${y} rendered in ${Date.now() - t0}ms (${png.length}B)`,
+            );
+            res.writeHead(200, tileHeaders);
+            res.end(png);
+          } catch (err) {
+            console.error(
+              `[Tiling] ${layerId} z=${z} x=${x} y=${y} failed after ${Date.now() - t0}ms:`,
+              err,
+            );
+            res.writeHead(500);
+            res.end((err as Error).message || "Tile render failed");
+          }
+        })();
+        return;
+      }
+
       const filePath = path.join(folder, urlPath.replace(/^\//, ""));
 
       if (!fsSync.existsSync(filePath)) {
@@ -969,21 +1052,33 @@ function startTileServer(
   });
 }
 
-// Auto-start tile server
+// Auto-start tile server. We always start it (even with no basemap folder)
+// because tiled rasters use the `/layers/<id>/{z}/{x}/{y}.png` route which
+// resolves through the in-memory tiling registry, not the folder.
 app.whenReady().then(async () => {
   const defaultTileFolder = path.join(app.getPath("documents"), "tiles");
-  if (fsSync.existsSync(defaultTileFolder)) {
-    try {
-      const result = await startTileServer(defaultTileFolder);
-      console.log(`[TileServer] Auto-started: ${result.baseUrl}`);
-    } catch (err) {
-      console.error("[TileServer] Failed to auto-start:", err);
+  try {
+    if (!fsSync.existsSync(defaultTileFolder)) {
+      await fs.mkdir(defaultTileFolder, { recursive: true });
     }
-  } else {
-    console.warn(
-      `[TileServer] Default tile folder not found: ${defaultTileFolder}`,
-    );
+    const result = await startTileServer(defaultTileFolder);
+    console.log(`[TileServer] Auto-started: ${result.baseUrl}`);
+  } catch (err) {
+    console.error("[TileServer] Failed to auto-start:", err);
   }
+
+  // Configure tiling cache: scan the HSC sessions folder for *.tilecache dirs
+  // when enforcing budget.
+  configureCache({
+    cacheRoots: [
+      path.join(app.getPath("userData"), "HSC-SESSIONS", "FILES"),
+    ],
+    budgetBytes: 1024 * 1024 * 1024, // 1 GB
+  });
+  // Run a budget pass at startup (catches any leftover bloat from prior runs).
+  enforceCacheBudget().catch((err) =>
+    console.warn("[TileCache] enforceCacheBudget failed:", err),
+  );
 });
 
 // Tile server IPC handlers
@@ -1028,10 +1123,86 @@ ipcMain.handle("tileServer:getSavedFolderUri", async () => {
   return { uri: tileServerFolder || null };
 });
 
+// ── Raster tiling IPC (gdal-async via child Node worker) ─────────────────
+ipcMain.handle("tiling:probe", async (_e, absolutePath: string) => {
+  if (!absolutePath) throw new Error("tiling:probe requires absolutePath");
+  return await workerProbe(absolutePath);
+});
+
+ipcMain.handle("tiling:buildOverviews", async (_e, absolutePath: string) => {
+  if (!absolutePath) {
+    throw new Error("tiling:buildOverviews requires absolutePath");
+  }
+  if (!fsSync.existsSync(absolutePath)) {
+    throw new Error(`Source file not found: ${absolutePath}`);
+  }
+  const t0 = Date.now();
+  const result = await workerBuildOverviews(absolutePath);
+  console.log(
+    `[Tiling] buildOverviews ${absolutePath}: ${JSON.stringify(result)} (${Date.now() - t0}ms)`,
+  );
+  return result;
+});
+
+ipcMain.handle(
+  "tiling:registerLayer",
+  async (_e, layerId: string, absolutePath: string) => {
+    if (!layerId || !absolutePath) {
+      throw new Error("tiling:registerLayer requires layerId and absolutePath");
+    }
+    if (!fsSync.existsSync(absolutePath)) {
+      throw new Error(`Source file not found: ${absolutePath}`);
+    }
+    registerTiledLayer(layerId, absolutePath);
+    return { ok: true };
+  },
+);
+
+ipcMain.handle("tiling:unregisterLayer", async (_e, layerId: string) => {
+  const sourcePath = lookupTiledLayerSource(layerId);
+  unregisterTiledLayer(layerId);
+  if (sourcePath) {
+    // Best-effort: sweep the per-layer cache dir.
+    void deleteCacheDir(sourcePath);
+  }
+  return { ok: true };
+});
+
+ipcMain.handle(
+  "tiling:sampleAt",
+  async (_e, args: { layerId: string; lon: number; lat: number }) => {
+    if (!args || !args.layerId) {
+      throw new Error("tiling:sampleAt requires {layerId, lon, lat}");
+    }
+    const sourcePath = lookupTiledLayerSource(args.layerId);
+    if (!sourcePath) {
+      throw new Error(`Layer ${args.layerId} not registered for tiling`);
+    }
+    return await workerSampleAt({
+      path: sourcePath,
+      lon: args.lon,
+      lat: args.lat,
+    });
+  },
+);
+
+// URL the renderer should use to compose tile templates.
+ipcMain.handle("tiling:getTileBaseUrl", async () => {
+  return tileServerPort > 0 ? `http://localhost:${tileServerPort}` : null;
+});
+
+// Force the worker to release every cached gdal-async Dataset. Required
+// before flushing the session — Windows refuses to unlink a `.tif` while
+// the worker still holds an open file handle to it (EBUSY/EPERM).
+ipcMain.handle("tiling:closeAll", async () => {
+  return await workerCloseAllDatasets();
+});
+
 // Cleanup on quit
 app.on("before-quit", () => {
   if (tileServer) {
     tileServer.close();
     tileServer = null;
   }
+  shutdownWorker();
 });

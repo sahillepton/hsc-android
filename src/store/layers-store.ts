@@ -118,6 +118,21 @@ const useLayerStore = create<LayerState>()((set, get) => ({
       // Continue with deletion even if manifest update fails
     });
 
+    // If the layer was tiled (>300 MB raster served via the local tile
+    // server), unregister it from the registry and sweep the tilecache
+    // dir. The unregister IPC handles the disk delete.
+    const targetLayer = useLayerStore
+      .getState()
+      .layers.find((l) => l.id === layerId);
+    if (targetLayer?.tilesUrl) {
+      const api = (window as any).electronAPI as any;
+      if (api?.tilingUnregisterLayer) {
+        api.tilingUnregisterLayer(layerId).catch(() => {
+          /* best-effort */
+        });
+      }
+    }
+
     set((state) => {
       // Check if the deleted layer is the one being hovered
       let shouldClearHoverInfo = false;
