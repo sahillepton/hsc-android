@@ -123,6 +123,7 @@ import {
   removeTiledRaster,
 } from "@/lib/tiling/render";
 import { waitForRasterTilesLoaded } from "@/lib/tiling/wait-for-tiles";
+import { RasterTiling } from "@/plugins/raster-tiling";
 import { Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -547,24 +548,6 @@ const MapComponent = ({
     };
   }, []);
 
-  // After a tiled layer is added, snap the camera to its bounds so the user
-  // immediately sees something (and Mapbox actually starts requesting tiles).
-  const focusTiledLayer = useCallback(
-    (layer: LayerProps) => {
-      const b = layer.tileBoundsWgs84;
-      if (!b) return;
-      const [w, s, e, n] = b;
-      setFocusLayerRequest({
-        layerId: layer.id,
-        bounds: [w, s, e, n],
-        center: [(w + e) / 2, (s + n) / 2],
-        isSinglePoint: false,
-        timestamp: Date.now(),
-      });
-    },
-    [setFocusLayerRequest],
-  );
-
   // Fire-and-forget: keep `toastId` in loading state until Mapbox has
   // actually rendered the layer's visible tiles. Without this, the upload
   // flow ack'd "ready" the moment `runTilingUpload` returned — long before
@@ -632,6 +615,69 @@ const MapComponent = ({
       map.once?.("style.load", apply);
     }
   }, [layers]);
+
+  // Tooltip-on-leave fix for tiled rasters. deck.gl's onHover does not fire
+  // reliably when the cursor leaves a SolidPolygonLayer picking proxy, so the
+  // tooltip would stick at the last hovered position with stale data. We
+  // listen to Mapbox's mousemove (which fires regardless of deck.gl picking)
+  // and clear hoverInfo when the cursor's actual lng/lat is outside the
+  // currently hovered raster's bounds. Refs keep this off the React render
+  // path so mousemove stays cheap.
+  const hoveredRasterBoundsRef = useRef<
+    [number, number, number, number] | null
+  >(null);
+  useEffect(() => {
+    if (!hoverInfo) {
+      hoveredRasterBoundsRef.current = null;
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deckLayerId = (hoverInfo.layer as any)?.id as string | undefined;
+    if (!deckLayerId) {
+      hoveredRasterBoundsRef.current = null;
+      return;
+    }
+    const baseId = deckLayerId
+      .replace(/-icon-layer$/, "")
+      .replace(/-signal-overlay$/, "")
+      .replace(/-bitmap$/, "")
+      .replace(/-mesh$/, "");
+    const matched = layers.find((l) => l.id === baseId);
+    hoveredRasterBoundsRef.current =
+      matched?.tilesUrl && matched.tileBoundsWgs84
+        ? matched.tileBoundsWgs84
+        : null;
+  }, [hoverInfo, layers]);
+
+  const rasterMousemoveAttachedRef = useRef(false);
+  useEffect(() => {
+    if (rasterMousemoveAttachedRef.current) return;
+    if (!mapRef.current) return;
+    const map = mapRef.current.getMap?.();
+    if (!map) return;
+
+    // Shared bounds check: clears stale hoverInfo when the cursor / tap
+    // position is outside the currently hovered raster's WGS84 bounds.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const checkAndClear = (e: any) => {
+      const b = hoveredRasterBoundsRef.current;
+      if (!b) return;
+      const lng = e?.lngLat?.lng;
+      const lat = e?.lngLat?.lat;
+      if (typeof lng !== "number" || typeof lat !== "number") return;
+      if (lng < b[0] || lng > b[2] || lat < b[1] || lat > b[3]) {
+        setHoverInfo(undefined);
+      }
+    };
+
+    // mousemove handles desktop pointer movement.
+    // click handles touch taps on Android — touch devices don't fire
+    // mousemove reliably between two distant taps, so without this the
+    // tooltip would stick at the previously-tapped raster position.
+    map.on("mousemove", checkAndClear);
+    map.on("click", checkAndClear);
+    rasterMousemoveAttachedRef.current = true;
+  }, [layers, setHoverInfo]);
 
   // Reload style when tileServerUrl changes (after map is loaded)
   useEffect(() => {
@@ -1256,7 +1302,6 @@ const MapComponent = ({
                         },
                       );
                       addLayer(newLayer);
-                      focusTiledLayer(newLayer);
                       const {
                         updateManifestColor,
                         upsertTempManifestEntry,
@@ -1524,7 +1569,6 @@ const MapComponent = ({
                     },
                   );
                   addLayer(newLayer);
-                  focusTiledLayer(newLayer);
                   const { updateManifestColor, upsertTempManifestEntry } =
                     await import("@/sessions/manifestStore");
                   await updateManifestColor(layerId, newLayer.color);
@@ -2162,13 +2206,14 @@ const MapComponent = ({
   const handleFlushSession = async () => {
     const toastId = toast.loading("Clearing all session data...");
     try {
-      // Release every gdal-async Dataset held by the tiling worker before
-      // we try to unlink the source `.tif`s. On Windows an open file
-      // handle blocks unlink with EBUSY/EPERM.
+      // Release every Dataset held by the tiling backend before we try to
+      // unlink the source `.tif`s. On Windows an open file handle blocks
+      // unlink with EBUSY/EPERM; on Android, holding a GDAL Dataset open
+      // pins the file descriptor in the same way.
       try {
-        await window.electronAPI?.tilingCloseAll?.();
+        await RasterTiling.closeAll();
       } catch (err) {
-        console.warn("[FlushSession] tilingCloseAll failed (continuing):", err);
+        console.warn("[FlushSession] RasterTiling.closeAll failed (continuing):", err);
       }
 
       const { flushAllSessionFiles } = await import("@/lib/autosave");
@@ -2184,6 +2229,9 @@ const MapComponent = ({
 
       // Clear layers from the map
       setLayers([]);
+      // Drop any open tooltip — the layer it points at is gone now, so
+      // without this it would linger as a floating empty tooltip.
+      setHoverInfo(undefined);
 
       toast.update(toastId, "All session data cleared", "success");
     } catch (error) {
@@ -2797,6 +2845,27 @@ const MapComponent = ({
 
   const handleMapClick = (event: any) => {
     const { object } = event;
+
+    // Tooltip-on-leave fix for tiled rasters. deck.gl's per-layer onHover
+    // doesn't fire on Android touch when the user taps OFF the layer, so a
+    // stale hoverInfo from the previous tap on the raster keeps painting
+    // an empty tooltip. react-map-gl's onClick fires on every tap (mouse
+    // and touch), so it's the reliable hook to clear it.
+    {
+      const b = hoveredRasterBoundsRef.current;
+      if (b) {
+        const ll = event?.lngLat;
+        const lng = Array.isArray(ll) ? ll[0] : ll?.lng;
+        const lat = Array.isArray(ll) ? ll[1] : ll?.lat;
+        if (
+          typeof lng === "number" &&
+          typeof lat === "number" &&
+          (lng < b[0] || lng > b[2] || lat < b[1] || lat > b[3])
+        ) {
+          setHoverInfo(undefined);
+        }
+      }
+    }
 
     // Route point placement takes priority when panel is open
     if (isRoutePanelOpen && routeState.graphReady && routeState.pickMode) {
@@ -3646,21 +3715,24 @@ const MapComponent = ({
     });
 
     if (pointLayers.length) {
-      // Create a unique key based on all radius values to force update
-      const radiusKey = pointLayers
-        .map((l) => `${l.id}:${l.radius ?? 5}`)
-        .join("|");
-
-      // Compute visibility: layer must be visible AND pass zoom check
-      const isVisible = pointLayers.some(
+      // Filter per point so each point's own minzoom/maxzoom is honoured.
+      // The previous `some()` made one layer's zoom apply to ALL points
+      // (a single ScatterplotLayer with the full pointLayers array as data
+      // — if any point passed, every point rendered).
+      const visiblePointLayers = pointLayers.filter(
         (l) => l.visible !== false && getZoomVisibility(l),
       );
+
+      // Create a unique key based on all radius values to force update
+      const radiusKey = visiblePointLayers
+        .map((l) => `${l.id}:${l.radius ?? 5}`)
+        .join("|");
 
       deckLayers.push(
         new ScatterplotLayer({
           id: "point-layer",
-          data: pointLayers,
-          visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
+          data: visiblePointLayers,
+          visible: visiblePointLayers.length > 0,
           getPosition: (d: LayerProps) => d.position!,
           getRadius: (d: LayerProps) => d.radius ?? 5, // Use radius for point layers
           radiusUnits: "pixels", // Use pixels instead of meters
@@ -3691,12 +3763,20 @@ const MapComponent = ({
           updateTriggers: {
             getRadius: [radiusKey], // Update when any radius changes
             getFillColor: [
-              pointLayers.map((l) => l.color?.join(",")).join("|"),
+              visiblePointLayers.map((l) => l.color?.join(",")).join("|"),
             ],
-            visible: [
+            // Recompute the data array when zoom crosses a 0.5 step, when
+            // any layer's per-point minzoom/maxzoom changes, or when
+            // visibility toggles.
+            data: [
               roundedZoom,
-              pointLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
-            ], // Update visibility on zoom (at 0.5 intervals)
+              pointLayers
+                .map(
+                  (l) =>
+                    `${l.id}:${l.visible}:${l.minzoom ?? ""}:${l.maxzoom ?? ""}`,
+                )
+                .join("|"),
+            ],
           },
         }),
       );

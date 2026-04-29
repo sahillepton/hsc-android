@@ -139,7 +139,10 @@ export interface ElectronAPI {
     layerId: string,
     absolutePath: string,
   ) => Promise<{ ok: boolean }>;
-  tilingUnregisterLayer: (layerId: string) => Promise<{ ok: boolean }>;
+  tilingUnregisterLayer: (
+    layerId: string,
+    fallbackPath?: string,
+  ) => Promise<{ ok: boolean }>;
   tilingSampleAt: (args: {
     layerId: string;
     lon: number;

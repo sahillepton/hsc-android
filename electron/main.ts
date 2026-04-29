@@ -1158,15 +1158,20 @@ ipcMain.handle(
   },
 );
 
-ipcMain.handle("tiling:unregisterLayer", async (_e, layerId: string) => {
-  const sourcePath = lookupTiledLayerSource(layerId);
-  unregisterTiledLayer(layerId);
-  if (sourcePath) {
-    // Best-effort: sweep the per-layer cache dir.
-    void deleteCacheDir(sourcePath);
-  }
-  return { ok: true };
-});
+ipcMain.handle(
+  "tiling:unregisterLayer",
+  async (_e, layerId: string, fallbackPath?: string) => {
+    // App-startup cleanup arrives BEFORE the worker registers the layer
+    // (worker is fresh, registry is empty). Falls back to caller-provided
+    // absolute path so the per-layer cache dir is still swept.
+    const sourcePath = lookupTiledLayerSource(layerId) ?? fallbackPath ?? null;
+    unregisterTiledLayer(layerId);
+    if (sourcePath) {
+      void deleteCacheDir(sourcePath);
+    }
+    return { ok: true };
+  },
+);
 
 ipcMain.handle(
   "tiling:sampleAt",

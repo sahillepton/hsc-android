@@ -3,6 +3,7 @@
 // the local Electron tile server (`/layers/<id>/{z}/{x}/{y}.png`).
 
 import type { LayerProps } from "@/lib/definitions";
+import { DEFAULT_LAYER_MAX_ZOOM } from "@/lib/constants";
 
 type MapboxMap = {
   getSource: (id: string) => unknown;
@@ -13,9 +14,28 @@ type MapboxMap = {
   removeLayer: (id: string) => void;
   setPaintProperty: (id: string, prop: string, val: unknown) => void;
   setLayoutProperty: (id: string, prop: string, val: unknown) => void;
+  setLayerZoomRange?: (
+    id: string,
+    minzoom: number,
+    maxzoom: number,
+  ) => void;
   isStyleLoaded?: () => boolean;
   once?: (ev: string, cb: () => void) => void;
 };
+
+// Mapbox layer.minzoom is INCLUSIVE (visible at zooms >= minzoom);
+// layer.maxzoom is EXCLUSIVE (hidden at zooms >= maxzoom). To match the
+// inclusive semantics used everywhere else in the app (e.g. tooltip's
+// `mapZoom <= layerInfo.maxzoom`), we pass `userMax + 1` to Mapbox so the
+// layer remains visible at the user-set max zoom.
+const MAPBOX_MAX_LAYER_ZOOM = 24;
+function resolveLayerZoomRange(layer: LayerProps): [number, number] {
+  const min = typeof layer.minzoom === "number" ? layer.minzoom : 0;
+  const userMax =
+    typeof layer.maxzoom === "number" ? layer.maxzoom : DEFAULT_LAYER_MAX_ZOOM;
+  const max = Math.min(MAPBOX_MAX_LAYER_ZOOM, userMax + 1);
+  return [min, max];
+}
 
 const RASTER_PREFIX = "raster-";
 
@@ -65,12 +85,19 @@ export function addOrUpdateTiledRaster(
   // Honour layer.visible from the layers panel toggle — without this, the
   // raster keeps painting even after the user turns the layer off.
   const visibilityValue = layer.visible === false ? "none" : "visible";
+  const [layerMinZoom, layerMaxZoom] = resolveLayerZoomRange(layer);
   if (!map.getLayer(lid)) {
     map.addLayer(
       {
         id: lid,
         type: "raster",
         source: sid,
+        // Per-layer zoom range from the settings panel. Distinct from the
+        // source-level minzoom/maxzoom (which describe physical tile
+        // availability). Without these the raster paints at every zoom,
+        // ignoring the user's slider.
+        minzoom: layerMinZoom,
+        maxzoom: layerMaxZoom,
         layout: {
           visibility: visibilityValue,
         },
@@ -86,6 +113,8 @@ export function addOrUpdateTiledRaster(
     try {
       map.setPaintProperty(lid, "raster-opacity", opacity);
       map.setLayoutProperty(lid, "visibility", visibilityValue);
+      // Idempotent zoom-range update so slider changes take effect live.
+      map.setLayerZoomRange?.(lid, layerMinZoom, layerMaxZoom);
     } catch {
       // Style may not be loaded yet; safe to ignore.
     }

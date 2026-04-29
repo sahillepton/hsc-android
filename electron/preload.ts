@@ -150,8 +150,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("tiling:buildOverviews", absolutePath),
   tilingRegisterLayer: (layerId: string, absolutePath: string) =>
     ipcRenderer.invoke("tiling:registerLayer", layerId, absolutePath),
-  tilingUnregisterLayer: (layerId: string) =>
-    ipcRenderer.invoke("tiling:unregisterLayer", layerId),
+  tilingUnregisterLayer: (layerId: string, fallbackPath?: string) =>
+    ipcRenderer.invoke("tiling:unregisterLayer", layerId, fallbackPath),
   tilingSampleAt: (args: { layerId: string; lon: number; lat: number }) =>
     ipcRenderer.invoke("tiling:sampleAt", args),
   tilingGetTileBaseUrl: () => ipcRenderer.invoke("tiling:getTileBaseUrl"),

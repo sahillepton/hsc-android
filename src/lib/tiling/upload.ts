@@ -2,17 +2,18 @@
 // flow when `shouldTile(stagedFile.size)` returns true.
 //
 // Steps:
-//   1. tilingProbe(absolutePath) → bounds, dtype, sourceCrs, nativeZoom
-//   1.5 tilingBuildOverviews(absolutePath) → write .ovr sidecar so low-zoom
-//       tiles read from a pre-decimated pyramid instead of scanning the
-//       full raster every time. One-time per file. Skipped for small
+//   1. RasterTiling.probe(absolutePath) → bounds, dtype, sourceCrs, nativeZoom
+//   1.5 RasterTiling.buildOverviews(absolutePath) → write .ovr sidecar so
+//       low-zoom tiles read from a pre-decimated pyramid instead of scanning
+//       the full raster every time. One-time per file. Skipped for small
 //       rasters or files that already have overviews.
-//   2. tilingRegisterLayer(layerId, absolutePath) → tile server can now serve
-//   3. tilingGetTileBaseUrl() → base URL for the local tile server
+//   2. RasterTiling.registerLayer(layerId, absolutePath) → tile server can serve
+//   3. RasterTiling.getTileBaseUrl() → base URL for the local tile server
 //   4. Construct a LayerProps with `tilesUrl`, `tileBoundsWgs84`, etc.
 
 import type { LayerProps } from "@/lib/definitions";
 import { buildTilesUrl } from "@/lib/tiling/render";
+import { RasterTiling } from "@/plugins/raster-tiling";
 
 export interface TilingUploadInput {
   layerId: string;
@@ -35,14 +36,9 @@ export async function runTilingUpload(
   input: TilingUploadInput,
   cb?: TilingUploadCallbacks,
 ): Promise<LayerProps> {
-  const api = window.electronAPI;
-  if (!api?.tilingProbe || !api?.tilingRegisterLayer) {
-    throw new Error("Tiling IPC not available (preload not loaded?)");
-  }
-
   // 1. Probe the raster (bounds, CRS, palette, native zoom).
   cb?.onPhase?.("probing");
-  const probe = await api.tilingProbe(input.absolutePath);
+  const probe = await RasterTiling.probe({ path: input.absolutePath });
   if (!probe.boundsWgs84) {
     throw new Error(
       "Raster has no usable geo-reference; cannot tile-display this file.",
@@ -52,29 +48,30 @@ export async function runTilingUpload(
   // 1.5. Build overview pyramid if missing (one-time, big rasters only).
   // This is what makes low-zoom tiles fast — without overviews, every
   // z=4 tile of a 1 GB BigTIFF takes 2-5 s. With them, ~50 ms.
-  if (api.tilingBuildOverviews) {
-    cb?.onPhase?.("optimizing");
-    try {
-      const ovr = await api.tilingBuildOverviews(input.absolutePath);
-      if (ovr.built) {
-        console.log(
-          `[Tiling] overviews built (${ovr.kind}, levels=${ovr.levels?.join(",")})`,
-        );
-      } else {
-        console.log(`[Tiling] skipped overview build: ${ovr.reason}`);
-      }
-    } catch (err) {
-      // Non-fatal — tiles will still render, just slower for low zooms.
-      console.warn("[Tiling] buildOverviews failed (non-fatal):", err);
+  cb?.onPhase?.("optimizing");
+  try {
+    const ovr = await RasterTiling.buildOverviews({ path: input.absolutePath });
+    if (ovr.built) {
+      console.log(
+        `[Tiling] overviews built (${ovr.kind}, levels=${ovr.levels?.join(",")})`,
+      );
+    } else {
+      console.log(`[Tiling] skipped overview build: ${ovr.reason}`);
     }
+  } catch (err) {
+    // Non-fatal — tiles will still render, just slower for low zooms.
+    console.warn("[Tiling] buildOverviews failed (non-fatal):", err);
   }
 
   // 2. Register layerId → source path with the tile server.
   cb?.onPhase?.("ready");
-  await api.tilingRegisterLayer(input.layerId, input.absolutePath);
+  await RasterTiling.registerLayer({
+    layerId: input.layerId,
+    path: input.absolutePath,
+  });
 
   // 3. Resolve the local tile server's base URL.
-  const baseUrl = await api.tilingGetTileBaseUrl();
+  const { baseUrl } = await RasterTiling.getTileBaseUrl();
   if (!baseUrl) {
     throw new Error("Local tile server not running yet");
   }

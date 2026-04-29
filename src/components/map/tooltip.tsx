@@ -467,6 +467,22 @@ const Tooltip = () => {
       const min = layerInfo.sourceValueMin;
       const max = layerInfo.sourceValueMax;
 
+      const hasValue =
+        value !== null && value !== undefined && Number.isFinite(value);
+
+      // Irregularly-shaped rasters (country masks, India clutter, etc.)
+      // have a rectangular bounding box that covers ocean / neighbouring
+      // territory full of NoData pixels. Tapping a NoData pixel returns
+      // value=null even though the cursor is technically "on the layer".
+      // Suppress the tooltip outright while we have no value — including
+      // the loading phase — so the user never sees an empty "…" flash on
+      // a NoData click. Continuous hover over valid pixels keeps the
+      // previous value cached in tileSampler.state, so the tooltip stays
+      // visible there.
+      if (!hasValue) {
+        return null;
+      }
+
       const properties = [
         {
           label: useIgrs ? "IGRS" : "Latitude",
@@ -483,7 +499,6 @@ const Tooltip = () => {
       if (dtype && /Float/i.test(dtype)) valueLabel = "Value";
       else if (layerInfo.sourceDtype === "Byte") valueLabel = "Class";
 
-      const hasValue = value !== null && value !== undefined && Number.isFinite(value);
       let valueStr = "—";
       if (hasValue) {
         valueStr = Number.isInteger(value as number)

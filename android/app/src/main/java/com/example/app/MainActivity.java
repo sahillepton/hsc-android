@@ -30,6 +30,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(OfflineTileServerPlugin.class);
         registerPlugin(ScreenshotPlugin.class);
         registerPlugin(SessionInfoPlugin.class);
+        registerPlugin(RasterTilingPlugin.class);
 
         super.onCreate(savedInstanceState);
         

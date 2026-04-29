@@ -19,7 +19,33 @@ import java.io.File
 class OfflineTileServerPlugin : Plugin() {
 
     private var tileServer: TileServer? = null
-    
+
+    /**
+     * SAM-friendly callback type so both Java and Kotlin callers can register
+     * a raster-tile provider with a single lambda. Java sees this as a
+     * functional interface; Kotlin gets SAM conversion for `::method` refs.
+     */
+    fun interface RasterTileProvider {
+        fun provideTile(layerId: String, z: Int, x: Int, y: Int): ByteArray?
+    }
+
+    companion object {
+        // Raster tile callback registered by RasterTilingPlugin at startup.
+        // Receives (layerId, z, x, y) and returns a fully-encoded WebP byte
+        // array (cache-hit or freshly-rendered), or null if the layer isn't
+        // registered or the tile is out of bounds.
+        // @JvmStatic so Java callers can use the same entry point.
+        @Volatile private var rasterProvider: RasterTileProvider? = null
+
+        @JvmStatic
+        fun registerRasterTileProvider(provider: RasterTileProvider) {
+            rasterProvider = provider
+        }
+
+        internal fun callRaster(id: String, z: Int, x: Int, y: Int): ByteArray? =
+            rasterProvider?.provideTile(id, z, x, y)
+    }
+
     override fun load() {
         super.load()
         // Always start with default path - React will update if needed
@@ -243,21 +269,53 @@ class TileServer(
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         return try {
             val uri = session.uri
-            
+
+            // Raster tile route delegated to RasterTilingPlugin (if registered).
+            // Pattern: /layers/<layerId>/<z>/<x>/<y>.webp
+            // Sits before the pbf pattern so a layerId starting with digits
+            // can't be mis-routed into the vector path.
+            val rasterPattern = Regex("^/layers/([^/]+)/(\\d+)/(\\d+)/(\\d+)\\.webp$")
+            val rasterMatch = rasterPattern.find(uri)
+            if (rasterMatch != null) {
+                val (id, zStr, xStr, yStr) = rasterMatch.destructured
+                val bytes = OfflineTileServerPlugin.callRaster(
+                    id, zStr.toInt(), xStr.toInt(), yStr.toInt()
+                )
+                return if (bytes != null) {
+                    val res = NanoHTTPD.newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.OK,
+                        "image/webp",
+                        ByteArrayInputStream(bytes),
+                        bytes.size.toLong()
+                    )
+                    res.addHeader("Cache-Control", "public, max-age=31536000, immutable")
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    res
+                } else {
+                    val res = NanoHTTPD.newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.NOT_FOUND,
+                        NanoHTTPD.MIME_PLAINTEXT,
+                        "Raster tile not found: $id z=$zStr x=$xStr y=$yStr"
+                    )
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    res
+                }
+            }
+
             // Handle style.json request
             if (uri == "/style.json" || uri == "/style.json/") {
                 return serveStyleJson()
             }
-            
+
             // Handle font glyph requests: /fonts/{fontstack}/{range}.pbf
             val fontPattern = Regex("^/fonts/([^/]+)/([^/]+)\\.pbf$")
             val fontMatch = fontPattern.find(uri)
-            
+
             if (fontMatch != null) {
                 val (fontstack, range) = fontMatch.destructured
                 return serveFontGlyph(fontstack, range)
             }
-            
+
             // Handle tile requests: /{z}/{x}/{y}.pbf (no /tiles/ prefix)
             val tilePattern = Regex("^/(\\d+)/(\\d+)/(\\d+)\\.pbf$")
             val match = tilePattern.find(uri)

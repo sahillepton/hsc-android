@@ -6,6 +6,7 @@ import { AppSidebar } from "./components/app-sidebar";
 import LayersBox from "./components/map/layers-box";
 import { toast } from "./lib/toast";
 import { NativeUploader } from "./plugins/native-uploader";
+import { RasterTiling } from "./plugins/raster-tiling";
 
 const App = () => {
   const [isLayersPanelVisible, setIsLayersPanelVisible] = useState(false);
@@ -33,6 +34,20 @@ const App = () => {
                 error,
               );
               // Continue with other files even if one fails
+            }
+            // Also sweep any tile cache produced for this layer last session.
+            // Pass the absolute path as a fallback so Electron can locate the
+            // cache dir even though its in-process registry is fresh.
+            try {
+              await RasterTiling.unregisterLayer({
+                layerId: file.layerId,
+                path: file.absolutePath,
+              });
+            } catch (error) {
+              console.warn(
+                `[AppStartup] Failed to sweep tile cache for layer: ${file.layerId}`,
+                error,
+              );
             }
           }
 

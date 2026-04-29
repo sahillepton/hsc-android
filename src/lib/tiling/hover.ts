@@ -8,6 +8,7 @@
 // the tooltip never displays a stale value.
 
 import { useEffect, useRef, useState } from "react";
+import { RasterTiling } from "@/plugins/raster-tiling";
 
 interface SamplerCallArgs {
   layerId: string;
@@ -53,17 +54,11 @@ export function useTileSampler(debounceMs: number = 200) {
     setState((s) => ({ ...s, loading: true }));
     timerRef.current = setTimeout(() => {
       const myId = ++lastRequestIdRef.current;
-      const api = window.electronAPI;
-      if (!api?.tilingSampleAt) {
-        setState({ value: null, dtype: "", loading: false });
-        return;
-      }
-      api
-        .tilingSampleAt({
-          layerId: args.layerId,
-          lon: args.lon,
-          lat: args.lat,
-        })
+      RasterTiling.sampleAt({
+        layerId: args.layerId,
+        lon: args.lon,
+        lat: args.lat,
+      })
         .then((r) => {
           if (myId !== lastRequestIdRef.current) return; // stale
           setState({

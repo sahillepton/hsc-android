@@ -1,3 +1,12 @@
+// foojay-resolver lets Gradle auto-download required JDK toolchains
+// (e.g. JDK 21 needed by upstream Capacitor 7 modules) into ~/.gradle/jdks/
+// without touching the system Java install. This block is local to this
+// standalone Android build only — the client integration uses its own
+// settings.gradle and is unaffected.
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
 include ':app'
 include ':capacitor-cordova-android-plugins'
 project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
