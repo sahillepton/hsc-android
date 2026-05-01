@@ -125,12 +125,12 @@ npm install -g yarn</pre>
 
     <div class="note">
         <strong>Root naming requirement:</strong> In this document, root is referred to as
-        <code>hsc-android</code> (as requested), even though desktop packaging commands run from the desktop project
+        <code>mcsa-gis-android</code> (as requested), even though desktop packaging commands run from the desktop project
         folder.
     </div>
 
     <h2>Project Structure Assumed</h2>
-    <pre>hsc-android/                          &lt;- shared package root sent to client
+    <pre>mcsa-gis-android/                          &lt;- shared package root sent to client
 ├── package.json
 ├── electron/
 ├── src/
@@ -138,7 +138,7 @@ npm install -g yarn</pre>
 
     <div class="note">
         <strong>Important:</strong> Client receives only this desktop project folder, renamed as
-        <code>hsc-android</code>.
+        <code>mcsa-gis-android</code>.
     </div>
 
     <h2>Where to place offline tiles</h2>
@@ -161,10 +161,10 @@ Equivalent using environment variable:
 
     <h2>Step 1: Open PowerShell and go to the shared package folder</h2>
     <pre># If you are already in the parent directory:
-cd "hsc-android"
+cd "mcsa-gis-android"
 
 # Or use full path wherever client extracted it:
-cd "D:\any-folder\hsc-android"</pre>
+cd "D:\any-folder\mcsa-gis-android"</pre>
 
     <h2>Step 2: Install dependencies</h2>
     <pre>yarn install</pre>
@@ -190,7 +190,7 @@ cd "D:\any-folder\hsc-android"</pre>
 
     <h2>Troubleshooting (cache fix for yarn package)</h2>
     <p>If <code>yarn package</code> fails with NSIS cache/elevate errors, run:</p>
-    <pre>cd "hsc-android"
+    <pre>cd "mcsa-gis-android"
 
 Get-Process node,electron,electron-builder,signtool -ErrorAction SilentlyContinue | Stop-Process -Force
 

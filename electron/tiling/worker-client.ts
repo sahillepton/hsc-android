@@ -28,36 +28,80 @@ let readyPromise: Promise<void> | null = null;
 let restartAttempts = 0;
 const MAX_RESTARTS = 5;
 
-/** Resolve the worker script path in dev (repo), built (dist-electron), and prod (extraResources). */
+/** Resolve the worker script path in dev (repo), built (dist-electron), and prod (extraResources).
+ *
+ * IMPORTANT: must NOT return a path inside app.asar. Electron's fs shim
+ * makes asar paths look readable from inside Electron, so fs.existsSync
+ * returns true — but the spawned Node process has no asar shim and dies
+ * with MODULE_NOT_FOUND. Production candidates therefore route through
+ * app.asar.unpacked or the extraResources copy.
+ */
 function resolveWorkerScript(): string {
   const fs = require("fs") as typeof import("fs");
+  const isInsideAsar = (p: string) =>
+    p.includes(`${path.sep}app.asar${path.sep}`) ||
+    p.endsWith(`${path.sep}app.asar`);
+
   const candidates = [
-    // Dev: source tree
-    path.join(app.getAppPath(), "electron", "tiling", "worker.cjs"),
-    // Built (yarn build:electron): copied next to main.cjs
-    path.join(app.getAppPath(), "dist-electron", "tiling", "worker.cjs"),
-    // Prod packaged: shipped as extraResources
+    // Prod packaged (preferred): asar.unpacked location. worker.cjs sits
+    // adjacent to node_modules, so Node's upward module resolver finds
+    // gdal-async naturally even without NODE_PATH (we set it anyway as
+    // belt-and-suspenders).
+    process.resourcesPath
+      ? path.join(
+          process.resourcesPath,
+          "app.asar.unpacked",
+          "dist-electron",
+          "tiling",
+          "worker.cjs",
+        )
+      : "",
+    // Prod packaged fallback: extraResources copy at resources/tiling/.
+    // Only reachable via NODE_PATH for module resolution.
     process.resourcesPath
       ? path.join(process.resourcesPath, "tiling", "worker.cjs")
       : "",
+    // Dev: source tree (app.getAppPath() returns project root in dev,
+    // not app.asar). Excluded automatically in prod by the asar guard.
+    path.join(app.getAppPath(), "electron", "tiling", "worker.cjs"),
+    // Built locally (yarn build:electron): copied next to main.cjs.
+    path.join(app.getAppPath(), "dist-electron", "tiling", "worker.cjs"),
     // When main.cjs runs from inside dist-electron/, __dirname resolves there.
     path.join(__dirname, "tiling", "worker.cjs"),
   ];
+
   for (const c of candidates) {
-    if (c && fs.existsSync(c)) return c;
+    if (!c) continue;
+    if (isInsideAsar(c)) continue; // Spawned Node can't read inside asar.
+    if (fs.existsSync(c)) return c;
   }
   throw new Error(
-    `Tiling worker script not found. Looked in:\n  ${candidates.filter(Boolean).join("\n  ")}`,
+    `Tiling worker script not found (or only available inside app.asar). Looked in:\n  ${candidates.filter(Boolean).join("\n  ")}`,
   );
 }
 
-/** Resolve the Node binary to spawn. Prefer bundled, then system PATH. */
+/**
+ * Resolve the Node binary the worker runs in.
+ *
+ * Why we need a real Node (not Electron-as-Node):
+ *   gdal-async@3.12.x ships ONLY Node-ABI prebuilds (NODE_MODULE_VERSION
+ *   115/127/137/141 for Node 20/22/24/25). Electron 35.x's V8 reports
+ *   ABI 133 — no published prebuild matches, so loading gdal-async via
+ *   `process.execPath` + ELECTRON_RUN_AS_NODE crashes with
+ *   "DLL initialization routine failed" / NODE_MODULE_VERSION mismatch.
+ *
+ * Production: scripts/fetch-gdal-electron-prebuild.mjs (run during
+ *   `yarn prepackage`) copies the build-machine's Node 22.x binary to
+ *   bundled-runtime/node.exe. electron-builder then ships it via
+ *   extraResources at process.resourcesPath/node.exe. ABI 127 matches
+ *   gdal-async/lib/binding/node-v127-win32-x64/gdal.node which is
+ *   already in node_modules.
+ *
+ * Dev: falls back to system "node" on PATH (works because devs run
+ *   under their own Node 22 install).
+ */
 function resolveNodeBin(): string {
   const fs = require("fs") as typeof import("fs");
-  // Production installer: ship node.exe via extraResources at
-  // process.resourcesPath/node.exe (configured in package.json build).
-  // For now this is opt-in; if not present we fall back to system Node,
-  // which is fine for source-shared development.
   if (process.resourcesPath) {
     const bundled = path.join(process.resourcesPath, "node.exe");
     if (fs.existsSync(bundled)) {
@@ -68,18 +112,51 @@ function resolveNodeBin(): string {
   return "node";
 }
 
+/**
+ * Build NODE_PATH for the spawned worker so require("gdal-async") resolves
+ * in production. In packaged mode, gdal-async lives at
+ *   resources/app.asar.unpacked/node_modules/gdal-async/
+ * which is NOT on Node's default upward search path from
+ * resources/tiling/worker.cjs. NODE_PATH bridges that gap.
+ *
+ * Dev mode: process.resourcesPath points at Electron's own resources dir,
+ * not the project — but the worker.cjs there is in the project's
+ * electron/tiling/, so node_modules/ resolves naturally via upward search.
+ * Setting NODE_PATH here is harmless in dev (the path won't exist).
+ */
+function buildWorkerNodePath(): string | undefined {
+  if (!process.resourcesPath) return undefined;
+  const unpacked = path.join(
+    process.resourcesPath,
+    "app.asar.unpacked",
+    "node_modules",
+  );
+  // Preserve any existing NODE_PATH (semicolon separator on Windows).
+  const sep = process.platform === "win32" ? ";" : ":";
+  return process.env.NODE_PATH
+    ? `${unpacked}${sep}${process.env.NODE_PATH}`
+    : unpacked;
+}
+
 function startWorker(): Promise<void> {
   if (readyPromise) return readyPromise;
 
   readyPromise = new Promise((resolve, reject) => {
     const script = resolveWorkerScript();
     const nodeBin = resolveNodeBin();
+    const workerNodePath = buildWorkerNodePath();
     console.log(`[Tiling] spawning ${nodeBin} ${script}`);
+    if (workerNodePath) {
+      console.log(`[Tiling]   NODE_PATH=${workerNodePath}`);
+    }
+
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (workerNodePath) env.NODE_PATH = workerNodePath;
 
     const proc = spawn(nodeBin, [script], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: process.env,
+      env,
     });
     child = proc;
 

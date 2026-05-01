@@ -98,7 +98,10 @@
       "PowerShell($env:JAVA_HOME = \"C:\\\\Program Files\\\\Java\\\\jdk-17\"; & \"$env:JAVA_HOME\\\\bin\\\\javap.exe\" -public \"$env:TEMP\\\\gdaljar\\\\org\\\\gdal\\\\gdal\\\\Band.class\" 2>&1 | Select-String \"ReadRaster\" | Select-Object -First 30)",
       "PowerShell(Set-Location \"d:\\\\desktop\\\\HSC\\\\hsc-gis\\\\mcsa-gis-android\"; npx tsc -b; Write-Output \"EXIT=$LASTEXITCODE\")",
       "PowerShell(Set-Location \"d:\\\\desktop\\\\HSC\\\\hsc-gis\\\\mcsa-gis-android\"; npm run build 2>&1 | Select-Object -Last 3; npx cap sync android 2>&1 | Select-Object -Last 3; Set-Location android; .\\\\gradlew.bat :app:assembleDebug --console=plain 2>&1 | Out-File -FilePath \"..\\\\.build\\\\gradle-build.log\" -Encoding utf8; Write-Output \"EXIT=$LASTEXITCODE\"; Get-Content \"..\\\\.build\\\\gradle-build.log\" -Tail 5)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Read(//d/TIFF/**)",
+      "Read(//d/desktop/HSC/hsc-gis/mcsa-gis-android/**)",
+      "Bash(grep -iE \"^\\(yauzl|node-stream-zip|adm-zip|unzipper|jszip\\)$\")"
     ],
     "additionalDirectories": [
       "d:\\desktop\\HSC\\hsc-gis\\mcsa-gis-android",

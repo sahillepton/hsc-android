@@ -10,6 +10,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.util.Log
 import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
@@ -18,6 +19,7 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
+import org.deal.mcsa.utility.UserPreferencesManager
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
@@ -87,7 +89,7 @@ class NativeUploaderPlugin : Plugin() {
             try {
                 val docsRoot = context.getExternalFilesDir(null) ?: context.filesDir
 
-                val destDir = File(docsRoot, "HSC-SESSIONS/FILES")
+                val destDir = File(docsRoot, stagingFilesDir())
                 destDir.mkdirs()
 
                 val finalFile = File(destDir, fileName)
@@ -104,7 +106,7 @@ class NativeUploaderPlugin : Plugin() {
 
                 val result = JSObject()
                 result.put("absolutePath", finalFile.absolutePath)
-                result.put("logicalPath", "DATA/HSC-SESSIONS/FILES/${finalFile.name}")
+                result.put("logicalPath", "${stagingLogicalDir()}/${finalFile.name}")
                 result.put("size", finalFile.length())
                 result.put("mimeType", mimeType)
 
@@ -157,7 +159,7 @@ class NativeUploaderPlugin : Plugin() {
             try {
                 val docsRoot = context.getExternalFilesDir(null) ?: context.filesDir
 
-                val destDir = File(docsRoot, "HSC-SESSIONS/FILES")
+                val destDir = File(docsRoot, stagingFilesDir())
                 destDir.mkdirs()
 
                 val results = JSArray()
@@ -217,7 +219,7 @@ class NativeUploaderPlugin : Plugin() {
 
                     val one = JSObject()
                     one.put("absolutePath", finalFile.absolutePath)
-                    one.put("logicalPath", "DATA/HSC-SESSIONS/FILES/${finalFile.name}")
+                    one.put("logicalPath", "${stagingLogicalDir()}/${finalFile.name}")
                     one.put("size", finalFile.length())
                     one.put("mimeType", mimeType)
                     one.put("status", "staged")
@@ -284,6 +286,61 @@ class NativeUploaderPlugin : Plugin() {
         } catch (e: Exception) {
             -1L
         }
+    }
+
+    // ── Per-user staging root ────────────────────────────────────────────
+    //
+    // Files must land under the same per-user dir as the manifest, otherwise
+    // flushAllSessionFiles() (which wipes HSC-SESSIONS-<username>/ on the
+    // integrated build) leaves the source .tif files behind. The renderer
+    // resolves the manifest path via sessions/constants.ts, which uses
+    // sanitizeUsernameForSessionPath() — the Kotlin sanitizer below MUST
+    // match that algorithm byte-for-byte so the directory names line up.
+    //
+    // Standalone (no MCSA session manager → username null/blank) falls back
+    // to plain "HSC-SESSIONS" — the same behaviour as before this fix.
+    private fun stagingFilesDir(): String {
+        val u = sanitizedUsername()
+        val base = if (u.isNotEmpty()) "HSC-SESSIONS-$u" else "HSC-SESSIONS"
+        val full = "$base/FILES"
+        Log.d("NativeUploaderPlugin", "stagingFilesDir() username='$u' -> $full")
+        return full
+    }
+
+    /** Logical path is what the JS layer stores in the manifest; keep it
+     *  parallel to the on-disk path so restore + flush both find the file. */
+    private fun stagingLogicalDir(): String = "DATA/${stagingFilesDir()}"
+
+    private fun sanitizedUsername(): String {
+        val rawNullable: String? = try {
+            UserPreferencesManager.getUsername(context)
+        } catch (e: Throwable) {
+            Log.w("NativeUploaderPlugin", "getUsername threw", e)
+            null
+        }
+        Log.d(
+            "NativeUploaderPlugin",
+            "UserPreferencesManager.getUsername raw='${rawNullable ?: "<null>"}'",
+        )
+        val raw = rawNullable?.takeIf { it.isNotBlank() } ?: return ""
+        val sanitized = sanitizeUsernameForSessionPath(raw)
+        Log.d(
+            "NativeUploaderPlugin",
+            "sanitized username -> '$sanitized'",
+        )
+        return sanitized
+    }
+
+    /** Mirror of sanitizeUsernameForSessionPath() in src/sessions/constants.ts:
+     *  lowercase → \s+ → "_" → [^a-z0-9._-] → "_" → collapse "_+" → trim "_". */
+    private fun sanitizeUsernameForSessionPath(raw: String): String {
+        return raw
+            .trim()
+            .lowercase()
+            .replace(Regex("\\s+"), "_")
+            .replace(Regex("[^a-z0-9._-]"), "_")
+            .replace(Regex("_+"), "_")
+            .trim('_')
     }
 }
 

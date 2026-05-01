@@ -5,7 +5,7 @@
 // through the gdal-async worker; only tiny rasters (favicons, thumbnails)
 // stay on the parseDemFile path.
 
-const SIZE_BYTES_THRESHOLD = 2 * 1024 * 1024;
+const SIZE_BYTES_THRESHOLD = 1024 * 1024 * (1 / 2);
 
 export function shouldTile(sizeBytes: number): boolean {
   return sizeBytes > SIZE_BYTES_THRESHOLD;

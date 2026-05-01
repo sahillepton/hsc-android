@@ -1265,15 +1265,26 @@ const MapComponent = ({
                     `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name}...`,
                   );
 
-                  // Convert absolute path to File object for parsing
-                  const file = await stagedPathToFile({
-                    absolutePath: extractedFile.absolutePath,
-                    originalName: extractedFile.name,
-                    mimeType:
-                      extractedFile.type === "tiff"
-                        ? "image/tiff"
-                        : "application/octet-stream",
-                  });
+                  // Defer stagedPathToFile() until we know we actually need
+                  // the File object — for the tiling path we only need the
+                  // absolute path. stagedPathToFile() on Electron calls
+                  // fs.readFileBinary() which fails with ERR_FS_FILE_TOO_LARGE
+                  // for files >2 GB (e.g. WB_2G_P1_2024_BestServerSS_GSM_M.tif
+                  // at 3.4 GB). The tiling pipeline opens the file via GDAL
+                  // mmap in the worker, so it doesn't need the bytes loaded.
+                  const willTile =
+                    extractedFile.type === "tiff" &&
+                    shouldTile(extractedFile.size);
+                  const file: File | null = willTile
+                    ? null
+                    : await stagedPathToFile({
+                        absolutePath: extractedFile.absolutePath,
+                        originalName: extractedFile.name,
+                        mimeType:
+                          extractedFile.type === "tiff"
+                            ? "image/tiff"
+                            : "application/octet-stream",
+                      });
 
                   if (extractedFile.type === "tiff") {
                     if (shouldTile(extractedFile.size)) {
@@ -1332,7 +1343,9 @@ const MapComponent = ({
                         progressToastId,
                       );
                     } else {
-                      // Process DEM file
+                      // Process DEM file (small TIFF — file was loaded above
+                      // because willTile is false in this branch).
+                      if (!file) throw new Error("Internal: file not loaded for DEM path");
                       const demResult = await parseDemFile(file, {
                         layerId: layerId,
                         layerName: layerName,
@@ -1366,7 +1379,9 @@ const MapComponent = ({
                     extractedFile.type === "vector" ||
                     extractedFile.type === "shapefile"
                   ) {
-                    // Process vector file
+                    // Process vector file (file was loaded above because
+                    // willTile is only true for the tiff branch).
+                    if (!file) throw new Error("Internal: file not loaded for vector path");
                     const vectorResult = await parseVectorFile(file, {
                       layerId: layerId,
                       layerName: layerName,

@@ -110,6 +110,11 @@ public/TIFF/**/*.tif
 dist-electron/
 release/
 
+# Bundled Node 22.x runtime for the tiling worker (~50 MB) — recreated by
+# `yarn prepackage` (scripts/fetch-gdal-electron-prebuild.mjs) on every
+# build. Do not commit; it copies the build machine's local node.exe.
+bundled-runtime/
+
 # Electron builder local cache
 .cache/
 

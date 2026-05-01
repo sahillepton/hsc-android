@@ -5,6 +5,7 @@ import fsSync from "fs";
 import http from "http";
 import dgram from "dgram";
 import JSZip from "jszip";
+import * as yauzl from "yauzl";
 import {
   workerProbe,
   workerRenderTile,
@@ -537,6 +538,19 @@ function getFileType(
   return "vector";
 }
 
+/**
+ * Extract a ZIP recursively using `yauzl`.
+ *
+ * Was previously JSZip, but JSZip 3.x asserts the post-decompression byte
+ * count matches the size declared in the local file header and throws
+ * "uncompressed data size mismatch" on a class of perfectly-valid large
+ * ZIPs (notably ZIP64 entries and some Windows-Explorer-created archives
+ * with a stale local-header size). yauzl uses the central directory and
+ * handles ZIP64 correctly, so it succeeds on the same input.
+ *
+ * Files are streamed straight to disk; nested .zip entries are buffered
+ * in memory only because we recurse with a Buffer.
+ */
 async function extractZipRecursive(
   zipBuf: Buffer,
   destDir: string,
@@ -545,56 +559,158 @@ async function extractZipRecursive(
 ): Promise<ExtractedFileInfo[]> {
   if (depth > maxDepth) return [];
 
-  const zip = await JSZip.loadAsync(zipBuf);
   const results: ExtractedFileInfo[] = [];
 
-  for (const [relativeName, entry] of Object.entries(zip.files)) {
-    if (entry.dir) continue;
+  await new Promise<void>((resolve, reject) => {
+    yauzl.fromBuffer(
+      zipBuf,
+      { lazyEntries: true },
+      (err, zipfile) => {
+        if (err || !zipfile) {
+          reject(err ?? new Error("yauzl returned no zipfile"));
+          return;
+        }
 
-    const fileName = path.basename(relativeName);
-    const lowerName = fileName.toLowerCase();
-    const ext =
-      lowerName.lastIndexOf(".") > 0
-        ? lowerName.substring(lowerName.lastIndexOf(".") + 1)
-        : "";
+        const fail = (e: unknown) => {
+          try {
+            zipfile.close();
+          } catch {
+            /* ignore */
+          }
+          reject(e instanceof Error ? e : new Error(String(e)));
+        };
 
-    if (!ext || !ALLOWED_EXTENSIONS.has(ext)) continue;
+        zipfile.on("error", fail);
+        zipfile.on("end", () => resolve());
 
-    const data = await entry.async("nodebuffer");
+        zipfile.on("entry", (entry: yauzl.Entry) => {
+          (async () => {
+            // Directory entry — yauzl marks these by trailing slash.
+            if (/\/$/.test(entry.fileName)) {
+              zipfile.readEntry();
+              return;
+            }
 
-    if (lowerName.endsWith(".zip")) {
-      const nested = await extractZipRecursive(
-        data,
-        destDir,
-        depth + 1,
-        maxDepth,
-      );
-      results.push(...nested);
-      continue;
-    }
+            const fileName = path.basename(entry.fileName);
+            const lowerName = fileName.toLowerCase();
+            const ext =
+              lowerName.lastIndexOf(".") > 0
+                ? lowerName.substring(lowerName.lastIndexOf(".") + 1)
+                : "";
 
-    let outputPath = path.join(destDir, fileName);
-    let counter = 1;
-    const dotIdx = fileName.lastIndexOf(".");
-    const baseName = dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
-    const extPart = dotIdx > 0 ? fileName.substring(dotIdx) : "";
-    while (await pathExists(outputPath)) {
-      outputPath = path.join(destDir, `${baseName}_${counter}${extPart}`);
-      counter++;
-    }
+            if (!ext || !ALLOWED_EXTENSIONS.has(ext)) {
+              zipfile.readEntry();
+              return;
+            }
 
-    await fs.writeFile(outputPath, data);
-    const stat = await fs.stat(outputPath);
+            // Nested ZIP — buffer in memory and recurse. Necessary because
+            // extractZipRecursive's signature takes a Buffer.
+            if (lowerName.endsWith(".zip")) {
+              try {
+                const buf = await readEntryToBuffer(zipfile, entry);
+                const nested = await extractZipRecursive(
+                  buf,
+                  destDir,
+                  depth + 1,
+                  maxDepth,
+                );
+                results.push(...nested);
+              } catch (e) {
+                fail(e);
+                return;
+              }
+              zipfile.readEntry();
+              return;
+            }
 
-    results.push({
-      absolutePath: outputPath,
-      name: path.basename(outputPath),
-      type: getFileType(lowerName),
-      size: stat.size,
-    });
-  }
+            // Pick a unique output path (avoid clobbering existing files).
+            let outputPath = path.join(destDir, fileName);
+            let counter = 1;
+            const dotIdx = fileName.lastIndexOf(".");
+            const baseName =
+              dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
+            const extPart = dotIdx > 0 ? fileName.substring(dotIdx) : "";
+            while (await pathExists(outputPath)) {
+              outputPath = path.join(
+                destDir,
+                `${baseName}_${counter}${extPart}`,
+              );
+              counter++;
+            }
+
+            // Stream the entry directly to disk — avoids holding a
+            // multi-hundred-MB TIFF in a single allocation.
+            try {
+              await streamEntryToFile(zipfile, entry, outputPath);
+              const stat = await fs.stat(outputPath);
+              results.push({
+                absolutePath: outputPath,
+                name: path.basename(outputPath),
+                type: getFileType(lowerName),
+                size: stat.size,
+              });
+            } catch (e) {
+              fail(e);
+              return;
+            }
+            zipfile.readEntry();
+          })().catch(fail);
+        });
+
+        zipfile.readEntry();
+      },
+    );
+  });
 
   return results;
+}
+
+function readEntryToBuffer(
+  zipfile: yauzl.ZipFile,
+  entry: yauzl.Entry,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    zipfile.openReadStream(entry, (err, readStream) => {
+      if (err || !readStream) {
+        reject(err ?? new Error("openReadStream returned no stream"));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      readStream.on("data", (c: Buffer) => chunks.push(c));
+      readStream.on("end", () => resolve(Buffer.concat(chunks)));
+      readStream.on("error", reject);
+    });
+  });
+}
+
+function streamEntryToFile(
+  zipfile: yauzl.ZipFile,
+  entry: yauzl.Entry,
+  outputPath: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    zipfile.openReadStream(entry, (err, readStream) => {
+      if (err || !readStream) {
+        reject(err ?? new Error("openReadStream returned no stream"));
+        return;
+      }
+      const ws = fsSync.createWriteStream(outputPath);
+      const onError = (e: unknown) => {
+        readStream.removeAllListeners();
+        ws.removeAllListeners();
+        try {
+          ws.destroy();
+        } catch {
+          /* ignore */
+        }
+        reject(e instanceof Error ? e : new Error(String(e)));
+      };
+      readStream.on("error", onError);
+      ws.on("error", onError);
+      ws.on("finish", () => resolve());
+      readStream.pipe(ws);
+    });
+  });
 }
 
 async function processShapefiles(
