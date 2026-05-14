@@ -31,6 +31,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ScreenshotPlugin.class);
         registerPlugin(SessionInfoPlugin.class);
         registerPlugin(RasterTilingPlugin.class);
+        registerPlugin(FeatureAccessMapPlugin.class);
 
         super.onCreate(savedInstanceState);
         

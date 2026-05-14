@@ -815,7 +815,7 @@ const ZoomControls = ({
             </Button>
           </LongPressHint>
           <div className="min-w-[36px] text-center text-xs font-semibold text-slate-800">
-            {zoom.toFixed(1)}
+            {zoom.toFixed(2)}
           </div>
           <LongPressHint hint="Zoom Out">
             <Button

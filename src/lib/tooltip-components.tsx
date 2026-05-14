@@ -18,13 +18,26 @@ export const TooltipHeading = ({
   return (
     <div className={cn("mb-1.5 pb-1 border-b border-gray-200", className)}>
       <div
-        className="font-semibold text-blue-600 tracking-tight"
-        style={{ fontSize: "1.1em" }}
+        className="font-semibold text-blue-600 tracking-tight whitespace-normal wrap-break-word"
+        style={{
+          fontSize: "1.1em",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
+        }}
+        title={title}
       >
         {title}
       </div>
       {subtitle && (
-        <div className="text-gray-500 mt-0.5" style={{ fontSize: "0.9em" }}>
+        <div
+          className="text-gray-500 mt-0.5 whitespace-normal wrap-break-word"
+          style={{
+            fontSize: "0.9em",
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+          }}
+          title={subtitle}
+        >
           {subtitle}
         </div>
       )}

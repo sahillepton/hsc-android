@@ -325,60 +325,31 @@ const hexToRgb = (hex: string): [number, number, number] => {
 };
 
 /**
- * Convert SNR value to color gradient using three configurable stops.
- * @param snr Signal-to-Noise Ratio (0-100)
- * @param colors Tuple of 3 hex color strings [low, mid, high]
- * @returns RGBA color array [R, G, B, A]
+ * Map SNR value to one of 4 fixed level colors.
+ * Poor: 0-24, Medium: 25-49, Good: 50-74, High: 75-100
  */
-const getSnrColor = (
-  snr: number,
-  colors: [string, string, string] = ["#FF0000", "#FFFF00", "#00FF00"],
-): [number, number, number, number] => {
-  const normalized = Math.max(0, Math.min(1, snr / 100));
+const getSnrColor = (snr: number): [number, number, number, number] => {
+  const clamped = Math.max(0, Math.min(100, snr));
 
-  const low = hexToRgb(colors[0]);
-  const mid = hexToRgb(colors[1]);
-  const high = hexToRgb(colors[2]);
-
-  if (normalized < 0.5) {
-    // Lerp low → mid
-    const t = normalized * 2;
-    return [
-      Math.round(low[0] + (mid[0] - low[0]) * t),
-      Math.round(low[1] + (mid[1] - low[1]) * t),
-      Math.round(low[2] + (mid[2] - low[2]) * t),
-      200,
-    ];
-  } else {
-    // Lerp mid → high
-    const t = (normalized - 0.5) * 2;
-    return [
-      Math.round(mid[0] + (high[0] - mid[0]) * t),
-      Math.round(mid[1] + (high[1] - mid[1]) * t),
-      Math.round(mid[2] + (high[2] - mid[2]) * t),
-      200,
-    ];
-  }
+  if (clamped < 25) return [...hexToRgb("#DC2626"), 210]; // Poor
+  if (clamped < 50) return [...hexToRgb("#F97316"), 210]; // Medium
+  if (clamped < 75) return [...hexToRgb("#EAB308"), 210]; // Good
+  return [...hexToRgb("#16A34A"), 210]; // High
 };
 
 /**
- * Interpolate line width from 3 breakpoints based on SNR value.
- * @param snr Signal-to-Noise Ratio (0-100)
- * @param widths [lowWidth, midWidth, highWidth]
- * @returns interpolated pixel width
+ * Map SNR value to one of 4 level widths.
+ * Poor: 0-24, Medium: 25-49, Good: 50-74, High: 75-100
  */
 const getSnrWidth = (
   snr: number,
-  widths: [number, number, number] = [1, 3, 5],
+  widths: [number, number, number, number] = [1, 3, 5, 7],
 ): number => {
-  const normalized = Math.max(0, Math.min(1, snr / 100));
-  if (normalized < 0.5) {
-    const t = normalized * 2;
-    return widths[0] + (widths[1] - widths[0]) * t;
-  } else {
-    const t = (normalized - 0.5) * 2;
-    return widths[1] + (widths[2] - widths[1]) * t;
-  }
+  const clamped = Math.max(0, Math.min(100, snr));
+  if (clamped < 25) return widths[0];
+  if (clamped < 50) return widths[1];
+  if (clamped < 75) return widths[2];
+  return widths[3];
 };
 
 export const useUdpLayers = (onHover?: (info: any) => void) => {
@@ -404,9 +375,14 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     getGroupSymbol,
     nodeSymbols,
     motherNodeSymbol,
-    snrColors,
     snrLineWidths,
   } = useUdpSymbolsStore();
+  const effectiveSnrLineWidths: [number, number, number, number] = [
+    snrLineWidths[0] ?? 1,
+    snrLineWidths[1] ?? 3,
+    snrLineWidths[2] ?? 5,
+    snrLineWidths[3] ?? 7,
+  ];
   const groupSymbols = useUdpSymbolsStore((state) => state.groupSymbols);
 
   useEffect(() => {
@@ -885,8 +861,8 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             from: { longitude: fromNode.long, latitude: fromNode.lat },
             to: { longitude: toNode.long, latitude: toNode.lat },
             snr,
-            color: getSnrColor(snr, snrColors),
-            width: getSnrWidth(snr, snrLineWidths),
+            color: getSnrColor(snr),
+            width: getSnrWidth(snr, effectiveSnrLineWidths),
           });
         }
       });
@@ -1004,6 +980,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
         const topologyNodesWithProps = topologyNodes.map((node) => ({
           globalId: node.id,
+          ip: node.ip,
           longitude: node.long,
           latitude: node.lat,
           groupId: nodeToGroup.get(node.id) || "A", // Needed for icon selection
@@ -1023,10 +1000,10 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
                 const mSymbol = motherNodeSymbol || "mother-fighter";
                 return {
                   url: `icons/${mSymbol}.svg`,
-                  width: 48,
-                  height: 48,
-                  anchorY: 24,
-                  anchorX: 24,
+                  width: 32,
+                  height: 32,
+                  anchorY: 16,
+                  anchorX: 16,
                   mask: false,
                 };
               }
@@ -1042,10 +1019,10 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               ].includes(symbol);
               return {
                 url: `icons/${symbol}.svg`,
-                width: isRectangularIcon ? 42 : 48,
-                height: isRectangularIcon ? 30 : 48,
-                anchorY: isRectangularIcon ? 15 : 24,
-                anchorX: isRectangularIcon ? 21 : 24,
+                width: isRectangularIcon ? 30 : 32,
+                height: isRectangularIcon ? 22 : 32,
+                anchorY: isRectangularIcon ? 11 : 16,
+                anchorX: isRectangularIcon ? 15 : 16,
                 mask: false,
               };
             },
@@ -1053,14 +1030,14 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               d.longitude || d.long,
               d.latitude || d.lat,
             ],
-            getSize: 48,
+            getSize: 32,
             sizeScale: 1,
             getPixelOffset: [0, 0],
             alphaCutoff: 0.001,
             billboard: true,
             sizeUnits: "pixels",
-            sizeMinPixels: 36,
-            sizeMaxPixels: 64,
+            sizeMinPixels: 22,
+            sizeMaxPixels: 40,
             updateTriggers: {
               getPosition: [udpData.topology.nodes.size],
               getIcon: [
@@ -1086,8 +1063,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     nodeSymbols,
     groupSymbols,
     motherNodeSymbol,
-    snrColors,
-    snrLineWidths,
+    effectiveSnrLineWidths,
   ]);
 
   return { udpLayers, connectionError, noDataWarning, isConnected };

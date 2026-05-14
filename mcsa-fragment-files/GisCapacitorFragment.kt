@@ -24,6 +24,7 @@ import org.deal.mcsa.plugins.OfflineTileServerPlugin
 import org.deal.mcsa.plugins.ScreenshotPlugin
 import org.deal.mcsa.plugins.SessionInfoPlugin
 import org.deal.mcsa.plugins.RasterTilingPlugin
+import org.deal.mcsa.plugins.FeatureAccessMapPlugin
 
 /**
  * GisCapacitorFragment - A fragment that hosts the Capacitor WebView
@@ -67,6 +68,7 @@ class GisCapacitorFragment : Fragment() {
         registerPlugin(ScreenshotPlugin::class.java)
         registerPlugin(SessionInfoPlugin::class.java)
         registerPlugin(RasterTilingPlugin::class.java)
+        registerPlugin(FeatureAccessMapPlugin::class.java)
         
         Logger.debug("$TAG: Registered ${initialPlugins.size} custom plugins")
     }

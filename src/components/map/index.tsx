@@ -118,10 +118,7 @@ import {
 import { generateRandomColor } from "@/lib/utils";
 import { shouldTile } from "@/lib/tiling/threshold";
 import { runTilingUpload } from "@/lib/tiling/upload";
-import {
-  addOrUpdateTiledRaster,
-  removeTiledRaster,
-} from "@/lib/tiling/render";
+import { addOrUpdateTiledRaster, removeTiledRaster } from "@/lib/tiling/render";
 import { waitForRasterTilesLoaded } from "@/lib/tiling/wait-for-tiles";
 import { RasterTiling } from "@/plugins/raster-tiling";
 import { Settings } from "lucide-react";
@@ -1313,10 +1310,8 @@ const MapComponent = ({
                         },
                       );
                       addLayer(newLayer);
-                      const {
-                        updateManifestColor,
-                        upsertTempManifestEntry,
-                      } = await import("@/sessions/manifestStore");
+                      const { updateManifestColor, upsertTempManifestEntry } =
+                        await import("@/sessions/manifestStore");
                       await updateManifestColor(layerId, newLayer.color);
                       await upsertTempManifestEntry({
                         layerId,
@@ -1345,7 +1340,10 @@ const MapComponent = ({
                     } else {
                       // Process DEM file (small TIFF — file was loaded above
                       // because willTile is false in this branch).
-                      if (!file) throw new Error("Internal: file not loaded for DEM path");
+                      if (!file)
+                        throw new Error(
+                          "Internal: file not loaded for DEM path",
+                        );
                       const demResult = await parseDemFile(file, {
                         layerId: layerId,
                         layerName: layerName,
@@ -1381,7 +1379,10 @@ const MapComponent = ({
                   ) {
                     // Process vector file (file was loaded above because
                     // willTile is only true for the tiff branch).
-                    if (!file) throw new Error("Internal: file not loaded for vector path");
+                    if (!file)
+                      throw new Error(
+                        "Internal: file not loaded for vector path",
+                      );
                     const vectorResult = await parseVectorFile(file, {
                       layerId: layerId,
                       layerName: layerName,
@@ -2228,7 +2229,10 @@ const MapComponent = ({
       try {
         await RasterTiling.closeAll();
       } catch (err) {
-        console.warn("[FlushSession] RasterTiling.closeAll failed (continuing):", err);
+        console.warn(
+          "[FlushSession] RasterTiling.closeAll failed (continuing):",
+          err,
+        );
       }
 
       const { flushAllSessionFiles } = await import("@/lib/autosave");
@@ -3164,7 +3168,8 @@ const MapComponent = ({
           return;
         }
       }
-      if (mapZoom < minZ || mapZoom > maxZ) {
+      const liveZoomFloor = Math.floor(mapZoom);
+      if (liveZoomFloor < minZ || liveZoomFloor > maxZ) {
         setHoverInfo(undefined);
       }
     }
@@ -3579,9 +3584,10 @@ const MapComponent = ({
         }
       }
 
-      // minZoom is guaranteed to be defined here
-      // Use roundedZoom (from debouncedZoom) to reduce update frequency
-      return roundedZoom >= minZoom && roundedZoom <= maxZoom;
+      // minZoom is guaranteed to be defined here.
+      // Use floored current zoom to match integer min/max zoom semantics.
+      const effectiveZoom = Math.floor(roundedZoom);
+      return effectiveZoom >= minZoom && effectiveZoom <= maxZoom;
     },
     [roundedZoom],
   );

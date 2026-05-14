@@ -7,7 +7,6 @@ import LayersBox from "./components/map/layers-box";
 import { toast } from "./lib/toast";
 import { NativeUploader } from "./plugins/native-uploader";
 import { RasterTiling } from "./plugins/raster-tiling";
-
 const App = () => {
   const [isLayersPanelVisible, setIsLayersPanelVisible] = useState(false);
   const [isLayersBoxOpen, setIsLayersBoxOpen] = useState(false);

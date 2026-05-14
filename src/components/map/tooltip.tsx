@@ -26,7 +26,25 @@ import {
   TooltipDivider,
 } from "@/lib/tooltip-components";
 import MemberAction from "@/plugins/member-action";
+import { Capacitor } from "@capacitor/core";
 import { useTileSampler } from "@/lib/tiling/hover";
+import { useFeatureAccessMapStore } from "@/store/feature-access-map-store";
+import type { FeatureAccessMapState } from "@/store/feature-access-map-store";
+import {
+  getTopologyTooltipActions,
+  hasAnyTopologyTooltipAction,
+} from "@/lib/topology-feature-actions";
+
+/**
+ * Topology → native `globalId`: IPv4 from `object.ip`, or `"Unknown"` if missing/invalid.
+ */
+function topologyMemberActionGlobalId(obj: Record<string, unknown>): string {
+  const raw = obj.ip;
+  if (typeof raw !== "string") return "Unknown";
+  const t = raw.trim();
+  if (t === "" || t === "0.0.0.0") return "Unknown";
+  return t;
+}
 
 const isMeaningfulPropertyValue = (value: unknown): boolean => {
   if (value === null || value === undefined) return false;
@@ -116,6 +134,30 @@ const Tooltip = () => {
   const tooltipRafRef = useRef<number | null>(null);
   const lastTooltipPositionRef = useRef<{ x: number; y: number } | null>(null);
   const mapRef = (window as any).mapRef;
+  const featureAccessMap = useFeatureAccessMapStore(
+    (s: FeatureAccessMapState) => s.map,
+  );
+  const featureMapLoading = useFeatureAccessMapStore(
+    (s: FeatureAccessMapState) => s.featureMapLoading,
+  );
+
+  // Lazy-load native feature map when user opens the topology tooltip (Android integrated / GIS APK).
+  useEffect(() => {
+    if (
+      !hoverInfo?.layer?.id ||
+      hoverInfo.layer.id !== "udp-topology-nodes-layer"
+    ) {
+      return;
+    }
+    if ((window as any).electronAPI) return;
+    if (
+      !Capacitor.isNativePlatform() ||
+      Capacitor.getPlatform() !== "android"
+    ) {
+      return;
+    }
+    void useFeatureAccessMapStore.getState().refreshFromNative();
+  }, [hoverInfo?.layer?.id]);
   // Precise per-pixel sampler used for tiled-raster layers (>300 MB).
   // Returns the actual source value (palette index, Float dBm, etc.) via
   // the gdal-async worker. Debounced 200 ms.
@@ -391,9 +433,11 @@ const Tooltip = () => {
 
   // Check if layer is outside its zoom range
   if (layerInfo && mapZoom !== null) {
+    const effectiveZoom = Math.floor(mapZoom);
     const minZoomCheck =
-      layerInfo.minzoom === undefined || mapZoom >= layerInfo.minzoom;
-    const maxZoomCheck = mapZoom <= (layerInfo.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM);
+      layerInfo.minzoom === undefined || effectiveZoom >= layerInfo.minzoom;
+    const maxZoomCheck =
+      effectiveZoom <= (layerInfo.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM);
     if (!minZoomCheck || !maxZoomCheck) {
       return null;
     }
@@ -451,11 +495,7 @@ const Tooltip = () => {
     }
 
     // ── Tiled raster layers — precise value via the gdal-async worker ──
-    if (
-      layerInfo?.type === "dem" &&
-      layerInfo.tilesUrl &&
-      layerInfo.bounds
-    ) {
+    if (layerInfo?.type === "dem" && layerInfo.tilesUrl && layerInfo.bounds) {
       let lng: number | undefined;
       let lat: number | undefined;
       if (hoverInfo.coordinate) {
@@ -693,6 +733,48 @@ const Tooltip = () => {
         });
       }
 
+      const notifyUdpMemberAction = async (
+        action: "video" | "ftp" | "call" | "message",
+        fallbackAlert: string,
+      ) => {
+        if (layer.id !== "udp-topology-nodes-layer") {
+          console.warn(
+            "[MemberAction] Native actions are only sent for topology nodes (object.ip); not notifying.",
+          );
+          return;
+        }
+        const globalId = topologyMemberActionGlobalId(
+          object as Record<string, unknown>,
+        );
+        try {
+          await MemberAction.notifyAction({ globalId, action });
+        } catch (err) {
+          console.warn("[MemberAction] Plugin not available:", err);
+          alert(fallbackAlert);
+        }
+      };
+
+      const topologyPeerIp = topologyMemberActionGlobalId(
+        object as Record<string, unknown>,
+      );
+      const topologyActions = getTopologyTooltipActions(
+        topologyPeerIp,
+        featureAccessMap,
+      );
+      const lazyTopologyNativeActions =
+        !isDesktopBuild &&
+        Capacitor.isNativePlatform() &&
+        Capacitor.getPlatform() === "android";
+      const showTopologyActionsSkeleton =
+        lazyTopologyNativeActions &&
+        layer.id === "udp-topology-nodes-layer" &&
+        featureMapLoading;
+      const showTopologyActions =
+        lazyTopologyNativeActions &&
+        layer.id === "udp-topology-nodes-layer" &&
+        !featureMapLoading &&
+        hasAnyTopologyTooltipAction(topologyActions);
+
       return (
         <TooltipBox
           maxWidth={useGridLayout ? "max-w-[380px]" : "max-w-[200px]"}
@@ -717,110 +799,91 @@ const Tooltip = () => {
             properties={displayProperties}
             useGridLayout={useGridLayout}
           />
-          {!isDesktopBuild && (
+          {showTopologyActionsSkeleton && (
+            <>
+              <div
+                className="grid grid-cols-2 gap-2"
+                aria-busy="true"
+                aria-label="Loading actions"
+              >
+                {[0, 1, 2, 3].map((i) => (
+                  <div
+                    key={i}
+                    className="h-8 rounded-md bg-neutral-700/40 animate-pulse"
+                  />
+                ))}
+              </div>
+            </>
+          )}
+          {showTopologyActions && (
             <>
               <TooltipDivider />
               <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const globalId = String(
-                      (object as any)?.globalId ??
-                        (object as any)?.displayId ??
-                        "Unknown",
-                    );
-                    try {
-                      await MemberAction.notifyAction({
-                        globalId,
-                        action: "video",
-                      });
-                    } catch (err) {
-                      console.warn("[MemberAction] Plugin not available:", err);
-                      alert("Video call initiated");
-                    }
-                  }}
-                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
-                  style={{ backgroundColor: "#7F1D1D" }}
-                  title="Video Call"
-                >
-                  <Video size={12} />
-                  <span>Video</span>
-                </button>
-                <button
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const globalId = String(
-                      (object as any)?.globalId ??
-                        (object as any)?.displayId ??
-                        "Unknown",
-                    );
-                    try {
-                      await MemberAction.notifyAction({
-                        globalId,
-                        action: "ftp",
-                      });
-                    } catch (err) {
-                      console.warn("[MemberAction] Plugin not available:", err);
-                      alert("FTP connection initiated");
-                    }
-                  }}
-                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
-                  style={{ backgroundColor: "#3F6212" }}
-                  title="File Transfer"
-                >
-                  <Upload size={12} />
-                  <span>FTP</span>
-                </button>
-                <button
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const globalId = String(
-                      (object as any)?.globalId ??
-                        (object as any)?.displayId ??
-                        "Unknown",
-                    );
-                    try {
-                      await MemberAction.notifyAction({
-                        globalId,
-                        action: "call",
-                      });
-                    } catch (err) {
-                      console.warn("[MemberAction] Plugin not available:", err);
-                      alert("Phone call initiated");
-                    }
-                  }}
-                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
-                  style={{ backgroundColor: "#1E3A8A" }}
-                  title="Voice Call"
-                >
-                  <PhoneCall className="size-3" />
-                  <span>Call</span>
-                </button>
-                <button
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const globalId = String(
-                      (object as any)?.globalId ??
-                        (object as any)?.displayId ??
-                        "Unknown",
-                    );
-                    try {
-                      await MemberAction.notifyAction({
-                        globalId,
-                        action: "message",
-                      });
-                    } catch (err) {
-                      console.warn("[MemberAction] Plugin not available:", err);
-                      alert("Message sent");
-                    }
-                  }}
-                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
-                  style={{ backgroundColor: "#A16207" }}
-                  title="Send Message"
-                >
-                  <MessageSquare size={12} />
-                  <span>Message</span>
-                </button>
+                {topologyActions.video && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void notifyUdpMemberAction(
+                        "video",
+                        "Video call initiated",
+                      );
+                    }}
+                    className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                    style={{ backgroundColor: "#7F1D1D" }}
+                    title="Video Call"
+                  >
+                    <Video size={12} />
+                    <span>Video</span>
+                  </button>
+                )}
+                {topologyActions.ftp && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void notifyUdpMemberAction(
+                        "ftp",
+                        "FTP connection initiated",
+                      );
+                    }}
+                    className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                    style={{ backgroundColor: "#3F6212" }}
+                    title="File Transfer"
+                  >
+                    <Upload size={12} />
+                    <span>FTP</span>
+                  </button>
+                )}
+                {topologyActions.call && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void notifyUdpMemberAction(
+                        "call",
+                        "Phone call initiated",
+                      );
+                    }}
+                    className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                    style={{ backgroundColor: "#1E3A8A" }}
+                    title="Voice Call"
+                  >
+                    <PhoneCall className="size-3" />
+                    <span>Call</span>
+                  </button>
+                )}
+                {topologyActions.message && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void notifyUdpMemberAction("message", "Message sent");
+                    }}
+                    className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                    style={{ backgroundColor: "#A16207" }}
+                    title="Send Message"
+                  >
+                    <MessageSquare size={12} />
+                    <span>Message</span>
+                  </button>
+                )}
               </div>
             </>
           )}

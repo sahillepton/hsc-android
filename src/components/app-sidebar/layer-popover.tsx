@@ -60,7 +60,15 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
   return (
     <Popover>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent className="w-72 p-3 space-y-4 ml-10 mt-3" align="end">
+      <PopoverContent
+        className="w-72 p-3 space-y-4"
+        side="left"
+        align="start"
+        sideOffset={8}
+        collisionPadding={12}
+        sticky="always"
+        hideWhenDetached
+      >
         <style>{`
           [data-slot='slider-track'] {
             background-color: #e5e7eb !important;
