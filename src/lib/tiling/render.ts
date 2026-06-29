@@ -14,6 +14,8 @@ type MapboxMap = {
   removeLayer: (id: string) => void;
   setPaintProperty: (id: string, prop: string, val: unknown) => void;
   setLayoutProperty: (id: string, prop: string, val: unknown) => void;
+  getLayoutProperty?: (id: string, prop: string) => unknown;
+  getPaintProperty?: (id: string, prop: string) => unknown;
   setLayerZoomRange?: (
     id: string,
     minzoom: number,
@@ -22,6 +24,12 @@ type MapboxMap = {
   isStyleLoaded?: () => boolean;
   once?: (ev: string, cb: () => void) => void;
 };
+
+// Per-layer cache of the last zoom range we set via setLayerZoomRange.
+// Mapbox doesn't expose getLayerZoomRange, so we mirror what we set
+// here to avoid redundant calls (each redundant call dirties the style
+// and forces a re-evaluation on the next frame).
+const lastSetZoomRange = new Map<string, [number, number]>();
 
 // Mapbox layer.minzoom is INCLUSIVE (visible at zooms >= minzoom);
 // layer.maxzoom is EXCLUSIVE (hidden at zooms >= maxzoom). To match the
@@ -111,12 +119,88 @@ export function addOrUpdateTiledRaster(
     );
   } else {
     try {
-      map.setPaintProperty(lid, "raster-opacity", opacity);
-      map.setLayoutProperty(lid, "visibility", visibilityValue);
-      // Idempotent zoom-range update so slider changes take effect live.
-      map.setLayerZoomRange?.(lid, layerMinZoom, layerMaxZoom);
+      // Skip-if-equal guards. Each setX dirties Mapbox's style → forces
+      // a style re-evaluation across all raster layers next frame.
+      // With N=153 raster layers and an apply() that runs all of them
+      // on every layer-store change, blindly calling setX produces
+      // 459 dirty marks per change even when nothing about the rasters
+      // actually changed. Comparing against current value first turns
+      // the unchanged ones into pure-read no-ops.
+      const currentOpacity = map.getPaintProperty?.(lid, "raster-opacity");
+      if (currentOpacity !== opacity) {
+        map.setPaintProperty(lid, "raster-opacity", opacity);
+      }
+      const currentVisibility = map.getLayoutProperty?.(lid, "visibility");
+      if (currentVisibility !== visibilityValue) {
+        map.setLayoutProperty(lid, "visibility", visibilityValue);
+      }
+      // Mapbox doesn't expose getLayerZoomRange; mirror via
+      // lastSetZoomRange. Idempotent zoom-range update so slider
+      // changes still take effect live (any change in min OR max
+      // triggers the set).
+      const lastZ = lastSetZoomRange.get(lid);
+      if (
+        !lastZ ||
+        lastZ[0] !== layerMinZoom ||
+        lastZ[1] !== layerMaxZoom
+      ) {
+        map.setLayerZoomRange?.(lid, layerMinZoom, layerMaxZoom);
+        lastSetZoomRange.set(lid, [layerMinZoom, layerMaxZoom]);
+      }
     } catch {
       // Style may not be loaded yet; safe to ignore.
+    }
+  }
+}
+
+/**
+ * Toggle Mapbox raster-layer visibility based on viewport intersection.
+ *
+ * Why: with N tiled raster layers, Mapbox iterates ALL of them every
+ * frame for style evaluation, tile-state checks, etc., even though only
+ * the layers whose bounds overlap the current viewport actually paint.
+ * Setting `visibility: "none"` on the off-screen layers tells Mapbox to
+ * skip them entirely. Tile fetches were already culled by
+ * `source.bounds`, but the per-layer style overhead remained.
+ *
+ * Cost: O(N) rect-intersection on every map move/zoom — sub-millisecond
+ * for N=200, no GPU work, no allocations beyond the diff check.
+ *
+ * Honours per-layer user toggles: a layer the user has explicitly
+ * hidden (`layer.visible === false`) stays hidden regardless of
+ * viewport. Cull only flips visibility for layers the user wants
+ * shown, but which the camera isn't currently looking at.
+ *
+ * Bounds format: [west, south, east, north] in WGS84 (matches
+ * `tileBoundsWgs84` and Mapbox's `LngLatBoundsLike` ordering).
+ */
+export function applyTiledRasterViewportCulling(
+  map: MapboxMap,
+  layers: LayerProps[],
+  viewport: [number, number, number, number],
+): void {
+  const [vw, vs, ve, vn] = viewport;
+  for (const l of layers) {
+    if (!l.tilesUrl || !l.tileBoundsWgs84) continue;
+    const lid = rasterLayerId(l.id);
+    try {
+      if (!map.getLayer(lid)) continue;
+    } catch {
+      continue;
+    }
+    const [lw, ls, le, ln] = l.tileBoundsWgs84;
+    // AABB intersection: layers DON'T intersect when one is fully
+    // east, west, north, or south of the other.
+    const intersects = !(le < vw || lw > ve || ln < vs || ls > vn);
+    const userVisible = l.visible !== false;
+    const desired = userVisible && intersects ? "visible" : "none";
+    try {
+      const current = map.getLayoutProperty?.(lid, "visibility");
+      if (current !== desired) {
+        map.setLayoutProperty(lid, "visibility", desired);
+      }
+    } catch {
+      /* style not loaded; safe to skip */
     }
   }
 }
@@ -135,6 +219,9 @@ export function removeTiledRaster(map: MapboxMap, layerId: string): void {
   } catch {
     /* noop */
   }
+  // Drop the cached zoom-range mirror — re-add of a same-id layer
+  // should always trigger a fresh setLayerZoomRange.
+  lastSetZoomRange.delete(lid);
 }
 
 function computeOpacity(layer: LayerProps): number {

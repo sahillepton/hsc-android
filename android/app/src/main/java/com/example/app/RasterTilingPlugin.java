@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -60,11 +61,31 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class RasterTilingPlugin extends Plugin {
 
     private static final String TAG = "RasterTilingPlugin";
-    private static final int MAX_INFLIGHT_RENDERS = 4;
+    /**
+     * Concurrent tile-render slots. Bumped from 4 to 8 to better
+     * saturate modern 8-core tablet CPUs (Snapdragon 7+ Gen 3 / 8 Gen 1+).
+     * Each tile render is CPU-bound (LZW decode + GDAL Warp + WebP
+     * encode), takes ~200-500 ms; with 4 slots, panning into a fresh
+     * area with 16 visible tiles meant 4 batches × 300 ms = ~1.2 s of
+     * wait. With 8 slots, ~600 ms.
+     *
+     * Memory cost: each in-flight render holds one Dataset handle +
+     * scratch buffers (~5-30 MB). 8 concurrent ≈ 50-250 MB peak,
+     * comfortably within the typical 8 GB RAM tablet budget.
+     */
+    private static final int MAX_INFLIGHT_RENDERS = 8;
     private static final long CACHE_BUDGET_BYTES = 1024L * 1024L * 1024L; // 1 GB
     private static final int WRITES_BETWEEN_BUDGET_CHECKS = 200;
     private static final int TILE_SIZE = 256;
     private static final String TILE_BASE_URL = "http://localhost:8080";
+    /** Max open datasets kept for sampleAt() only (tiles still open per-render).
+     *  Bumped from 12 to 256 to handle large session uploads (e.g. 150+
+     *  small TIFFs). With cap=12, every tap on a fresh layer was a cache
+     *  miss → gdal.Open() on tablet flash → ~200-500 ms latency per tap.
+     *  Each cached Dataset holds one open fd + GDAL internal state
+     *  (~50 KB-1 MB depending on overview chain). 256 ≈ 50 MB ceiling,
+     *  comfortably below the typical 1024-fd Android per-process limit. */
+    private static final int SAMPLE_DATASET_CACHE_CAP = 256;
 
     // From ogr_srs_api.h: OAMS_TRADITIONAL_GIS_ORDER=0 (x=lon, y=lat).
     private static final int OAMS_TRADITIONAL_GIS_ORDER = 0;
@@ -85,9 +106,20 @@ public class RasterTilingPlugin extends Plugin {
     private final AtomicInteger writeCounter = new AtomicInteger(0);
 
     /**
-     * Open Dataset cache, access-order LRU. Synchronised on this map for
-     * concurrent put/get. On evict the underlying Dataset is closed.
+     * Dedicated executor for sampleAt() — completely separate from the
+     * tile-render `pool` above. Without this, a tap → sampleAt would queue
+     * behind any in-flight tile renders (4 concurrent, each ~200-500 ms
+     * for an LZW + Warp + WebP encode). When Mapbox is fetching tiles for
+     * many visible raster sources, the render pool stays busy for seconds
+     * and tap latency ends up at 5-10 seconds, making the tooltip feel
+     * frozen.
+     *
+     * Single thread is sufficient: sampleAt is a single-pixel ReadRaster,
+     * sub-millisecond once the dataset is cached. Even N concurrent taps
+     * across N layers would complete in milliseconds serialised.
      */
+    private final ExecutorService samplePool = Executors.newSingleThreadExecutor();
+
     /** layerId -> absolute path. Each render opens its own Dataset from
      *  this path to avoid shared-Dataset use-after-close + libtiff strip-
      *  cache contention across threads. */
@@ -98,6 +130,39 @@ public class RasterTilingPlugin extends Plugin {
      *  this, concurrent tiles of the same layer compute slightly different
      *  ranges (race on the Band) and render as visible bands at tile borders. */
     private final Map<String, double[]> layerStats = new ConcurrentHashMap<>();
+
+    /**
+     * LRU (access-order) of open GDAL datasets used only by sampleAt().
+     * Avoids gdal.Open + full driver setup on every tap when inspecting
+     * many zip-imported rasters. Tile rendering still opens its own handles.
+     *
+     * Lock covers contention between samplePool (sampleAt) and `pool`
+     * (register/unregister/closeAll which mutate the cache). Within
+     * samplePool itself there's no contention since samplePool is
+     * single-threaded.
+     */
+    private final Object sampleDatasetLock = new Object();
+    private final LinkedHashMap<String, Dataset> sampleDatasetByLayerId =
+            new LinkedHashMap<>(32, 0.75f, true);
+
+    /**
+     * Per-layer cached transformation pipeline used by sampleAt().
+     * Building one of these costs an EPSG-4326 lookup + WKT parse + PROJ
+     * pipeline construction — typically 50-200 ms on tablet flash on cold
+     * disk. Source SRS is constant per layer, so we build once, reuse
+     * forever (or until the dataset is evicted from the cache, which also
+     * evicts the matching transform).
+     *
+     * Lifecycle is tied 1:1 with sampleDatasetByLayerId: every put/evict
+     * on the dataset map MUST mirror onto sampleTxByLayerId, otherwise
+     * the cached transform may reference a freed Dataset's SRS.
+     */
+    private final LinkedHashMap<String, CoordinateTransformation> sampleTxByLayerId =
+            new LinkedHashMap<>(32, 0.75f, true);
+
+    /** Cached dtype name per layer (constant per Dataset). Avoids
+     *  re-stringifying GetRasterDataType on every sample. */
+    private final Map<String, String> sampleDtypeByLayerId = new ConcurrentHashMap<>();
 
     // ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -179,6 +244,9 @@ public class RasterTilingPlugin extends Plugin {
         Dataset ds = gdal.Open(path, gdalconstConstants.GA_ReadOnly);
         if (ds == null) {
             throw new Exception("Open failed: " + gdal.GetLastErrorMsg());
+        }
+        synchronized (sampleDatasetLock) {
+            closeSampleDatasetLocked(layerId);
         }
         layerPaths.put(layerId, path);
 
@@ -320,6 +388,9 @@ public class RasterTilingPlugin extends Plugin {
             call.reject("layerId is required");
             return;
         }
+        synchronized (sampleDatasetLock) {
+            closeSampleDatasetLocked(layerId);
+        }
         layerPaths.remove(layerId);
         layerStats.remove(layerId);
         try {
@@ -341,7 +412,10 @@ public class RasterTilingPlugin extends Plugin {
             call.reject("layerId, lon, lat required");
             return;
         }
-        replyAsync(call, () -> sampleAtImpl(layerId, lon, lat));
+        // Dispatch on samplePool — see field comment for why this can't
+        // share the tile-render `pool`. Decouples tap latency from
+        // background tile rendering.
+        replyAsyncOn(samplePool, call, () -> sampleAtImpl(layerId, lon, lat));
     }
 
     @PluginMethod
@@ -353,7 +427,9 @@ public class RasterTilingPlugin extends Plugin {
 
     @PluginMethod
     public void closeAll(PluginCall call) {
-        // No shared Dataset cache to close — each render owns its own.
+        synchronized (sampleDatasetLock) {
+            clearAllSampleDatasetsLocked();
+        }
         layerPaths.clear();
         layerStats.clear();
         // Sweep the on-disk tile cache. closeAll is only invoked by the
@@ -759,43 +835,177 @@ public class RasterTilingPlugin extends Plugin {
         }
     }
 
-    private JSObject sampleAtImpl(String layerId, double lon, double lat) {
-        // Per-call open (same reasoning as renderTileRgba — avoids the
-        // shared-Dataset use-after-close + libtiff strip-cache race).
-        String path = layerPaths.get(layerId);
-        if (path == null) {
-            JSObject r = new JSObject();
-            r.put("value", JSONObject.NULL);
-            r.put("dtype", "");
-            return r;
-        }
-        Dataset ds = gdal.Open(path, gdalconstConstants.GA_ReadOnly);
-        if (ds == null) {
-            JSObject r = new JSObject();
-            r.put("value", JSONObject.NULL);
-            r.put("dtype", "");
-            return r;
-        }
-        try {
-            return sampleAtImplWithDs(ds, lon, lat);
-        } finally {
+    /**
+     * Evict a single layer's cached sample state. Called when a cached
+     * Dataset turns out to be invalid OR when a layer is unregistered.
+     * No external lock — invoked only from the single-threaded samplePool.
+     */
+    private void closeSampleDatasetLocked(String layerId) {
+        Dataset ds = sampleDatasetByLayerId.remove(layerId);
+        if (ds != null) {
             try { ds.delete(); } catch (Throwable ignored) {}
         }
+        CoordinateTransformation tx = sampleTxByLayerId.remove(layerId);
+        if (tx != null) {
+            try { tx.delete(); } catch (Throwable ignored) {}
+        }
+        sampleDtypeByLayerId.remove(layerId);
     }
 
-    private JSObject sampleAtImplWithDs(Dataset ds, double lon, double lat) {
-        String srsWkt = ds.GetProjection();
-        double[] gt = ds.GetGeoTransform();
-        Band band = ds.GetRasterBand(1);
-        String dtype = gdalDataTypeName(band.GetRasterDataType());
+    /**
+     * LRU-evict the least-recently-used cached sample state. Mirrors
+     * eviction across the dataset, transform, and dtype caches.
+     */
+    private void evictOldestSampleDatasetLocked() {
+        Iterator<Map.Entry<String, Dataset>> it = sampleDatasetByLayerId.entrySet().iterator();
+        if (!it.hasNext()) return;
+        Map.Entry<String, Dataset> e = it.next();
+        String layerId = e.getKey();
+        it.remove();
+        try { e.getValue().delete(); } catch (Throwable ignored) {}
+        CoordinateTransformation tx = sampleTxByLayerId.remove(layerId);
+        if (tx != null) {
+            try { tx.delete(); } catch (Throwable ignored) {}
+        }
+        sampleDtypeByLayerId.remove(layerId);
+    }
 
+    private void clearAllSampleDatasetsLocked() {
+        for (Dataset ds : sampleDatasetByLayerId.values()) {
+            try { ds.delete(); } catch (Throwable ignored) {}
+        }
+        sampleDatasetByLayerId.clear();
+        for (CoordinateTransformation tx : sampleTxByLayerId.values()) {
+            try { tx.delete(); } catch (Throwable ignored) {}
+        }
+        sampleTxByLayerId.clear();
+        sampleDtypeByLayerId.clear();
+    }
+
+    /**
+     * Per-layer transformation builder. Slow on cold call (PROJ DB hit
+     * + WKT parse), so we run it ONCE per layer and cache the result.
+     * Returns null if the dataset has no usable projection.
+     */
+    private CoordinateTransformation buildAndCacheTransform(
+            String layerId, Dataset ds) {
+        String srsWkt = ds.GetProjection();
         SpatialReference src = new SpatialReference();
         src.ImportFromWkt(srsWkt != null ? srsWkt : "");
         try { src.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER); } catch (Throwable ignored) {}
         SpatialReference wgs84 = new SpatialReference();
         wgs84.ImportFromEPSG(4326);
         try { wgs84.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER); } catch (Throwable ignored) {}
-        CoordinateTransformation tx = new CoordinateTransformation(wgs84, src);
+        CoordinateTransformation tx;
+        try {
+            tx = new CoordinateTransformation(wgs84, src);
+        } catch (Throwable t) {
+            Log.w(TAG, "buildAndCacheTransform failed for " + layerId, t);
+            return null;
+        }
+        sampleTxByLayerId.put(layerId, tx);
+        return tx;
+    }
+
+    /**
+     * sampleAt fast path. Holds sampleDatasetLock to prevent races
+     * with register/unregister/closeAll which mutate the cache from
+     * the tile-render `pool`. Lock contention is near-zero since
+     * those flows are user-initiated (rare) while sampleAt is the
+     * sole hot consumer.
+     *
+     * Cost breakdown after caching:
+     *   • Cache hit  → ~1-5 ms (TransformPoint + ReadRaster + JSON marshal)
+     *   • Cache miss → ~200-500 ms (gdal.Open) + ~50-200 ms (PROJ setup)
+     *                  + ~5 ms work, ONCE per layer
+     */
+    private JSObject sampleAtImpl(String layerId, double lon, double lat) {
+        // Timing instrumentation. Look in `adb logcat -s RasterTilingPlugin -v time`
+        // to see exact step costs. Remove the Log.d calls once profiling is done
+        // — they add ~0.05 ms each, negligible vs. real work.
+        long tEntry = System.nanoTime();
+        synchronized (sampleDatasetLock) {
+            long tLock = System.nanoTime();
+            String path = layerPaths.get(layerId);
+            if (path == null) {
+                JSObject r = new JSObject();
+                r.put("value", JSONObject.NULL);
+                r.put("dtype", "");
+                return r;
+            }
+
+            Dataset ds = sampleDatasetByLayerId.get(layerId);
+            CoordinateTransformation tx = sampleTxByLayerId.get(layerId);
+            String cachedDtype = sampleDtypeByLayerId.get(layerId);
+
+            if (ds != null && tx != null && cachedDtype != null) {
+                try {
+                    JSObject r = sampleAtFast(ds, tx, cachedDtype, lon, lat);
+                    long tDone = System.nanoTime();
+                    Log.d(TAG, String.format(
+                            "sampleAt[%s] HIT lock=%.1fms total=%.1fms",
+                            layerId,
+                            (tLock - tEntry) / 1e6,
+                            (tDone - tEntry) / 1e6));
+                    return r;
+                } catch (Throwable t) {
+                    Log.w(TAG, "sampleAt cached state invalid, reopening", t);
+                    closeSampleDatasetLocked(layerId);
+                    ds = null;
+                    tx = null;
+                    cachedDtype = null;
+                }
+            }
+
+            // Cold path: open dataset + build transform + cache both.
+            while (sampleDatasetByLayerId.size() >= SAMPLE_DATASET_CACHE_CAP) {
+                evictOldestSampleDatasetLocked();
+            }
+            long tBeforeOpen = System.nanoTime();
+            ds = gdal.Open(path, gdalconstConstants.GA_ReadOnly);
+            long tAfterOpen = System.nanoTime();
+            if (ds == null) {
+                JSObject r = new JSObject();
+                r.put("value", JSONObject.NULL);
+                r.put("dtype", "");
+                return r;
+            }
+            sampleDatasetByLayerId.put(layerId, ds);
+            tx = buildAndCacheTransform(layerId, ds);
+            long tAfterTx = System.nanoTime();
+            if (tx == null) {
+                JSObject r = new JSObject();
+                r.put("value", JSONObject.NULL);
+                r.put("dtype", "");
+                return r;
+            }
+            cachedDtype = gdalDataTypeName(ds.GetRasterBand(1).GetRasterDataType());
+            JSObject r = sampleAtFast(ds, tx, cachedDtype, lon, lat);
+            long tDone = System.nanoTime();
+            sampleDtypeByLayerId.put(layerId, cachedDtype);
+            Log.d(TAG, String.format(
+                    "sampleAt[%s] MISS lock=%.1fms open=%.1fms tx=%.1fms sample=%.1fms total=%.1fms",
+                    layerId,
+                    (tLock - tEntry) / 1e6,
+                    (tAfterOpen - tBeforeOpen) / 1e6,
+                    (tAfterTx - tAfterOpen) / 1e6,
+                    (tDone - tAfterTx) / 1e6,
+                    (tDone - tEntry) / 1e6));
+            return r;
+        }
+    }
+
+    /**
+     * Hot path: takes pre-built dataset, transform, and dtype string —
+     * does ONLY the per-pixel work. Sub-millisecond on a tablet for the
+     * ReadRaster of 1 pixel; no PROJ DB I/O, no SRS reconstruction.
+     */
+    private JSObject sampleAtFast(
+            Dataset ds, CoordinateTransformation tx, String dtype,
+            double lon, double lat) {
+        double[] gt = ds.GetGeoTransform();
+        Band band = ds.GetRasterBand(1);
+
         double[] pt = tx.TransformPoint(lon, lat);
         double sx = pt[0];
         double sy = pt[1];
@@ -1104,7 +1314,15 @@ public class RasterTilingPlugin extends Plugin {
      * finishes. Capacitor accepts resolve/reject from any thread.
      */
     private void replyAsync(PluginCall call, ThrowingSupplier<JSObject> block) {
-        pool.submit(() -> {
+        replyAsyncOn(pool, call, block);
+    }
+
+    /** Variant that lets the caller pick a specific executor. Used by
+     *  sampleAt() to dispatch onto the dedicated samplePool so taps don't
+     *  queue behind tile renders. */
+    private void replyAsyncOn(
+            ExecutorService executor, PluginCall call, ThrowingSupplier<JSObject> block) {
+        executor.submit(() -> {
             try {
                 JSObject r = block.get();
                 call.resolve(r);

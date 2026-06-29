@@ -1,7 +1,7 @@
 // Debounced precise-pixel sampler for tiled rasters.
 //
-// Tooltip renders ~30 ms after the cursor settles for 200 ms — accurate
-// to the source raster's native resolution (not a 4096-cap downsample).
+// Debounce duration is chosen by the caller (e.g. shorter on coarse pointers
+// for snappier tap-to-inspect on touch devices).
 //
 // The hook deduplicates concurrent requests: if the cursor moves before a
 // previous request returns, the older request's resolve is discarded so
@@ -26,7 +26,7 @@ const EMPTY: TileSampleState = { value: null, dtype: "", loading: false };
 
 /**
  * Returns a stable sampler function the renderer can call on every mouse
- * move. Internally debounces 200 ms and caches the latest result so the
+ * move. Internally debounces by `debounceMs` (default 200) and caches the latest result so the
  * caller can read it synchronously via `getLatest()`.
  *
  * Usage:
@@ -52,7 +52,7 @@ export function useTileSampler(debounceMs: number = 200) {
       return;
     }
     setState((s) => ({ ...s, loading: true }));
-    timerRef.current = setTimeout(() => {
+    const run = () => {
       const myId = ++lastRequestIdRef.current;
       RasterTiling.sampleAt({
         layerId: args.layerId,
@@ -71,7 +71,14 @@ export function useTileSampler(debounceMs: number = 200) {
           if (myId !== lastRequestIdRef.current) return;
           setState({ value: null, dtype: "", loading: false });
         });
-    }, debounceMs);
+    };
+
+    if (debounceMs <= 0) {
+      timerRef.current = null;
+      run();
+    } else {
+      timerRef.current = setTimeout(run, debounceMs);
+    }
   };
 
   return { state, request };

@@ -28,6 +28,7 @@ import org.gdal.osr.SpatialReference
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
+import java.util.LinkedHashMap
 import java.util.Vector
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -61,6 +62,8 @@ class RasterTilingPlugin : Plugin() {
         private const val WRITES_BETWEEN_BUDGET_CHECKS = 200
         private const val TILE_SIZE = 256
         private const val TILE_BASE_URL = "http://localhost:8080"
+        /** sampleAt() dataset LRU cap; tile rendering still opens per-tile handles. */
+        private const val SAMPLE_DATASET_CACHE_CAP = 12
 
         // OGR axis mapping strategy. From ogr_srs_api.h:
         //   OAMS_TRADITIONAL_GIS_ORDER = 0   (x = lon/easting, y = lat/northing)
@@ -101,6 +104,39 @@ class RasterTilingPlugin : Plugin() {
      * wrong-end-of-LUT colour patches.
      */
     private val layerStats = ConcurrentHashMap<String, DoubleArray>()
+
+    private val sampleDsLock = Any()
+    private val sampleDatasetByKey = LinkedHashMap<String, Dataset>(32, 0.75f, true)
+
+    private fun removeSampleDsLocked(registryKey: String) {
+        sampleDatasetByKey.remove(registryKey)?.let { ds ->
+            try {
+                ds.delete()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun evictOldestSampleDsLocked() {
+        val it = sampleDatasetByKey.entries.iterator()
+        if (!it.hasNext()) return
+        val (_, ds) = it.next()
+        it.remove()
+        try {
+            ds.delete()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun clearSampleDsLocked() {
+        for (ds in sampleDatasetByKey.values) {
+            try {
+                ds.delete()
+            } catch (_: Throwable) {
+            }
+        }
+        sampleDatasetByKey.clear()
+    }
 
     // ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -181,6 +217,9 @@ class RasterTilingPlugin : Plugin() {
         // every render opens its own to avoid cross-thread use-after-close.
         val ds = gdal.Open(path, gdalconstConstants.GA_ReadOnly)
             ?: throw RuntimeException("Open failed: ${gdal.GetLastErrorMsg()}")
+        synchronized(sampleDsLock) {
+            removeSampleDsLocked(key)
+        }
         layerPaths[key] = path
 
         // Pre-compute the value range ONCE for float/int sources so every
@@ -295,6 +334,9 @@ class RasterTilingPlugin : Plugin() {
             return
         }
         val key = keyFor(layerId)
+        synchronized(sampleDsLock) {
+            removeSampleDsLocked(key)
+        }
         layerPaths.remove(key)
         layerStats.remove(key)
         // Sweep on-disk tile cache for this layer.
@@ -329,7 +371,9 @@ class RasterTilingPlugin : Plugin() {
 
     @PluginMethod
     fun closeAll(call: PluginCall) {
-        // No shared Dataset cache to close — each render owns its own.
+        synchronized(sampleDsLock) {
+            clearSampleDsLocked()
+        }
         layerPaths.clear()
         layerStats.clear()
         // Sweep the current user's on-disk tile cache. closeAll is only
@@ -751,19 +795,30 @@ class RasterTilingPlugin : Plugin() {
 
     private fun sampleAtImpl(layerId: String, lon: Double, lat: Double): JSObject {
         val key = keyFor(layerId)
-        val path = layerPaths[key] ?: return JSObject().apply {
-            put("value", JSObject.NULL)
-            put("dtype", "")
-        }
-        val ds = gdal.Open(path, gdalconstConstants.GA_ReadOnly)
-            ?: return JSObject().apply {
+        synchronized(sampleDsLock) {
+            val path = layerPaths[key] ?: return JSObject().apply {
                 put("value", JSObject.NULL)
                 put("dtype", "")
             }
-        try {
+            var ds = sampleDatasetByKey[key]
+            if (ds != null) {
+                try {
+                    return sampleAtImplWithDs(ds, lon, lat)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "sampleAt cached dataset invalid, reopening", t)
+                    removeSampleDsLocked(key)
+                }
+            }
+            while (sampleDatasetByKey.size >= SAMPLE_DATASET_CACHE_CAP) {
+                evictOldestSampleDsLocked()
+            }
+            ds = gdal.Open(path, gdalconstConstants.GA_ReadOnly)
+                ?: return JSObject().apply {
+                    put("value", JSObject.NULL)
+                    put("dtype", "")
+                }
+            sampleDatasetByKey[key] = ds
             return sampleAtImplWithDs(ds, lon, lat)
-        } finally {
-            try { ds.delete() } catch (_: Throwable) {}
         }
     }
 

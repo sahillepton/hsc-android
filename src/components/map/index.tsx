@@ -9,11 +9,17 @@ import {
   PathLayer,
   PolygonLayer,
   ScatterplotLayer,
-  SolidPolygonLayer,
   TextLayer,
 } from "@deck.gl/layers";
 import unkinkPolygon from "@turf/unkink-polygon";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import IconSelection from "./icon-selection";
 import MeasurementBox from "./measurement-box";
@@ -118,7 +124,11 @@ import {
 import { generateRandomColor } from "@/lib/utils";
 import { shouldTile } from "@/lib/tiling/threshold";
 import { runTilingUpload } from "@/lib/tiling/upload";
-import { addOrUpdateTiledRaster, removeTiledRaster } from "@/lib/tiling/render";
+import {
+  addOrUpdateTiledRaster,
+  applyTiledRasterViewportCulling,
+  removeTiledRaster,
+} from "@/lib/tiling/render";
 import { waitForRasterTilesLoaded } from "@/lib/tiling/wait-for-tiles";
 import { RasterTiling } from "@/plugins/raster-tiling";
 import { Settings } from "lucide-react";
@@ -133,6 +143,53 @@ import {
 function fileBasenameLower(fileName: string): string {
   const normalized = fileName.replace(/\\/g, "/");
   return (normalized.split("/").pop() ?? normalized).toLowerCase();
+}
+
+/** Last DEM in `layers` order under lng/lat = topmost raster in the Deck stack. */
+function resolveTopmostDemUnderLngLat(
+  layers: LayerProps[],
+  floorZoom: number,
+  lng: number,
+  lat: number,
+): LayerProps | null {
+  let top: LayerProps | null = null;
+  for (const layer of layers) {
+    if (layer.type !== "dem" || layer.visible === false || !layer.bounds) {
+      continue;
+    }
+    let minZ: number | undefined = layer.minzoom;
+    let maxZ = layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM;
+    if (minZ === undefined) {
+      const zoomRange = calculateLayerZoomRange(layer);
+      if (zoomRange) {
+        minZ = zoomRange.minZoom;
+        maxZ = zoomRange.maxZoom;
+      } else {
+        minZ = MAP_MIN_ZOOM;
+      }
+    }
+    if (floorZoom < minZ! || floorZoom > maxZ) continue;
+    const [[minLng, minLat], [maxLng, maxLat]] = layer.bounds;
+    if (lng < minLng || lng > maxLng || lat < minLat || lat > maxLat) continue;
+    top = layer;
+  }
+  return top;
+}
+
+function syntheticDemPickingInfo(
+  dem: LayerProps,
+  lng: number,
+  lat: number,
+  px: number,
+  py: number,
+): PickingInfo<unknown> {
+  return {
+    layer: { id: `${dem.id}-bitmap` } as PickingInfo<unknown>["layer"],
+    coordinate: [lng, lat],
+    x: px,
+    y: py,
+    object: null,
+  } as PickingInfo<unknown>;
 }
 
 // Settings Button Component
@@ -254,11 +311,48 @@ function SettingsButton() {
   );
 }
 
-function DeckGLOverlay({ layers }: { layers: any[] }) {
-  const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
+function DeckGLOverlay({
+  layers,
+  overlayRef,
+  demRasterPickSuppressRef,
+}: {
+  layers: any[];
+  overlayRef: MutableRefObject<MapboxOverlay | null>;
+  demRasterPickSuppressRef: MutableRefObject<boolean>;
+}) {
+  const layersRef = useRef(layers);
+  layersRef.current = layers;
+
+  const overlay = useControl<MapboxOverlay>(
+    () =>
+      new MapboxOverlay({
+        layerFilter: (ctx: { layer: { id: string }; isPicking: boolean }) => {
+          if (!ctx.isPicking) return true;
+          if (!demRasterPickSuppressRef.current) return true;
+          const lid = ctx.layer.id;
+          if (!lid.endsWith("-bitmap")) return true;
+          const baseId = lid
+            .replace(/-icon-layer$/, "")
+            .replace(/-signal-overlay$/, "")
+            .replace(/-bitmap$/, "")
+            .replace(/-mesh$/, "");
+          const storeLayer = (layersRef.current as LayerProps[]).find(
+            (l) => l.id === baseId,
+          );
+          if (storeLayer?.type === "dem") return false;
+          return true;
+        },
+      }),
+  );
+  overlayRef.current = overlay;
   useEffect(() => {
     overlay.setProps({ layers });
   }, [overlay, layers]);
+  useEffect(() => {
+    return () => {
+      overlayRef.current = null;
+    };
+  }, [overlayRef]);
 
   return null;
 }
@@ -288,6 +382,9 @@ const MapComponent = ({
   );
 
   const mapRef = useRef<any>(null);
+  const deckOverlayRef = useRef<MapboxOverlay | null>(null);
+  /** When true, Deck picking skips DEM `-bitmap` proxies so map click pick is O(vectors) not O(rasters). */
+  const demRasterPickSuppressRef = useRef(false);
   const zoomUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const zoomDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -613,6 +710,128 @@ const MapComponent = ({
     }
   }, [layers]);
 
+  // ── Viewport culling for tiled rasters ───────────────────────────────
+  // Hide tiled raster layers whose bounds don't intersect the current
+  // viewport. Without this, Mapbox runs style + tile-state evaluation
+  // for ALL N raster layers every frame even though only the few in
+  // view actually paint. With ~150 layers, that overhead is significant
+  // on a tablet WebView.
+  //
+  // O(N) intersection per cull call, sub-millisecond for N=200.
+
+  // Mirror layers into a ref so the cull callback (attached once) reads
+  // the current set without re-attaching listeners on every store mutation.
+  const layersForCullingRef = useRef(layers);
+  useEffect(() => {
+    layersForCullingRef.current = layers;
+  }, [layers]);
+
+  // Pull cull() out so both the listener-attach effect (runs once) and
+  // the layers-changed effect (re-cull when layer set mutates) can call it.
+  const cullTiledRastersRef = useRef<() => void>(() => {});
+
+  // Track which tiled rasters were in view on the previous cull pass so
+  // we can detect "newly entered viewport" and pre-warm their sampleAt
+  // cache (gdal.Open + PROJ setup happens on the dedicated samplePool
+  // BEFORE the user taps). Without this, the first tap on any newly-
+  // visible layer pays a 250-500 ms cold-storage cost.
+  const lastVisibleTiledRasterIdsRef = useRef<Set<string>>(new Set());
+
+  // Effect A: attach moveend/zoomend listeners ONCE. Detach on unmount.
+  useEffect(() => {
+    if (!mapRef.current) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const map = (mapRef.current as any).getMap?.();
+    if (!map) return;
+
+    const cull = () => {
+      try {
+        const b = map.getBounds?.();
+        if (!b) return;
+        const viewport: [number, number, number, number] = [
+          b.getWest(),
+          b.getSouth(),
+          b.getEast(),
+          b.getNorth(),
+        ];
+        const layersNow = layersForCullingRef.current;
+        applyTiledRasterViewportCulling(map, layersNow, viewport);
+
+        // Pre-warm: for any tiled raster that's newly in the viewport,
+        // fire a throwaway sampleAt at its centroid. Capacitor IPC is
+        // async; the samplePool processes it in the background so the
+        // dataset + SR/CT are cached by the time the user taps.
+        const [vw, vs, ve, vn] = viewport;
+        const nowVisible = new Set<string>();
+        const newlyVisible: Array<{ id: string; lon: number; lat: number }> =
+          [];
+        for (const l of layersNow) {
+          if (!l.tilesUrl || !l.tileBoundsWgs84) continue;
+          if (l.visible === false) continue;
+          const [lw, ls, le, ln] = l.tileBoundsWgs84;
+          const inView = !(le < vw || lw > ve || ln < vs || ls > vn);
+          if (!inView) continue;
+          nowVisible.add(l.id);
+          if (lastVisibleTiledRasterIdsRef.current.has(l.id)) continue;
+          // Centroid of layer bounds — any in-bounds point works for
+          // warming the cache; the value is discarded.
+          newlyVisible.push({
+            id: l.id,
+            lon: (lw + le) / 2,
+            lat: (ls + ln) / 2,
+          });
+        }
+        lastVisibleTiledRasterIdsRef.current = nowVisible;
+
+        if (newlyVisible.length > 0) {
+          // Fire-and-forget. Capacitor.Plugins may not be available in
+          // dev / Electron — guard cleanly.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const cap: any = (window as any).Capacitor;
+          const rt = cap?.Plugins?.RasterTiling;
+          if (rt?.sampleAt) {
+            for (const { id, lon, lat } of newlyVisible) {
+              rt.sampleAt({ layerId: id, lon, lat }).catch(() => {});
+            }
+          }
+        }
+      } catch {
+        /* style may not be loaded yet — safe to skip */
+      }
+    };
+    cullTiledRastersRef.current = cull;
+
+    // Run once now (or queue for first style load).
+    if (map.isStyleLoaded?.()) {
+      cull();
+    } else {
+      map.once?.("load", cull);
+      map.once?.("style.load", cull);
+    }
+
+    map.on?.("moveend", cull);
+    map.on?.("zoomend", cull);
+
+    return () => {
+      try {
+        map.off?.("moveend", cull);
+        map.off?.("zoomend", cull);
+      } catch {
+        /* noop */
+      }
+    };
+    // Listeners attach once. Layer-set changes are picked up via
+    // layersForCullingRef (Effect B below triggers an immediate re-cull).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Effect B: re-cull immediately when the layer set changes (new layer
+  // added, visibility toggled, etc.) so the user sees the right set
+  // without waiting for the next pan/zoom.
+  useEffect(() => {
+    cullTiledRastersRef.current?.();
+  }, [layers]);
+
   // Tooltip-on-leave fix for tiled rasters. deck.gl's onHover does not fire
   // reliably when the cursor leaves a SolidPolygonLayer picking proxy, so the
   // tooltip would stick at the last hovered position with stale data. We
@@ -646,6 +865,17 @@ const MapComponent = ({
         : null;
   }, [hoverInfo, layers]);
 
+  // Tracks the currently-picked raster so we know when to fire
+  // setHoverInfo(undefined) on leave (cursor exits all raster bounds)
+  // without spamming React on every move within the same raster.
+  const lastPickedRasterIdRef = useRef<string | null>(null);
+
+  // Set true between movestart and moveend. handleRasterPick early-returns
+  // while panning so we don't fire 60 setHoverInfo / React re-renders per
+  // second during a drag. Tap (click) is unaffected: Mapbox doesn't fire
+  // click when the touch turned into a drag, only on a clean tap.
+  const isPanningRef = useRef(false);
+
   const rasterMousemoveAttachedRef = useRef(false);
   useEffect(() => {
     if (rasterMousemoveAttachedRef.current) return;
@@ -653,28 +883,137 @@ const MapComponent = ({
     const map = mapRef.current.getMap?.();
     if (!map) return;
 
-    // Shared bounds check: clears stale hoverInfo when the cursor / tap
-    // position is outside the currently hovered raster's WGS84 bounds.
+    // Combined enter/leave handler.
+    //
+    // BEFORE: deck.gl ran a synchronous GPU picking pass over all 153
+    // SolidPolygonLayer raster proxies on every mousemove/tap — multi-
+    // second main-thread stall on tablet WebView. Native sampleAt was
+    // also slow then, masking this.
+    //
+    // NOW: SolidPolygonLayer rasters have pickable: false (see
+    // deckGlLayers below). This handler walks the rect index in JS
+    // (sub-millisecond for any N), picks the topmost containing raster,
+    // synthesises a hoverInfo shape compatible with what deck.gl picking
+    // would have produced, and fires setHoverInfo. The downstream
+    // tooltip + tile-sampler effects continue to work unchanged.
+    //
+    // Vector / point / polygon / line layers stay GPU-picked via
+    // handleLayerHover — only raster picking is moved to JS.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const checkAndClear = (e: any) => {
-      const b = hoveredRasterBoundsRef.current;
-      if (!b) return;
+    const handleRasterPick = (e: any) => {
+      // Skip during active pan/zoom — prevents 60 Hz re-render churn
+      // while the user is dragging the map. Re-enabled at moveend below.
+      if (isPanningRef.current) return;
       const lng = e?.lngLat?.lng;
       const lat = e?.lngLat?.lat;
       if (typeof lng !== "number" || typeof lat !== "number") return;
-      if (lng < b[0] || lng > b[2] || lat < b[1] || lat > b[3]) {
-        setHoverInfo(undefined);
+
+      // Walk visible DEM rasters top-down (most recent in array =
+      // visually topmost, mirrors deck.gl picking order). Handles BOTH:
+      //   • Tiled rasters: bounds at l.tileBoundsWgs84
+      //   • Non-tiled BitmapLayer rasters: bounds at l.bounds[[w,s],[e,n]]
+      // Same hit-test algorithm (point-in-rect) for both — the only
+      // difference is which field holds the rectangle.
+      const layersNow = layersForCullingRef.current;
+      let hitId: string | null = null;
+      for (let i = layersNow.length - 1; i >= 0; i--) {
+        const l = layersNow[i];
+        if (l.visible === false) continue;
+        if (l.type !== "dem") continue;
+
+        let w: number, s: number, ee: number, n: number;
+        if (l.tilesUrl && l.tileBoundsWgs84) {
+          // Tiled raster — bounds already in [w, s, e, n] form.
+          [w, s, ee, n] = l.tileBoundsWgs84;
+        } else if (
+          Array.isArray(l.bounds) &&
+          l.bounds.length === 2 &&
+          Array.isArray(l.bounds[0]) &&
+          Array.isArray(l.bounds[1])
+        ) {
+          // Non-tiled BitmapLayer raster — bounds is [[minLng, minLat], [maxLng, maxLat]].
+          w = l.bounds[0][0];
+          s = l.bounds[0][1];
+          ee = l.bounds[1][0];
+          n = l.bounds[1][1];
+        } else {
+          continue;
+        }
+
+        if (lng >= w && lng <= ee && lat >= s && lat <= n) {
+          hitId = l.id;
+          break;
+        }
       }
+
+      if (!hitId) {
+        // Cursor / tap outside all raster bounds → clear stale tooltip.
+        if (lastPickedRasterIdRef.current) {
+          lastPickedRasterIdRef.current = null;
+          setHoverInfo(undefined);
+        }
+        return;
+      }
+
+      // Suppress hover/tap briefly after layer creation — matches the
+      // 500 ms cooldown handleLayerHover used to enforce on tablets,
+      // where rapid layer adds during upload fired spurious hovers.
+      const sinceCreation = Date.now() - lastLayerCreationTimeRef.current;
+      if (sinceCreation < 500) {
+        if (lastPickedRasterIdRef.current) {
+          lastPickedRasterIdRef.current = null;
+          setHoverInfo(undefined);
+        }
+        return;
+      }
+
+      lastPickedRasterIdRef.current = hitId;
+
+      // Synthesise hoverInfo. Tooltip code reads layer.id (with -bitmap
+      // suffix the deck.gl path produced — preserved so the regex strip
+      // in tooltip.tsx still finds the base id), coordinate, x, y, and
+      // object (null for rasters).
+      const screenX = e?.point?.x ?? 0;
+      const screenY = e?.point?.y ?? 0;
+      setHoverInfo({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        layer: { id: `${hitId}-bitmap` } as any,
+        coordinate: [lng, lat],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        object: null as any,
+        x: screenX,
+        y: screenY,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
     };
 
     // mousemove handles desktop pointer movement.
     // click handles touch taps on Android — touch devices don't fire
     // mousemove reliably between two distant taps, so without this the
     // tooltip would stick at the previously-tapped raster position.
-    map.on("mousemove", checkAndClear);
-    map.on("click", checkAndClear);
+    map.on("mousemove", handleRasterPick);
+    map.on("click", handleRasterPick);
+
+    // Suspend the pick during active pan/zoom to avoid React re-render
+    // churn (60 Hz mousemove × setHoverInfo × ~150-layer tree = visible
+    // pan jank). Mapbox's click event doesn't fire if the gesture turned
+    // into a drag, so taps on rasters still work cleanly.
+    const onMoveStart = () => {
+      isPanningRef.current = true;
+    };
+    const onMoveEnd = () => {
+      isPanningRef.current = false;
+    };
+    map.on("movestart", onMoveStart);
+    map.on("zoomstart", onMoveStart);
+    map.on("moveend", onMoveEnd);
+    map.on("zoomend", onMoveEnd);
+
     rasterMousemoveAttachedRef.current = true;
-  }, [layers, setHoverInfo]);
+    // Listeners attach once. Layer set is read live via layersForCullingRef.
+    // setHoverInfo + lastLayerCreationTimeRef are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Reload style when tileServerUrl changes (after map is loaded)
   useEffect(() => {
@@ -2803,6 +3142,56 @@ const MapComponent = ({
     isDrawing,
   ]);
 
+  /** Shared by per-layer `onHover` and map `click` pick (touch tap-to-inspect). */
+  const commitDeckPickToHover = useCallback(
+    (info: PickingInfo<unknown> | null | undefined) => {
+      // Prevent tooltip from showing immediately after layer creation (especially on tablets)
+      const timeSinceLastCreation =
+        Date.now() - lastLayerCreationTimeRef.current;
+      if (timeSinceLastCreation < 500) {
+        setHoverInfo(undefined);
+        return;
+      }
+
+      if (!info) {
+        setHoverInfo(undefined);
+        return;
+      }
+
+      const deckLayerId = (info.layer as any)?.id as string | undefined;
+
+      // Special handling for DEM BitmapLayers (.tif, .tiff, .dett, .hgt)
+      // BitmapLayer hover info often has no `object`, but we still want a tooltip
+      let isDemHover = false;
+      if (deckLayerId) {
+        const baseId = deckLayerId
+          .replace(/-icon-layer$/, "")
+          .replace(/-signal-overlay$/, "")
+          .replace(/-bitmap$/, "")
+          .replace(/-mesh$/, "");
+
+        const matchingLayer = layers.find((l) => l.id === baseId);
+        if (matchingLayer?.type === "dem") {
+          isDemHover = true;
+        }
+      }
+
+      if (info.object || (isDemHover && info.coordinate)) {
+        setHoverInfo(info);
+      } else {
+        setHoverInfo(undefined);
+      }
+    },
+    [setHoverInfo, layers],
+  );
+
+  const handleLayerHover = useCallback(
+    (info: PickingInfo<unknown>) => {
+      commitDeckPickToHover(info);
+    },
+    [commitDeckPickToHover],
+  );
+
   const handleClick = (event: any) => {
     if (!drawingMode) {
       return;
@@ -2934,10 +3323,97 @@ const MapComponent = ({
       setSelectedNodeForIcon(null);
     }
 
-    // Close tooltip when clicking anywhere on the map
-    setHoverInfo(undefined);
+    // While drawing, keep clearing hover so tooltips don't fight with placement.
+    if (drawingMode) {
+      setHoverInfo(undefined);
+      handleClick(event);
+      return;
+    }
 
-    // For other clicks, use the default handler
+    // Tap / click: Deck pick with DEM proxies temporarily removed from the picking
+    // pass (hundreds of zip-imported rasters otherwise each participate in GPU pick).
+    // If a vector/point wins, use it; else resolve the topmost DEM under lng/lat by bounds.
+    try {
+      const pt = event?.point;
+      let px: number | undefined;
+      let py: number | undefined;
+      if (pt && typeof pt.x === "number" && typeof pt.y === "number") {
+        px = pt.x;
+        py = pt.y;
+      } else if (Array.isArray(pt) && pt.length >= 2) {
+        px = pt[0] as number;
+        py = pt[1] as number;
+      }
+      let lng: number | undefined;
+      let lat: number | undefined;
+      const ll = event?.lngLat;
+      if (ll && typeof ll.lng === "number" && typeof ll.lat === "number") {
+        lng = ll.lng;
+        lat = ll.lat;
+      } else if (mapRef.current && pt) {
+        try {
+          const c = mapRef.current.getMap().unproject(pt);
+          lng = c.lng;
+          lat = c.lat;
+        } catch {
+          /* ignore */
+        }
+      }
+      const overlay = deckOverlayRef.current;
+      if (
+        overlay &&
+        px !== undefined &&
+        py !== undefined &&
+        Number.isFinite(px) &&
+        Number.isFinite(py)
+      ) {
+        const coarse =
+          typeof window !== "undefined" &&
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(pointer: coarse)").matches;
+        demRasterPickSuppressRef.current = true;
+        let picked: PickingInfo<unknown> | null = null;
+        try {
+          picked = overlay.pickObject({
+            x: px,
+            y: py,
+            radius: coarse ? 28 : 12,
+          });
+        } finally {
+          demRasterPickSuppressRef.current = false;
+        }
+        if (picked) {
+          commitDeckPickToHover(picked);
+        } else if (
+          typeof lng === "number" &&
+          typeof lat === "number" &&
+          Number.isFinite(lng) &&
+          Number.isFinite(lat)
+        ) {
+          const topDem = resolveTopmostDemUnderLngLat(
+            layers,
+            Math.floor(mapZoom),
+            lng,
+            lat,
+          );
+          if (topDem) {
+            commitDeckPickToHover(
+              syntheticDemPickingInfo(topDem, lng, lat, px, py),
+            );
+          } else {
+            setHoverInfo(undefined);
+          }
+        } else {
+          setHoverInfo(undefined);
+        }
+      } else {
+        setHoverInfo(undefined);
+      }
+    } catch {
+      demRasterPickSuppressRef.current = false;
+      setHoverInfo(undefined);
+    }
+
     handleClick(event);
   };
   useEffect(() => {
@@ -3475,49 +3951,6 @@ const MapComponent = ({
     return null;
   };
 
-  const handleLayerHover = useCallback(
-    (info: PickingInfo<unknown>) => {
-      // Prevent tooltip from showing immediately after layer creation (especially on tablets)
-      const timeSinceLastCreation =
-        Date.now() - lastLayerCreationTimeRef.current;
-      if (timeSinceLastCreation < 500) {
-        // Don't show tooltip if layer was created less than 500ms ago
-        setHoverInfo(undefined);
-        return;
-      }
-
-      if (!info) {
-        setHoverInfo(undefined);
-        return;
-      }
-
-      const deckLayerId = (info.layer as any)?.id as string | undefined;
-
-      // Special handling for DEM BitmapLayers (.tif, .tiff, .dett, .hgt)
-      // BitmapLayer hover info often has no `object`, but we still want a tooltip
-      let isDemHover = false;
-      if (deckLayerId) {
-        const baseId = deckLayerId
-          .replace(/-icon-layer$/, "")
-          .replace(/-signal-overlay$/, "")
-          .replace(/-bitmap$/, "")
-          .replace(/-mesh$/, "");
-
-        const matchingLayer = layers.find((l) => l.id === baseId);
-        if (matchingLayer?.type === "dem") {
-          isDemHover = true;
-        }
-      }
-
-      if (info.object || (isDemHover && info.coordinate)) {
-        setHoverInfo(info);
-      } else {
-        setHoverInfo(undefined);
-      }
-    },
-    [setHoverInfo, layers],
-  );
-
   // UDP layers from separate component
   const { udpLayers, connectionError, noDataWarning } =
     useUdpLayers(handleLayerHover);
@@ -3682,31 +4115,22 @@ const MapComponent = ({
       //   fillColor's alpha, so a fully transparent fillColor still
       //   picks reliably.
       if (layer.tilesUrl) {
-        deckLayers.push(
-          new SolidPolygonLayer({
-            id: `${layer.id}-bitmap`,
-            data: [
-              {
-                polygon: [
-                  [minLng, minLat],
-                  [maxLng, minLat],
-                  [maxLng, maxLat],
-                  [minLng, maxLat],
-                ],
-              },
-            ],
-            getPolygon: (d: any) => d.polygon,
-            getFillColor: [0, 0, 0, 0],
-            pickable: true,
-            visible: isVisible,
-            stroked: false,
-            filled: true,
-            onHover: handleLayerHover,
-            updateTriggers: {
-              visible: [roundedZoom, layer.visible],
-            },
-          }),
-        );
+        // Tiled rasters render entirely through Mapbox (raster source +
+        // raster layer set up in addOrUpdateTiledRaster). The previous
+        // SolidPolygonLayer was a picking proxy with alpha-0 fill — it
+        // contributed nothing visually and is no longer picked (we use
+        // JS rect-pick in handleRasterPick now). Skipping the push
+        // eliminates 153 wasted draw calls per frame at N=153 tiled
+        // rasters, which is the dominant deck.gl per-frame cost during
+        // pan/zoom.
+        //
+        // Zoom-range enforcement is unaffected: addOrUpdateTiledRaster
+        // calls map.setLayerZoomRange(...) on the Mapbox raster layer
+        // using resolveLayerZoomRange(layer), which honours
+        // layer.minzoom / layer.maxzoom. Viewport culling
+        // (applyTiledRasterViewportCulling) toggles visibility on the
+        // same Mapbox layer. Neither path went through the deck.gl
+        // SolidPolygonLayer — so removing it changes nothing visible.
         return;
       }
 
@@ -3725,9 +4149,16 @@ const MapComponent = ({
           id: `${layer.id}-bitmap`,
           image,
           bounds: [minLng, minLat, maxLng, maxLat],
-          pickable: true,
+          // pickable: false — non-tiled DEM rasters now picked via the
+          // same JS rect-test handler used for tiled rasters
+          // (handleRasterPick walks layer.bounds for these). Removes
+          // the deck.gl GPU picking pass cost when many BitmapLayer
+          // rasters are loaded AND lifts the 255-pickable cap.
+          // BitmapLayer's image still renders normally (unlike the
+          // tiled SolidPolygonLayer which was an invisible proxy and
+          // got removed entirely).
+          pickable: false,
           visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
-          onHover: handleLayerHover,
           updateTriggers: {
             visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
           },
@@ -5171,6 +5602,8 @@ const MapComponent = ({
         }}
       >
         <DeckGLOverlay
+          overlayRef={deckOverlayRef}
+          demRasterPickSuppressRef={demRasterPickSuppressRef}
           layers={[
             ...deckGlLayers,
             // Rubber band overlay layers (render on top)

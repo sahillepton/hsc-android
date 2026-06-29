@@ -125,6 +125,19 @@ const Tooltip = () => {
   const { layers } = useLayers();
   const useIgrs = useIgrsPreference();
   const { showUserLocation } = useUserLocation();
+  const [coarsePointer, setCoarsePointer] = useState(() =>
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function")
+      return;
+    const mq = window.matchMedia("(pointer: coarse)");
+    const apply = () => setCoarsePointer(mq.matches);
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
   const isDesktopBuild = !!(window as any).electronAPI;
   const [tooltipPosition, setTooltipPosition] = useState<{
     x: number;
@@ -158,10 +171,9 @@ const Tooltip = () => {
     }
     void useFeatureAccessMapStore.getState().refreshFromNative();
   }, [hoverInfo?.layer?.id]);
-  // Precise per-pixel sampler used for tiled-raster layers (>300 MB).
-  // Returns the actual source value (palette index, Float dBm, etc.) via
-  // the gdal-async worker. Debounced 200 ms.
-  const tileSampler = useTileSampler(200);
+  // Precise per-pixel sampler for tiled rasters (native worker). Debounce is
+  // shorter on coarse pointers (phones/tablets) so tap-to-inspect feels snappy.
+  const tileSampler = useTileSampler(coarsePointer ? 0 : 140);
 
   // Fire the tile sampler whenever hover lands on a tiled layer with
   // valid lon/lat. Hover off a tiled layer → clear cached value.
@@ -510,16 +522,9 @@ const Tooltip = () => {
       const hasValue =
         value !== null && value !== undefined && Number.isFinite(value);
 
-      // Irregularly-shaped rasters (country masks, India clutter, etc.)
-      // have a rectangular bounding box that covers ocean / neighbouring
-      // territory full of NoData pixels. Tapping a NoData pixel returns
-      // value=null even though the cursor is technically "on the layer".
-      // Suppress the tooltip outright while we have no value — including
-      // the loading phase — so the user never sees an empty "…" flash on
-      // a NoData click. Continuous hover over valid pixels keeps the
-      // previous value cached in tileSampler.state, so the tooltip stays
-      // visible there.
-      if (!hasValue) {
+      // While sampling: show coords + "…" so tap-to-inspect feels immediate.
+      // After sampling: hide only when we know the pixel is NoData (still no value).
+      if (!hasValue && !loading) {
         return null;
       }
 
