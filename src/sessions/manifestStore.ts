@@ -21,8 +21,6 @@ export type ManifestEntry = {
   size: number;
   status: ManifestStatus;
   createdAt: number;
-
-  // file type: "tiff" | "vector" | "shapefile" | undefined (for backward compatibility)
   type?: "tiff" | "vector" | "shapefile";
 
   // layer color: RGB or RGBA array (optional for backward compatibility)
@@ -41,6 +39,15 @@ function safeJsonParse<T>(s: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** Oldest upload first — used when saving and restoring sessions. */
+export function sortManifestByUploadOrder(
+  entries: ManifestEntry[],
+): ManifestEntry[] {
+  return [...entries].sort(
+    (a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0),
+  );
 }
 
 /**
@@ -392,7 +399,7 @@ export async function removeLayerFromManifest(layerId: string): Promise<void> {
  * - If temp manifest is empty, delete all files from stored manifest first
  * - Remove "staged_delete" entries from manifest
  * - Upgrade all "staged" to "saved"
- * - Sort by size (increasing order)
+ * - Sort by upload time (createdAt, oldest first)
  * - Write to disk (replaces previous manifest, even if empty)
  */
 export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
@@ -446,8 +453,8 @@ export async function finalizeSaveManifest(): Promise<ManifestEntry[]> {
     }
   }
 
-  // Sort by size (increasing order)
-  m.sort((a, b) => a.size - b.size);
+  // Sort by upload order (oldest first) so restore renders in upload sequence
+  m = sortManifestByUploadOrder(m);
 
   // Replace stored manifest with temp (even if empty)
   await writeManifest(m);
@@ -470,7 +477,9 @@ export async function restoreManifest(): Promise<ManifestEntry[]> {
   const stored = await loadStoredManifest();
 
   // Filter to only "saved" entries (ignore any staged_delete that might be in stored)
-  const savedEntries = stored.filter((entry) => entry.status === "saved");
+  const savedEntries = sortManifestByUploadOrder(
+    stored.filter((entry) => entry.status === "saved"),
+  );
 
   // Update temp manifest with restored entries (for current session)
   // This replaces temp manifest completely with what was saved, ignoring any current temp changes

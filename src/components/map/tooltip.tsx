@@ -17,7 +17,7 @@ import {
   useIgrsPreference,
   useUserLocation,
 } from "@/store/layers-store";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Video, Upload, MessageSquare, PhoneCall } from "lucide-react";
 import {
   TooltipBox,
@@ -34,6 +34,18 @@ import {
   getTopologyTooltipActions,
   hasAnyTopologyTooltipAction,
 } from "@/lib/topology-feature-actions";
+import { useUdpDataStore } from "@/store/udp-data-store";
+import {
+  isShortestRouteLayer,
+  getShortestRouteCoordinateSubtitle,
+  SHORTEST_ROUTE_LAYER_PREFIX,
+} from "@/lib/route-layer";
+
+const SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS = new Set([
+  "shortestRoute",
+  "lineColor",
+  "distanceMeters",
+]);
 
 /**
  * Topology → native `globalId`: IPv4 from `object.ip`, or `"Unknown"` if missing/invalid.
@@ -44,6 +56,29 @@ function topologyMemberActionGlobalId(obj: Record<string, unknown>): string {
   const t = raw.trim();
   if (t === "" || t === "0.0.0.0") return "Unknown";
   return t;
+}
+
+/** Merge live UDP topology coords into the stale pick snapshot from tap/hover. */
+function liveTopologyTooltipObject(
+  object: unknown,
+  topologyNodes: ReturnType<
+    typeof useUdpDataStore.getState
+  >["udpData"]["topology"]["nodes"],
+): Record<string, unknown> | null {
+  if (!object || typeof object !== "object") return null;
+  const snapshot = object as Record<string, unknown>;
+  const globalId = snapshot.globalId as number | undefined;
+  if (globalId === undefined) return snapshot;
+  const live = topologyNodes.get(globalId);
+  if (!live) return snapshot;
+  return {
+    ...snapshot,
+    globalId: live.id,
+    ip: live.ip,
+    longitude: live.long,
+    latitude: live.lat,
+    altitude: live.altitude,
+  };
 }
 
 const isMeaningfulPropertyValue = (value: unknown): boolean => {
@@ -153,6 +188,7 @@ const Tooltip = () => {
   const featureMapLoading = useFeatureAccessMapStore(
     (s: FeatureAccessMapState) => s.featureMapLoading,
   );
+  const topologyNodes = useUdpDataStore((s) => s.udpData.topology.nodes);
 
   // Lazy-load native feature map when user opens the topology tooltip (Android integrated / GIS APK).
   useEffect(() => {
@@ -254,14 +290,28 @@ const Tooltip = () => {
         let lng: number | undefined;
         let lat: number | undefined;
 
+        // Live topology node — follow UDP position between taps (pick snapshot is stale).
+        if (
+          deckLayerId === "udp-topology-nodes-layer" &&
+          hoverInfo.object
+        ) {
+          const globalId = (hoverInfo.object as { globalId?: number }).globalId;
+          const live =
+            globalId !== undefined ? topologyNodes.get(globalId) : undefined;
+          if (live) {
+            lng = live.long;
+            lat = live.lat;
+          }
+        }
+
         // PRIORITY 1: Always use hoverInfo.coordinate if available
         // This is the actual hovered point on the map (works for raster, LineString, etc.)
         // This is especially important for DEM/raster layers and LineString layers
-        if (hoverInfo.coordinate && hoverInfo.coordinate.length >= 2) {
+        if (lng === undefined && lat === undefined && hoverInfo.coordinate && hoverInfo.coordinate.length >= 2) {
           [lng, lat] = hoverInfo.coordinate;
         }
         // PRIORITY 2: Try to get coordinates from object geometry (only if object exists)
-        else if (hoverInfo.object?.geometry?.coordinates) {
+        else if (lng === undefined && lat === undefined && hoverInfo.object?.geometry?.coordinates) {
           // GeoJSON Point
           if (
             Array.isArray(hoverInfo.object.geometry.coordinates) &&
@@ -300,6 +350,8 @@ const Tooltip = () => {
         }
         // PRIORITY 3: Direct polygon layer (only if object exists)
         else if (
+          lng === undefined &&
+          lat === undefined &&
           hoverInfo.object?.polygon &&
           Array.isArray(hoverInfo.object.polygon)
         ) {
@@ -320,6 +372,8 @@ const Tooltip = () => {
         }
         // PRIORITY 4: Direct coordinates from object (only if object exists)
         else if (
+          lng === undefined &&
+          lat === undefined &&
           hoverInfo.object?.longitude !== undefined &&
           hoverInfo.object?.latitude !== undefined
         ) {
@@ -329,6 +383,8 @@ const Tooltip = () => {
         }
         // PRIORITY 5: Position array (only if object exists)
         else if (
+          lng === undefined &&
+          lat === undefined &&
           hoverInfo.object?.position &&
           Array.isArray(hoverInfo.object.position)
         ) {
@@ -388,13 +444,24 @@ const Tooltip = () => {
         map.off("zoom", handleZoom);
       };
     }
-  }, [hoverInfo, mapRef, layers]);
+  }, [hoverInfo, mapRef, layers, topologyNodes]);
+
+  const object = useMemo(() => {
+    if (!hoverInfo?.object) return hoverInfo?.object;
+    if (hoverInfo.layer?.id !== "udp-topology-nodes-layer") {
+      return hoverInfo.object;
+    }
+    return (
+      liveTopologyTooltipObject(hoverInfo.object, topologyNodes) ??
+      hoverInfo.object
+    );
+  }, [hoverInfo?.object, hoverInfo?.layer?.id, topologyNodes]);
 
   if (!hoverInfo) {
     return null;
   }
 
-  const { object, layer } = hoverInfo;
+  const { layer } = hoverInfo;
 
   // Check if user location is toggled off and this is user location layer
   if (layer?.id === "user-location-layer" && !showUserLocation) {
@@ -705,10 +772,35 @@ const Tooltip = () => {
         "neighborCount",
       ];
 
+      const properties = [];
+      if (object.longitude !== undefined && object.latitude !== undefined) {
+        properties.push({
+          label: "Location",
+          value: useIgrs
+            ? calculateIgrs(object.longitude, object.latitude) ||
+              `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(4)}°]`
+            : `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(4)}°]`,
+        });
+      }
+      if (
+        layer.id === "udp-topology-nodes-layer" &&
+        object.altitude !== undefined &&
+        object.altitude !== null &&
+        !Number.isNaN(Number(object.altitude))
+      ) {
+        properties.push({
+          label: "Altitude",
+          value: `${Number(object.altitude).toFixed(0)} m`,
+        });
+      }
+
       const displayProperties = Object.entries(object)
         .filter(
           ([key, value]) =>
             importantKeys.includes(key) &&
+            !(
+              layer.id === "udp-topology-nodes-layer" && key === "altitude"
+            ) &&
             value !== undefined &&
             value !== null &&
             typeof value !== "object",
@@ -722,21 +814,6 @@ const Tooltip = () => {
         }));
 
       const useGridLayout = displayProperties.length > 8;
-
-      const properties = [];
-      if (object.longitude !== undefined && object.latitude !== undefined) {
-        properties.push({
-          label: "Location",
-          value: useIgrs
-            ? calculateIgrs(object.longitude, object.latitude) ||
-              `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(
-                4,
-              )}°]`
-            : `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(
-                4,
-              )}°]`,
-        });
-      }
 
       const notifyUdpMemberAction = async (
         action: "video" | "ftp" | "call" | "message",
@@ -1096,6 +1173,30 @@ const Tooltip = () => {
         });
       }
 
+      const isShortestRoute =
+        !!layerInfo && isShortestRouteLayer(layerInfo);
+
+      if (
+        isShortestRoute &&
+        geometryType === "LineString" &&
+        object.geometry.coordinates &&
+        object.geometry.coordinates.length >= 2
+      ) {
+        const coords = object.geometry.coordinates;
+        const from = coords[0] as [number, number];
+        const to = coords[coords.length - 1] as [number, number];
+        tooltipProperties.push(
+          {
+            label: `From (${coordinateLabel})`,
+            value: formatCoordinatePair(from),
+          },
+          {
+            label: `To (${coordinateLabel})`,
+            value: formatCoordinatePair(to),
+          },
+        );
+      }
+
       if (geometryInfo) {
         tooltipProperties.push({
           label: geometryInfo.split(":")[0],
@@ -1113,8 +1214,10 @@ const Tooltip = () => {
       }
 
       // Add other properties
-      const propertyEntries = Object.entries(properties).filter(([, value]) =>
-        isMeaningfulPropertyValue(value),
+      const propertyEntries = Object.entries(properties).filter(
+        ([key, value]) =>
+          isMeaningfulPropertyValue(value) &&
+          !(isShortestRoute && SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS.has(key)),
       );
 
       propertyEntries
@@ -1134,8 +1237,17 @@ const Tooltip = () => {
         >
           {layerInfo?.name && (
             <TooltipHeading
-              title={layerInfo.name}
-              subtitle={`${geometryType} Feature`}
+              title={
+                isShortestRoute
+                  ? SHORTEST_ROUTE_LAYER_PREFIX
+                  : layerInfo.name
+              }
+              subtitle={
+                isShortestRoute
+                  ? (getShortestRouteCoordinateSubtitle(layerInfo) ??
+                    `${geometryType} Feature`)
+                  : `${geometryType} Feature`
+              }
             />
           )}
           <TooltipProperties

@@ -123,6 +123,7 @@ const ZoomControls = ({
   onToggleRubberBand,
   isRoutePanelOpen,
   onToggleRoutePanel,
+  onCloseRoutePanel,
 }: {
   mapRef: React.RefObject<any>;
   zoom: number;
@@ -151,6 +152,7 @@ const ZoomControls = ({
   onToggleRubberBand?: () => void;
   isRoutePanelOpen?: boolean;
   onToggleRoutePanel?: () => void;
+  onCloseRoutePanel?: () => void;
 }) => {
   const { drawingMode, setDrawingMode } = useDrawingMode();
   const [isSaving, setIsSaving] = useState(false);
@@ -236,8 +238,8 @@ const ZoomControls = ({
     if (drawingMode !== mode && rubberBandMode && onToggleRubberBand) {
       onToggleRubberBand();
     }
-    if (drawingMode !== mode && isRoutePanelOpen && onToggleRoutePanel) {
-      onToggleRoutePanel();
+    if (drawingMode !== mode && isRoutePanelOpen) {
+      (onCloseRoutePanel ?? onToggleRoutePanel)?.();
     }
     setDrawingMode(drawingMode === mode ? null : mode);
   };

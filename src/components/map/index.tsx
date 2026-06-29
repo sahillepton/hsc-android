@@ -15,6 +15,7 @@ import unkinkPolygon from "@turf/unkink-polygon";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -31,6 +32,7 @@ import RouteBox, {
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
+import { useUdpDataStore } from "@/store/udp-data-store";
 // import UdpConfigDialog from "./udp-config-dialog"; // Removed: port is now fixed at 40074
 import OfflineLocationTracker from "./offline-location-tracker";
 import { initializeTileServer } from "./tile-folder-dialog";
@@ -123,6 +125,12 @@ import {
 } from "@/utils/parser";
 import { generateRandomColor } from "@/lib/utils";
 import { shouldTile } from "@/lib/tiling/threshold";
+import {
+  formatShortestRouteLayerName,
+  isShortestRouteLayer,
+  persistShortestRouteToSession,
+  type ShortestRouteFileMeta,
+} from "@/lib/route-layer";
 import { runTilingUpload } from "@/lib/tiling/upload";
 import {
   addOrUpdateTiledRaster,
@@ -503,11 +511,13 @@ const MapComponent = ({
   // UDP config dialog removed - port is now fixed at 40074, data arrives automatically from intranet
 
   const { networkLayersVisible } = useNetworkLayersVisible();
+  const topologyNodes = useUdpDataStore((s) => s.udpData.topology.nodes);
   const { dragStart, setDragStart } = useDragStart();
   const { mousePosition, setMousePosition } = useMousePosition();
-  const { layers, addLayer, setLayers } = useLayers();
+  const { layers, addLayer, setLayers, bringLayerToTop } = useLayers();
   // const { setNodeIconMappings } = useNodeIconMappings();
-  const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
+  const { focusLayerRequest, setFocusLayerRequest, updateLayer } =
+    useFocusLayerRequest();
   const { drawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
@@ -556,6 +566,9 @@ const MapComponent = ({
     initialRouteToolState,
   );
   const dijkstraWorkerRef = useRef<Worker | null>(null);
+  /** Layer id for the current route-finder session's persisted shortest path. */
+  const shortestRouteLayerIdRef = useRef<string | null>(null);
+  const shortestRouteFileMetaRef = useRef<ShortestRouteFileMeta | null>(null);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
@@ -580,6 +593,79 @@ const MapComponent = ({
       dijkstraWorkerRef.current = null;
     }
   }, [layers, routeState.selectedLayerId]);
+
+  // Persist calculated shortest route as a geojson layer + staged manifest file (main Layers panel).
+  const lastPersistedRouteKeyRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const path = routeState.pathResult?.path;
+    if (!path || path.length < 2) return;
+    const from = routeState.snappedA ?? routeState.pointA;
+    const to = routeState.snappedB ?? routeState.pointB;
+    if (!from || !to) return;
+
+    const routeKey = `${from[0]},${from[1]}|${to[0]},${to[1]}|${path.length}`;
+    if (lastPersistedRouteKeyRef.current === routeKey) return;
+    lastPersistedRouteKeyRef.current = routeKey;
+
+    const distMeters = routeState.pathResult?.dist ?? 0;
+    const name = formatShortestRouteLayerName(from, to);
+
+    void (async () => {
+      try {
+        const existingId = shortestRouteLayerIdRef.current;
+        const existing = existingId
+          ? layers.find((l) => l.id === existingId)
+          : undefined;
+
+        if (existing && isShortestRouteLayer(existing)) {
+          const { layer, file } = await persistShortestRouteToSession({
+            layerId: existingId!,
+            layerName: name,
+            path,
+            distMeters,
+            existingFile: shortestRouteFileMetaRef.current,
+          });
+          updateLayer(existingId!, layer);
+          shortestRouteFileMetaRef.current = file;
+          bringLayerToTop(existingId!);
+          return;
+        }
+
+        const id = generateLayerId();
+        shortestRouteLayerIdRef.current = id;
+        const { layer, file } = await persistShortestRouteToSession({
+          layerId: id,
+          layerName: name,
+          path,
+          distMeters,
+        });
+        shortestRouteFileMetaRef.current = file;
+        addLayer(layer);
+        bringLayerToTop(id);
+        lastLayerCreationTimeRef.current = Date.now();
+      } catch (err) {
+        console.error("[ShortestRoute] Failed to persist route layer:", err);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- persist only when route result/endpoints change
+  }, [
+    routeState.pathResult,
+    routeState.snappedA,
+    routeState.snappedB,
+    routeState.pointA,
+    routeState.pointB,
+  ]);
+
+  const closeRoutePanel = useCallback(() => {
+    setIsRoutePanelOpen(false);
+    if (dijkstraWorkerRef.current) {
+      dijkstraWorkerRef.current.terminate();
+      dijkstraWorkerRef.current = null;
+    }
+    setRouteState(initialRouteToolState);
+    lastPersistedRouteKeyRef.current = null;
+    shortestRouteFileMetaRef.current = null;
+  }, []);
 
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2165,7 +2251,7 @@ const MapComponent = ({
       // const beforeManifest = await loadManifest();
 
       // Step 7 & 8: Finalize manifest according to system design:
-      // - Sort all layers in manifest by size (increasing order)
+      // - Sort manifest by upload time (createdAt, oldest first)
       // - Upgrade "staged" files to "saved" status
       // - Delete "staged_delete" files from files folder
       // - Remove "staged_delete" entries from manifest
@@ -2946,7 +3032,8 @@ const MapComponent = ({
       id: generateLayerId(),
       name: `Path ${
         layers.filter(
-          (l) => l.type === "line" && !(l.name || "").includes("Connection"),
+          (l) =>
+            l.type === "line" && !(l.name || "").includes("Connection"),
         ).length + 1
       }`,
       path,
@@ -3582,6 +3669,18 @@ const MapComponent = ({
       setFocusLayerRequest(null);
     }
   }, [focusLayerRequest]);
+
+  // Clear topology tooltip when the hovered node is no longer in live UDP data
+  // (tap-to-inspect does not get deck onHover leave events when the icon vanishes).
+  useEffect(() => {
+    if (!hoverInfo?.object) return;
+    if (hoverInfo.layer?.id !== "udp-topology-nodes-layer") return;
+
+    const globalId = (hoverInfo.object as { globalId?: number }).globalId;
+    if (globalId === undefined || !topologyNodes.has(globalId)) {
+      setHoverInfo(undefined);
+    }
+  }, [hoverInfo, topologyNodes, setHoverInfo]);
 
   // Close tooltip when the hovered layer becomes hidden
   useEffect(() => {
@@ -5035,34 +5134,6 @@ const MapComponent = ({
         !routeSelectedLayer ||
         (routeSelectedLayer.visible !== false &&
           getZoomVisibility(routeSelectedLayer));
-      if (routeState.pathResult && routeLayerVisible) {
-        routeLayers.push(
-          new PathLayer({
-            id: "route-path-glow",
-            data: [routeState.pathResult.path],
-            getPath: (d: [number, number][]) => d,
-            getColor: [245, 158, 11, 60],
-            getWidth: 12,
-            widthUnits: "pixels",
-            jointRounded: true,
-            capRounded: true,
-            pickable: false,
-          }),
-        );
-        routeLayers.push(
-          new PathLayer({
-            id: "route-path-main",
-            data: [routeState.pathResult.path],
-            getPath: (d: [number, number][]) => d,
-            getColor: [245, 158, 11, 255],
-            getWidth: 4,
-            widthUnits: "pixels",
-            jointRounded: true,
-            capRounded: true,
-            pickable: false,
-          }),
-        );
-      }
       const markerData: {
         position: [number, number];
         color: [number, number, number];
@@ -5334,14 +5405,7 @@ const MapComponent = ({
 
       {isRoutePanelOpen && (
         <RouteBox
-          onClose={() => {
-            setIsRoutePanelOpen(false);
-            setRouteState(initialRouteToolState);
-            if (dijkstraWorkerRef.current) {
-              dijkstraWorkerRef.current.terminate();
-              dijkstraWorkerRef.current = null;
-            }
-          }}
+          onClose={closeRoutePanel}
           routeState={routeState}
           setRouteState={setRouteState}
           workerRef={dijkstraWorkerRef}
@@ -5751,15 +5815,17 @@ const MapComponent = ({
             onCloseLayersBox?.();
             setIsMeasurementBoxOpen(false);
             setIsNetworkBoxOpen(false);
-          } else {
-            setRouteState(initialRouteToolState);
-            if (dijkstraWorkerRef.current) {
-              dijkstraWorkerRef.current.terminate();
-              dijkstraWorkerRef.current = null;
-            }
+            shortestRouteLayerIdRef.current = null;
+            lastPersistedRouteKeyRef.current = null;
+            shortestRouteFileMetaRef.current = null;
           }
-          setIsRoutePanelOpen((prev) => !prev);
+          if (willBeOpen) {
+            setIsRoutePanelOpen(true);
+          } else {
+            closeRoutePanel();
+          }
         }}
+        onCloseRoutePanel={closeRoutePanel}
       />
 
       {/* UDP Config Dialog removed - port is now fixed at 40074, data arrives automatically */}

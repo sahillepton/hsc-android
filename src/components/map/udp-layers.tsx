@@ -983,6 +983,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           ip: node.ip,
           longitude: node.long,
           latitude: node.lat,
+          altitude: node.altitude,
           groupId: nodeToGroup.get(node.id) || "A", // Needed for icon selection
           isMotherNode: node.id === motherNodeId,
         }));

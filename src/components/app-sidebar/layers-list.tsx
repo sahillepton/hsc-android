@@ -11,6 +11,12 @@ import { Button } from "../ui/button";
 import LayerPopover from "./layer-popover";
 import LayerCardSkeleton from "./layer-card-skeleton";
 import type { LayerProps } from "@/lib/definitions";
+import {
+  isShortestRouteLayer,
+  getShortestRouteCoordinateSubtitle,
+  getShortestRouteDisplayName,
+  SHORTEST_ROUTE_LAYER_PREFIX,
+} from "@/lib/route-layer";
 
 type LayerCardItemProps = {
   layer: LayerProps;
@@ -56,6 +62,13 @@ const LayerCardItem = ({
     return <LayerCardSkeleton />;
   }
 
+  const displayName = isShortestRouteLayer(layer)
+    ? getShortestRouteDisplayName(layer)
+    : layer.name;
+  const routeCoordSubtitle = isShortestRouteLayer(layer)
+    ? getShortestRouteCoordinateSubtitle(layer)
+    : null;
+
   return (
     <div className="mb-3">
       <div
@@ -71,7 +84,7 @@ const LayerCardItem = ({
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              title={`Bring to top: ${layer.name}`}
+              title={`Bring to top: ${displayName}`}
               onClick={() => onBringToTop(layer.id)}
             >
               <ArrowUp size={10} />
@@ -81,7 +94,7 @@ const LayerCardItem = ({
             variant="ghost"
             size="icon"
             className="h-7 w-7"
-            title={`Focus layer: ${layer.name}`}
+            title={`Focus layer: ${displayName}`}
             onClick={() => {
               setFocusedLayerId(layer.id);
               onFocusLayer(layer.id);
@@ -98,8 +111,8 @@ const LayerCardItem = ({
             }
             title={
               layer.visible === false
-                ? `Show layer: ${layer.name}`
-                : `Hide layer: ${layer.name}`
+                ? `Show layer: ${displayName}`
+                : `Hide layer: ${displayName}`
             }
           >
             {layer.visible === true ? (
@@ -113,7 +126,7 @@ const LayerCardItem = ({
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              title={`Layer settings: ${layer.name}`}
+              title={`Layer settings: ${displayName}`}
             >
               <Settings2 size={10} />
             </Button>
@@ -130,10 +143,21 @@ const LayerCardItem = ({
                 onChange={() => onToggleSelect(layer.id)}
               />
             )}
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-semibold text-ellipsis max-w-[200px] overflow-hidden text-foreground">
-                {layer.name}
-              </div>
+            <div className="flex flex-col gap-0.5 min-w-0">
+              {routeCoordSubtitle ? (
+                <>
+                  <div className="text-sm font-semibold text-foreground">
+                    {SHORTEST_ROUTE_LAYER_PREFIX}
+                  </div>
+                  <div className="text-xs text-muted-foreground break-words">
+                    {routeCoordSubtitle}
+                  </div>
+                </>
+              ) : (
+                <div className="text-sm font-semibold text-ellipsis max-w-[200px] overflow-hidden text-foreground">
+                  {displayName}
+                </div>
+              )}
             </div>
           </div>
           {uploadedDate && (

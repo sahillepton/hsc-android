@@ -23,6 +23,7 @@ import {
   useHoverInfo,
   useIgrsPreference,
 } from "@/store/layers-store";
+import { isShortestRouteLayer } from "@/lib/route-layer";
 import type { LayerProps } from "@/lib/definitions";
 import { cn, calculateIgrs } from "@/lib/utils";
 import { toast } from "@/lib/toast";
@@ -50,6 +51,7 @@ function lineGeometriesFromGeometry(
 }
 
 function isRouteableLayer(layer: LayerProps): boolean {
+  if (isShortestRouteLayer(layer)) return false;
   if (layer.type === "geojson" && layer.geojson) {
     return layer.geojson.features.some(
       (f) => lineGeometriesFromGeometry(f.geometry).length > 0,
