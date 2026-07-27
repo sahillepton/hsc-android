@@ -15,6 +15,12 @@ export const MAP_MIN_ZOOM = 0;
 export const MAP_MAX_ZOOM = 18;
 export const MAP_MAX_PITCH = 85;
 export const TILE_SOURCE_MAX_NATIVE_ZOOM = 5;
+/**
+ * Web Mercator (EPSG:3857) valid latitude limit. Latitudes beyond this are off-world:
+ * when the map is rotated/pitched, screen pixels in the surrounding whitespace void
+ * still `unproject` to coordinates (lat up to ±90°), which must be rejected for drawing.
+ */
+export const MAX_MERCATOR_LATITUDE = 85.0511287798066;
 
 // ── Tile paths ───────────────────────────────────────────────────────────────
 export const TILES_FOLDER_NAME = "tiles";

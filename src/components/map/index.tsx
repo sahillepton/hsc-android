@@ -105,6 +105,7 @@ import {
   MAP_MIN_ZOOM,
   MAP_MAX_ZOOM,
   MAP_MAX_PITCH,
+  MAX_MERCATOR_LATITUDE,
   TILE_SOURCE_MAX_NATIVE_ZOOM,
   ANDROID_TILES_PATH,
   ANDROID_SCREENSHOTS_PATH,
@@ -3295,6 +3296,15 @@ const MapComponent = ({
       isNaN(latitude)
     ) {
       console.warn("Invalid coordinates:", { longitude, latitude });
+      return;
+    }
+
+    // Reject clicks that resolve outside the valid Web Mercator world. When the map is
+    // rotated/pitched, screen pixels in the surrounding whitespace void still unproject to
+    // coordinates (latitudes up to ±90°, longitudes past ±180°); placing vertices there draws
+    // off-world features. Keep drawing confined to the real map extent.
+    if (Math.abs(latitude) > MAX_MERCATOR_LATITUDE || Math.abs(longitude) > 180) {
+      toast.error("Can't draw outside the map area");
       return;
     }
 
