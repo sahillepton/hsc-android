@@ -127,9 +127,7 @@ import { generateRandomColor } from "@/lib/utils";
 import { shouldTile } from "@/lib/tiling/threshold";
 import {
   formatShortestRouteLayerName,
-  isShortestRouteLayer,
   persistShortestRouteToSession,
-  type ShortestRouteFileMeta,
 } from "@/lib/route-layer";
 import { runTilingUpload } from "@/lib/tiling/upload";
 import {
@@ -516,8 +514,7 @@ const MapComponent = ({
   const { mousePosition, setMousePosition } = useMousePosition();
   const { layers, addLayer, setLayers, bringLayerToTop } = useLayers();
   // const { setNodeIconMappings } = useNodeIconMappings();
-  const { focusLayerRequest, setFocusLayerRequest, updateLayer } =
-    useFocusLayerRequest();
+  const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
   const { drawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
@@ -566,9 +563,6 @@ const MapComponent = ({
     initialRouteToolState,
   );
   const dijkstraWorkerRef = useRef<Worker | null>(null);
-  /** Layer id for the current route-finder session's persisted shortest path. */
-  const shortestRouteLayerIdRef = useRef<string | null>(null);
-  const shortestRouteFileMetaRef = useRef<ShortestRouteFileMeta | null>(null);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
@@ -594,7 +588,9 @@ const MapComponent = ({
     }
   }, [layers, routeState.selectedLayerId]);
 
-  // Persist calculated shortest route as a geojson layer + staged manifest file (main Layers panel).
+  // Persist every calculated shortest route as its OWN geojson layer + staged manifest file
+  // (main Layers panel). Each distinct A→B route accumulates: earlier routes stay on the map and
+  // in the unstaged changes, so saving/autosaving the session persists all of them.
   const lastPersistedRouteKeyRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     const path = routeState.pathResult?.path;
@@ -603,43 +599,26 @@ const MapComponent = ({
     const to = routeState.snappedB ?? routeState.pointB;
     if (!from || !to) return;
 
-    const routeKey = `${from[0]},${from[1]}|${to[0]},${to[1]}|${path.length}`;
+    const distMeters = routeState.pathResult?.dist ?? 0;
+    // Key off the computed path geometry (stable across snapped-endpoint display updates) so a
+    // single route isn't persisted twice, while genuinely distinct routes each get their own layer.
+    const start = path[0];
+    const end = path[path.length - 1];
+    const routeKey = `${start[0]},${start[1]}|${end[0]},${end[1]}|${path.length}|${distMeters}`;
     if (lastPersistedRouteKeyRef.current === routeKey) return;
     lastPersistedRouteKeyRef.current = routeKey;
 
-    const distMeters = routeState.pathResult?.dist ?? 0;
     const name = formatShortestRouteLayerName(from, to);
 
     void (async () => {
       try {
-        const existingId = shortestRouteLayerIdRef.current;
-        const existing = existingId
-          ? layers.find((l) => l.id === existingId)
-          : undefined;
-
-        if (existing && isShortestRouteLayer(existing)) {
-          const { layer, file } = await persistShortestRouteToSession({
-            layerId: existingId!,
-            layerName: name,
-            path,
-            distMeters,
-            existingFile: shortestRouteFileMetaRef.current,
-          });
-          updateLayer(existingId!, layer);
-          shortestRouteFileMetaRef.current = file;
-          bringLayerToTop(existingId!);
-          return;
-        }
-
         const id = generateLayerId();
-        shortestRouteLayerIdRef.current = id;
-        const { layer, file } = await persistShortestRouteToSession({
+        const { layer } = await persistShortestRouteToSession({
           layerId: id,
           layerName: name,
           path,
           distMeters,
         });
-        shortestRouteFileMetaRef.current = file;
         addLayer(layer);
         bringLayerToTop(id);
         lastLayerCreationTimeRef.current = Date.now();
@@ -664,7 +643,6 @@ const MapComponent = ({
     }
     setRouteState(initialRouteToolState);
     lastPersistedRouteKeyRef.current = null;
-    shortestRouteFileMetaRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -5815,9 +5793,7 @@ const MapComponent = ({
             onCloseLayersBox?.();
             setIsMeasurementBoxOpen(false);
             setIsNetworkBoxOpen(false);
-            shortestRouteLayerIdRef.current = null;
             lastPersistedRouteKeyRef.current = null;
-            shortestRouteFileMetaRef.current = null;
           }
           if (willBeOpen) {
             setIsRoutePanelOpen(true);
