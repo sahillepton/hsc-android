@@ -99,8 +99,7 @@
     "npmRebuild": false,
     "files": [
       "dist/**/*",
-      "dist-electron/**/*",
-      "node_modules/**/*"
+      "dist-electron/**/*"
     ],
     "asarUnpack": [
       "node_modules/**/*",

@@ -87,6 +87,7 @@ import {
   // generateRandomColor,
 } from "@/lib/utils";
 import type { LayerProps } from "@/lib/definitions";
+import { isSketchLayer } from "@/lib/sketch-layers";
 import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
 import { Geolocation } from "@capacitor/geolocation";
@@ -138,7 +139,25 @@ import {
 } from "@/lib/tiling/render";
 import { waitForRasterTilesLoaded } from "@/lib/tiling/wait-for-tiles";
 import { RasterTiling } from "@/plugins/raster-tiling";
-import { Settings } from "lucide-react";
+import { Settings, Pencil, Loader2 as Loader2Icon } from "lucide-react";
+import { OfflineTileServer } from "@/plugins/offline-tile-server";
+import {
+  useBasemapStore,
+  useActiveBasemapSource,
+  basemapLabelFromPath,
+} from "@/lib/basemap/basemapStore";
+import {
+  classifyTiles,
+  resolveTilesConfig,
+  type TilesConfig,
+} from "@/lib/basemap/tileConfig";
+import {
+  mapboxZoomToOrtho,
+  orthoZoomToMapbox,
+} from "@/lib/basemap/tileGrid";
+import GeodeticBasemapView from "./geodetic-basemap-view";
+import type { ElectronAPI } from "@/electron";
+import type { StyleSpecification } from "mapbox-gl";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -183,6 +202,10 @@ function resolveTopmostDemUnderLngLat(
   return top;
 }
 
+/** Blue location-pin SVG (data URI) used for the "Your Location" marker. */
+const USER_LOCATION_ICON_URL =
+  "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJDNy41ODIgMiA0IDUuNTgyIDQgMTBDNCAxNi4wODggMTIgMjIgMTIgMjJDMTIgMjIgMjAgMTYuMDg4IDIwIDEwQzIwIDUuNTgyIDE2LjQxOCAyIDEyIDJaIiBmaWxsPSIjM0I4MkY2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMCIgcj0iMyIgZmlsbD0id2hpdGUiLz4KPC9zdmc+";
+
 function syntheticDemPickingInfo(
   dem: LayerProps,
   lng: number,
@@ -197,6 +220,107 @@ function syntheticDemPickingInfo(
     y: py,
     object: null,
   } as PickingInfo<unknown>;
+}
+
+/**
+ * Minimal mapbox-gl style that renders a single Web-Mercator (EPSG:3857) raster
+ * tile set (served under /basemap/) as the whole base map. Used when a custom
+ * 3857 raster folder is selected. EPSG:4326 sets can't be shown this way — they
+ * need the plate-carrée renderer (next phase).
+ */
+function buildRasterMercatorStyle(
+  baseUrl: string,
+  cfg: TilesConfig,
+  cacheKey = "",
+): StyleSpecification {
+  // ?v= makes immutable tile caching safe across folder switches (same /basemap/
+  // path, different folder content) — the Android server uses a fixed port.
+  const v = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+  return {
+    version: 8,
+    sources: {
+      "custom-basemap": {
+        type: "raster",
+        tiles: [`${baseUrl}/basemap/{z}/{x}/{y}.${cfg.format}${v}`],
+        tileSize: cfg.tileSize,
+        minzoom: cfg.minZoom,
+        maxzoom: cfg.maxZoom,
+      },
+    },
+    layers: [
+      {
+        id: "custom-basemap",
+        type: "raster",
+        source: "custom-basemap",
+      },
+    ],
+  } as StyleSpecification;
+}
+
+/**
+ * Load a custom VECTOR (.pbf) base map: fetch the folder's own style.json from the
+ * /basemap/ route and rewrite every vector-tile + glyph URL to point back through
+ * /basemap/. Returns false if the folder has no usable style.json. This is what
+ * lets a user pick a .pbf folder (same shape as the default) and have it render.
+ */
+async function applyVectorBasemap(
+  map: { setStyle: (style: StyleSpecification) => void },
+  base: string,
+  cacheKey: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/style.json`, { cache: "no-store" });
+    if (!res.ok) return false;
+    const style = (await res.json()) as {
+      sources?: Record<
+        string,
+        {
+          type?: string;
+          tiles?: string[];
+          minzoom?: number;
+          maxzoom?: number;
+        }
+      >;
+      glyphs?: string;
+      layers?: Array<{ layout?: Record<string, unknown> }>;
+    };
+    const v = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+    const toBase = (u: string) => {
+      let p = u;
+      try {
+        p = new URL(u).pathname;
+      } catch {
+        /* relative template */
+      }
+      if (!p.startsWith("/")) p = "/" + p;
+      return `${base}${p}${v}`;
+    };
+    if (style.sources) {
+      for (const key of Object.keys(style.sources)) {
+        const s = style.sources[key];
+        if (s?.type === "vector" && Array.isArray(s.tiles)) {
+          s.tiles = s.tiles.map(toBase);
+          // PRESERVE the tileset's own maxzoom (the tile server declares the real
+          // native max, e.g. 14). mapbox OVERZOOMS beyond it — scaling the last real
+          // tiles and requesting no more. The old code overwrote it with the camera
+          // max, so mapbox fetched the missing higher zooms → 404 → blank. Only fall
+          // back to the constant if the source omits maxzoom. (maxNativeZoom is a
+          // Leaflet prop mapbox ignores, so it's dropped.)
+          s.minzoom = MAP_MIN_ZOOM;
+          s.maxzoom = s.maxzoom ?? TILE_SOURCE_MAX_NATIVE_ZOOM;
+        }
+      }
+    }
+    if (typeof style.glyphs === "string" && style.glyphs.startsWith("/")) {
+      style.glyphs = `${base}${style.glyphs}`;
+    } else if (style.layers?.some((l) => l.layout?.["text-field"])) {
+      style.glyphs = `${base}/fonts/{fontstack}/{range}.pbf`;
+    }
+    map.setStyle(style as unknown as StyleSpecification);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Settings Button Component
@@ -222,6 +346,11 @@ function SettingsButton() {
 
   const [paths, setPaths] = useState(defaultPaths);
 
+  // Single custom base map folder (or the built-in default when none is set).
+  const selectFolder = useBasemapStore((s) => s.selectFolder);
+  const activeSource = useActiveBasemapSource();
+  const [pickingFolder, setPickingFolder] = useState(false);
+
   // Resolve actual Windows paths from Electron main process
   useEffect(() => {
     if (!isElectronBuild) return;
@@ -245,6 +374,31 @@ function SettingsButton() {
       }
     })();
   }, [isElectronBuild]);
+
+  // Pick a folder and make it THE custom base map (replacing any previous one).
+  const handlePickFolder = async () => {
+    if (pickingFolder) return;
+    setPickingFolder(true);
+    try {
+      let picked: string | null = null;
+      const api = (window as Window & { electronAPI?: ElectronAPI }).electronAPI;
+      if (api?.openFolder) {
+        picked = await api.openFolder();
+      } else {
+        const res = await OfflineTileServer.selectTileFolder();
+        picked = res?.uri ?? null;
+      }
+      if (picked) {
+        selectFolder(basemapLabelFromPath(picked), picked);
+      }
+    } catch (err) {
+      console.error("[SettingsButton] Folder pick failed:", err);
+    } finally {
+      setPickingFolder(false);
+    }
+  };
+
+  const displayTilesPath = activeSource ? activeSource.path : paths.tiles;
 
   return (
     <div className="absolute top-2 right-2 z-50 pointer-events-none">
@@ -276,14 +430,29 @@ function SettingsButton() {
 
             <div className="space-y-3">
               <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-blue-500"></div>
-                  <span className="text-xs font-semibold text-slate-700 uppercase">
-                    Map Tiles
-                  </span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-blue-500"></div>
+                    <span className="text-xs font-semibold text-slate-700 uppercase">
+                      Map Tiles
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:opacity-60"
+                    title="Change base map folder"
+                    onClick={handlePickFolder}
+                    disabled={pickingFolder}
+                  >
+                    {pickingFolder ? (
+                      <Loader2Icon className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Pencil className="h-3.5 w-3.5" />
+                    )}
+                  </button>
                 </div>
                 <p className="text-xs text-slate-600 pl-4 font-mono break-all">
-                  {paths.tiles}
+                  {displayTilesPath}
                 </p>
               </div>
 
@@ -567,7 +736,113 @@ const MapComponent = ({
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
+  // Flips true once the mapbox instance has loaded. The custom-basemap apply effect
+  // depends on this so it RE-RUNS when the map becomes ready. On restart the tile
+  // server URL and the rehydrated basemap selection can both be set BEFORE the map
+  // instance exists, so the effect's first run bails on a null map and — since no
+  // other dependency changes afterward — would never fire again, leaving the
+  // default basemap loaded instead of the saved one.
+  const [mapLoaded, setMapLoaded] = useState(false);
   const [tileDataError, setTileDataError] = useState<string | null>(null);
+  // Live "the map is actually rendering tiles" signal, driven by the map's own
+  // `idle`/`styledata` events (see the onLoad handler). The "Map Data Not Found"
+  // dialog is gated on this: it can NEVER be visible while the map has a working
+  // style with sources — no matter which code path set the error, or how many times.
+  // This is the hard guarantee that the dialog only shows when there are truly no
+  // tiles; setter-time checks alone were unreliable (isStyleLoaded briefly flips
+  // false while a style re-applies, letting a stale error through).
+  const [mapHasTiles, setMapHasTiles] = useState(false);
+  // Single gate for the "Map Data Not Found" dialog. The style is loaded by TWO
+  // redundant paths (the map onLoad handler and a vectorStyleNonce effect), so one
+  // path can fail its fetch and pop the dialog while the OTHER already rendered the
+  // map — and because the effect re-runs, it kept reappearing. Only raise the dialog
+  // when the map genuinely has NO working style (no loaded style with sources); if
+  // the map is already showing tiles, the error is a stale/transient false positive.
+  const showTileDataError = useCallback((msg: string) => {
+    try {
+      const m = mapRef.current?.getMap?.();
+      if (m?.isStyleLoaded?.()) {
+        const sources = m.getStyle()?.sources ?? {};
+        if (Object.keys(sources).length > 0) return; // map is working — ignore
+      }
+    } catch {
+      /* style not queryable yet — fall through and show the error */
+    }
+    setTileDataError(msg);
+  }, []);
+  // Debounced confirmation for the "Map Data Not Found" dialog. It appears ONLY
+  // when the not-found condition (an error is set AND the map still has no tiles)
+  // has held continuously for the grace period below — long enough for even a slow
+  // relaunch to start rendering. If the map comes alive within the window,
+  // `mapHasTiles` latches true, this effect resets, and the dialog never appears.
+  // This is what kills the startup FLASH (dialog was popping for ~1s before the
+  // first `idle`). Genuine "no tiles folder" holds false past the grace → shows.
+  const [tileDataErrorConfirmed, setTileDataErrorConfirmed] = useState(false);
+  useEffect(() => {
+    if (tileDataError !== null && !mapHasTiles) {
+      const t = setTimeout(() => setTileDataErrorConfirmed(true), 4000);
+      return () => clearTimeout(t);
+    }
+    setTileDataErrorConfirmed(false);
+  }, [tileDataError, mapHasTiles]);
+  // Custom base map switching (Storage Paths → Map Tiles). activeId === null is
+  // the built-in default (Documents/tiles vector), so this is inert until a user
+  // picks another folder — the current basemap path is left completely untouched.
+  const basemapActiveId = useBasemapStore((s) => s.activeId);
+  const basemapSources = useBasemapStore((s) => s.sources);
+  const customBasemapActiveRef = useRef(false);
+  // Bumped to force the default vector style to reload (e.g. reverting to Default).
+  const [vectorStyleNonce, setVectorStyleNonce] = useState(0);
+  // Geodetic (EPSG:4326) plate-carrée mode: non-null while a 4326 base map is
+  // active. Rendered as a deck.gl OrthographicView overlay above the (covered)
+  // mapbox map, so Mercator mode is untouched. Ref mirrors state for effect logic.
+  const [geodeticBasemap, setGeodeticBasemap] = useState<{
+    config: TilesConfig;
+    baseUrl: string;
+  } | null>(null);
+  const geodeticBasemapRef = useRef<typeof geodeticBasemap>(null);
+  const geodeticInitRef = useRef<{ center: [number, number]; zoom: number }>({
+    center: [DEFAULT_CENTER[0], DEFAULT_CENTER[1]],
+    zoom: mapboxZoomToOrtho(DEFAULT_ZOOM),
+  });
+  const geodeticViewRef = useRef<{ center: [number, number]; zoom: number }>(
+    geodeticInitRef.current,
+  );
+  // A one-shot view command pushed to the geodetic OrthographicView. In geodetic
+  // mode the mapbox camera is covered and inert, so "focus layer" (and any camera
+  // move) must be routed here instead of to map.fitBounds/flyTo.
+  const geodeticCmdNonceRef = useRef(0);
+  const [geodeticCommand, setGeodeticCommand] = useState<{
+    center: [number, number];
+    zoom: number;
+    nonce: number;
+  } | null>(null);
+  const applyGeodeticBasemap = useCallback(
+    (v: { config: TilesConfig; baseUrl: string } | null) => {
+      geodeticBasemapRef.current = v;
+      setGeodeticBasemap(v);
+    },
+    [],
+  );
+  // Tiled rasters (mapbox raster sources in Mercator mode) re-expressed for the
+  // geodetic view, which renders their Web-Mercator tiles at true lng/lat bounds.
+  const geodeticRasterLayers = useMemo(
+    () =>
+      layers
+        .filter((l) => l.tilesUrl && l.visible !== false)
+        .map((l) => ({
+          id: l.id,
+          tilesUrl: l.tilesUrl as string,
+          tileMinZoom: l.tileMinZoom,
+          tileMaxZoom: l.tileMaxZoom,
+          tileBoundsWgs84: l.tileBoundsWgs84,
+          opacity:
+            Array.isArray(l.color) && l.color.length === 4
+              ? Math.max(0, Math.min(1, (l.color[3] as number) / 255))
+              : 1,
+        })),
+    [layers],
+  );
   const [expectedTilePath, setExpectedTilePath] = useState<string>(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = (window as any).electronAPI;
@@ -771,8 +1046,18 @@ const MapComponent = ({
       apply();
     } else {
       map.once?.("load", apply);
-      map.once?.("style.load", apply);
     }
+    // Re-attach tiled rasters after ANY full style replacement (e.g. switching
+    // the base map via setStyle) — a one-shot listener would drop them on the
+    // second style load, wiping user raster layers.
+    map.on?.("style.load", apply);
+    return () => {
+      try {
+        map.off?.("style.load", apply);
+      } catch {
+        /* noop */
+      }
+    };
   }, [layers]);
 
   // ── Viewport culling for tiled rasters ───────────────────────────────
@@ -1087,6 +1372,10 @@ const MapComponent = ({
     const map = mapRef.current.getMap();
     if (!map || !map.loaded()) return;
 
+    // A custom (raster) base map owns the style right now — don't overwrite it
+    // with the default vector style. Reverting to Default clears this flag first.
+    if (customBasemapActiveRef.current) return;
+
     // Load style from URL
     const styleUrl = `${tileServerUrl}/style.json`;
 
@@ -1185,12 +1474,15 @@ const MapComponent = ({
             styleJson.glyphs = `${tileServerUrl}/fonts/{fontstack}/{range}.pbf`;
           }
 
+          // A custom base map may have taken over while this fetch was in
+          // flight (e.g. a persisted raster set on startup) — don't clobber it.
+          if (customBasemapActiveRef.current) return;
           // Apply the modified style
           map.setStyle(styleJson);
         })
         .catch((error) => {
           console.error("[Map] Failed to fetch and apply style:", error);
-          setTileDataError(
+          showTileDataError(
             `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
           );
         });
@@ -1201,6 +1493,13 @@ const MapComponent = ({
     map.once("style.load", () => {
       // Force update all tile source URLs to point to tile server
       const currentStyle = map.getStyle();
+      // A real style with sources loaded → clear any spurious "not found" error.
+      if (
+        currentStyle?.sources &&
+        Object.keys(currentStyle.sources).length > 0
+      ) {
+        setTileDataError(null);
+      }
       if (currentStyle && currentStyle.sources) {
         Object.keys(currentStyle.sources).forEach((sourceKey) => {
           const source = map.getSource(sourceKey);
@@ -1245,10 +1544,10 @@ const MapComponent = ({
                 map.addSource(sourceKey, {
                   type: "vector",
                   tiles: updatedTiles,
-
                   minzoom: MAP_MIN_ZOOM,
-                  maxzoom: MAP_MAX_ZOOM,
-                  maxNativeZoom: TILE_SOURCE_MAX_NATIVE_ZOOM,
+                  // Native max: mapbox overzooms beyond it instead of 404-ing the
+                  // missing higher zooms (which blanked the tiles). See constants.
+                  maxzoom: TILE_SOURCE_MAX_NATIVE_ZOOM,
                 });
               } catch (e) {
                 console.error(`[Map] Failed to update source ${sourceKey}:`, e);
@@ -1262,11 +1561,149 @@ const MapComponent = ({
 
     map.once("style.error", (e: any) => {
       console.error("[Map] Failed to reload style:", e);
-      setTileDataError(
+      // Ignored if the map already has a working style (a later resource error over
+      // a loaded map is not "map data not found").
+      showTileDataError(
         "Failed to load map style. The tile data may be missing or corrupted at the expected location.",
       );
     });
-  }, [tileServerUrl]);
+  }, [tileServerUrl, vectorStyleNonce, showTileDataError]);
+
+  // Apply the active custom base map (Storage Paths → Map Tiles → ✎). Inert while
+  // activeId === null (built-in default vector) so the current basemap is untouched
+  // until a folder is picked; then the folder's config.txt decides the render path.
+  useEffect(() => {
+    const wrap = mapRef.current;
+    if (!wrap) return;
+    const map = wrap.getMap?.();
+    if (!map) return;
+
+    const active =
+      basemapActiveId != null
+        ? (basemapSources.find((s) => s.id === basemapActiveId) ?? null)
+        : null;
+
+    let cancelled = false;
+
+    // Leave geodetic mode, carrying the geodetic camera back to the mapbox map
+    // (clamped to Mercator's ±85°) so the transition is seamless.
+    const exitGeodetic = () => {
+      if (!geodeticBasemapRef.current) return;
+      const gv = geodeticViewRef.current;
+      if (gv && map) {
+        try {
+          map.jumpTo({
+            center: [gv.center[0], Math.max(-85, Math.min(85, gv.center[1]))],
+            zoom: orthoZoomToMapbox(gv.zoom),
+          });
+        } catch {
+          /* noop */
+        }
+      }
+      applyGeodeticBasemap(null);
+    };
+
+    const apply = async () => {
+      if (cancelled) return;
+
+      // Revert to the built-in default vector base map.
+      if (!active) {
+        exitGeodetic();
+        if (customBasemapActiveRef.current) {
+          customBasemapActiveRef.current = false;
+          await OfflineTileServer.basemapSetFolder({ path: "" }).catch(() => {});
+          setVectorStyleNonce((n) => n + 1); // re-runs the vector reload effect
+        }
+        return;
+      }
+
+      if (!tileServerUrl) return; // tile server not ready yet — effect re-runs
+
+      // Point the /basemap/ route at the folder, then read its config from the
+      // SERVED folder over HTTP. This works on BOTH Electron (abs path) and
+      // Android (SAF tree URI), instead of a desktop-only direct file read.
+      try {
+        await OfflineTileServer.basemapSetFolder({ path: active.path });
+      } catch (err) {
+        console.error("[Basemap] setFolder failed:", err);
+        toast.error(`Couldn't open ${active.label}`);
+        return;
+      }
+      if (cancelled) return;
+
+      const cfg = await resolveTilesConfig(`${tileServerUrl}/basemap`);
+      if (cancelled) return;
+
+      const kind = classifyTiles(cfg);
+
+      // EPSG:4326 / plate-carrée — reaches the full ±90° (incl. 85–90°).
+      if (kind === "raster-geodetic") {
+        customBasemapActiveRef.current = true;
+        // Seed the geodetic camera from the current mapbox view, but only when
+        // ENTERING geodetic mode (not when switching between two 4326 folders).
+        if (!geodeticBasemapRef.current) {
+          let center: [number, number] = [DEFAULT_CENTER[0], DEFAULT_CENTER[1]];
+          let oz = mapboxZoomToOrtho(DEFAULT_ZOOM);
+          try {
+            if (map) {
+              const c = map.getCenter();
+              center = [c.lng, c.lat];
+              oz = mapboxZoomToOrtho(map.getZoom());
+            }
+          } catch {
+            /* use defaults */
+          }
+          geodeticInitRef.current = { center, zoom: oz };
+          geodeticViewRef.current = { center, zoom: oz };
+        }
+        applyGeodeticBasemap({
+          config: cfg,
+          baseUrl: `${tileServerUrl}/basemap`,
+        });
+        return;
+      }
+
+      // Non-geodetic target: leave geodetic mode if we were in it.
+      exitGeodetic();
+
+      // Vector (.pbf) folder — load its own style.json through /basemap/.
+      if (kind === "vector-mercator") {
+        customBasemapActiveRef.current = true;
+        const ok = await applyVectorBasemap(
+          map,
+          `${tileServerUrl}/basemap`,
+          active.id,
+        );
+        if (cancelled) return;
+        if (!ok) {
+          customBasemapActiveRef.current = false;
+          setVectorStyleNonce((n) => n + 1); // fall back to the default vector map
+          toast.error(`${active.label} has no usable style.json.`);
+        }
+        return;
+      }
+
+      // raster-mercator: render as a mapbox raster style from /basemap/.
+      customBasemapActiveRef.current = true;
+      map.setStyle(buildRasterMercatorStyle(tileServerUrl, cfg, active.id));
+    };
+
+    // Apply immediately. Gating on map.loaded()/the 'load' event misses the
+    // common startup case where the SAVED basemap rehydrates AFTER the initial
+    // load event already fired — the map would then never switch on launch. The
+    // map object is usable once created (geodetic needs no mapbox call; setStyle/
+    // jumpTo are safe any time), so a direct apply is correct.
+    void apply();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    basemapActiveId,
+    basemapSources,
+    tileServerUrl,
+    applyGeodeticBasemap,
+    mapLoaded,
+  ]);
 
   // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
   // const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2214,7 +2651,6 @@ const MapComponent = ({
     try {
       // Early validation: Check if there's anything to save
       const { getTempManifest } = await import("@/sessions/manifestStore");
-      const { isSketchLayer } = await import("@/lib/sketch-layers");
 
       const tempManifest = getTempManifest();
       const sketchLayers = layers.filter(isSketchLayer);
@@ -2669,6 +3105,17 @@ const MapComponent = ({
 
   // Reset to home view (India bounds with fixed zoom)
   const handleResetHome = () => {
+    // Geodetic (EPSG:4326) mode: the mapbox camera is covered and inert, so a
+    // map.easeTo does nothing visible. Command the OrthographicView instead (same
+    // path as focus / rubber-band).
+    if (geodeticBasemapRef.current) {
+      setGeodeticCommand({
+        center: [DEFAULT_CENTER[0], DEFAULT_CENTER[1]],
+        zoom: mapboxZoomToOrtho(DEFAULT_ZOOM),
+        nonce: (geodeticCmdNonceRef.current += 1),
+      });
+      return;
+    }
     if (mapRef.current) {
       const map = mapRef.current.getMap();
       // Reset to initial view state with fixed zoom level
@@ -2716,6 +3163,27 @@ const MapComponent = ({
       return;
     }
 
+    // Recenter on the location. In geodetic (EPSG:4326) mode the mapbox camera is
+    // covered and inert, so command the OrthographicView instead (like home/focus).
+    const zoomToLocation = (lng: number, lat: number) => {
+      if (geodeticBasemapRef.current) {
+        setGeodeticCommand({
+          center: [lng, lat],
+          zoom: mapboxZoomToOrtho(GEOLOCATION_ZOOM),
+          nonce: (geodeticCmdNonceRef.current += 1),
+        });
+        return;
+      }
+      const map = mapRef.current?.getMap();
+      if (map) {
+        map.easeTo({
+          center: [lng, lat],
+          zoom: GEOLOCATION_ZOOM,
+          duration: 1500,
+        });
+      }
+    };
+
     let toastId: string | null = null;
 
     try {
@@ -2750,14 +3218,7 @@ const MapComponent = ({
           await new Promise((resolve) => setTimeout(resolve, 100));
 
           // Zoom to location with smooth animation
-          if (mapRef.current) {
-            const map = mapRef.current.getMap();
-            map.easeTo({
-              center: [location.lng, location.lat],
-              zoom: GEOLOCATION_ZOOM,
-              duration: 1500,
-            });
-          }
+          zoomToLocation(location.lng, location.lat);
 
           // Dismiss loading toast and show success
           if (toastId) {
@@ -2766,14 +3227,7 @@ const MapComponent = ({
         }
       } else {
         // We already have location, just zoom to it smoothly
-        if (mapRef.current) {
-          const map = mapRef.current.getMap();
-          map.easeTo({
-            center: [userLocation.lng, userLocation.lat],
-            zoom: GEOLOCATION_ZOOM,
-            duration: 1500,
-          });
-        }
+        zoomToLocation(userLocation.lng, userLocation.lat);
       }
     } catch (error: any) {
       console.error("Location error:", error);
@@ -2952,11 +3406,12 @@ const MapComponent = ({
   };
 
   const handlePolygonDrawing = (point: [number, number]) => {
-    //
-
     if (!isDrawing) {
       setCurrentPath([point]);
       setPendingPolygonPoints([point]);
+      // Collapse the preview edge onto the placed point: touch / the geodetic view
+      // have no pre-tap hover, so a stale mousePosition would draw a stray edge.
+      setMousePosition(point);
       setIsDrawing(true);
       return;
     }
@@ -2964,9 +3419,16 @@ const MapComponent = ({
     const updatedPath = [...pendingPolygonPoints, point];
     setPendingPolygonPoints(updatedPath);
     setCurrentPath(updatedPath);
+    setMousePosition(point);
 
-    // Get zoom-based threshold for closing polygon (optimized for zoom 18)
-    const closeThreshold = getPolygonCloseThreshold(mapZoom);
+    // Zoom-based close threshold. In geodetic mode `mapZoom` is the covered mapbox
+    // map's STALE zoom, so use the OrthographicView's own zoom (converted to the
+    // equivalent mapbox zoom) — otherwise the "tap near the first point to close"
+    // distance is wrong and the polygon won't close (or closes too early).
+    const effectiveZoom = geodeticBasemapRef.current
+      ? orthoZoomToMapbox(geodeticViewRef.current.zoom)
+      : mapZoom;
+    const closeThreshold = getPolygonCloseThreshold(effectiveZoom);
 
     if (
       updatedPath.length >= 3 &&
@@ -3042,6 +3504,10 @@ const MapComponent = ({
     (point: [number, number]) => {
       if (!isDrawing) {
         setCurrentPath([point]);
+        // Collapse the preview segment onto the placed point (see the azimuthal
+        // handler): stops a stale mousePosition drawing a random segment on the
+        // first tap on the geodetic view / touch.
+        setMousePosition(point);
         setIsDrawing(true);
         return;
       }
@@ -3057,11 +3523,13 @@ const MapComponent = ({
       }
 
       setCurrentPath([...currentPath, point]);
+      setMousePosition(point); // keep the next segment collapsed until the cursor moves
     },
     [
       isDrawing,
       currentPath,
       setCurrentPath,
+      setMousePosition,
       setIsDrawing,
       arePointsClose,
       finalizePolyline,
@@ -3071,6 +3539,11 @@ const MapComponent = ({
   const handleAzimuthalDrawing = (point: [number, number]) => {
     if (!isDrawing) {
       setCurrentPath([point]);
+      // Collapse the preview onto the just-placed center so a STALE mousePosition
+      // (left over from a previous draw) can't flash a random north/azimuth line
+      // for a frame. The geodetic view and touch have no pre-tap hover to refresh
+      // it, unlike the mapbox mousemove handler — hence the blink was 4326-only.
+      setMousePosition(point);
       setIsDrawing(true);
       return;
     }
@@ -3243,6 +3716,11 @@ const MapComponent = ({
       }
 
       if (info.object || (isDemHover && info.coordinate)) {
+        // In geodetic mode the pick comes from the OrthographicView; tag it so the
+        // tooltip positions from the deck screen x/y instead of mapbox.project.
+        if (geodeticBasemapRef.current) {
+          (info as { __geodetic?: boolean }).__geodetic = true;
+        }
         setHoverInfo(info);
       } else {
         setHoverInfo(undefined);
@@ -3303,7 +3781,10 @@ const MapComponent = ({
     // rotated/pitched, screen pixels in the surrounding whitespace void still unproject to
     // coordinates (latitudes up to ±90°, longitudes past ±180°); placing vertices there draws
     // off-world features. Keep drawing confined to the real map extent.
-    if (Math.abs(latitude) > MAX_MERCATOR_LATITUDE || Math.abs(longitude) > 180) {
+    // In geodetic (plate-carrée) mode the map reaches ±90°; only Mercator is
+    // clipped at ±85.0511°.
+    const drawMaxLat = geodeticBasemapRef.current ? 90 : MAX_MERCATOR_LATITUDE;
+    if (Math.abs(latitude) > drawMaxLat || Math.abs(longitude) > 180) {
       toast.error("Can't draw outside the map area");
       return;
     }
@@ -3402,6 +3883,48 @@ const MapComponent = ({
     if (drawingMode) {
       setHoverInfo(undefined);
       handleClick(event);
+      return;
+    }
+
+    // In geodetic (EPSG:4326) mode the OrthographicView already resolved the pick
+    // and passed the feature (+ layer) and the CORRECT lng/lat in the event. Its
+    // camera differs from the covered, inert mapbox map, so the mapbox-overlay
+    // re-pick below would sample the wrong pixel — anchoring the tooltip to the
+    // wrong point (so it won't follow the feature) or missing entirely. Resolve
+    // EVERYTHING from the geodetic pick here, for both vector features and rasters.
+    if (geodeticBasemapRef.current) {
+      const gx = event.point?.x ?? 0;
+      const gy = event.point?.y ?? 0;
+      const gLng = event.coordinate?.[0];
+      const gLat = event.coordinate?.[1];
+      if (object) {
+        commitDeckPickToHover({
+          object,
+          layer: event.layer,
+          coordinate: event.coordinate,
+          x: gx,
+          y: gy,
+        } as unknown as PickingInfo<unknown>);
+      } else if (typeof gLng === "number" && typeof gLat === "number") {
+        // No vector object under the tap (e.g. a raster/DEM). Resolve the topmost
+        // DEM by lng/lat — camera-independent, so it anchors to the right place and
+        // the shared Tooltip then tracks it via the geodetic projection on pan/zoom.
+        const topDem = resolveTopmostDemUnderLngLat(
+          layers,
+          Math.floor(mapZoom),
+          gLng,
+          gLat,
+        );
+        if (topDem) {
+          commitDeckPickToHover(
+            syntheticDemPickingInfo(topDem, gLng, gLat, gx, gy),
+          );
+        } else {
+          setHoverInfo(undefined);
+        }
+      } else {
+        setHoverInfo(undefined);
+      }
       return;
     }
 
@@ -3514,6 +4037,47 @@ const MapComponent = ({
       // Clamp latitude to [-90, 90]
       return Math.max(-90, Math.min(90, lat));
     };
+
+    // Geodetic (EPSG:4326) mode: the visible surface is the deck OrthographicView;
+    // the mapbox map underneath is covered and inert. Driving it (fitBounds/flyTo)
+    // does nothing visible AND makes the hidden map fetch pbf tiles as it pans, so
+    // command the geodetic view directly instead.
+    if (geodeticBasemapRef.current) {
+      let orthoZoom: number;
+      let cLng: number;
+      let cLat: number;
+      if (isSinglePoint) {
+        cLng = clampLng(center[0]);
+        cLat = clampLat(center[1]);
+        orthoZoom = mapboxZoomToOrtho(12);
+      } else {
+        const bMinLng = clampLng(minLng);
+        const bMaxLng = clampLng(maxLng);
+        const bMinLat = clampLat(minLat);
+        const bMaxLat = clampLat(maxLat);
+        cLng = (bMinLng + bMaxLng) / 2;
+        cLat = (bMinLat + bMaxLat) / 2;
+        // Fit the bounds into the geodetic viewport (deck canvas ≈ map container).
+        const el = map.getContainer?.();
+        const W = Math.max(1, el?.clientWidth ?? 1);
+        const H = Math.max(1, el?.clientHeight ?? 1);
+        const lngSpan = Math.max(Math.abs(bMaxLng - bMinLng), 1e-4);
+        const latSpan = Math.max(Math.abs(bMaxLat - bMinLat), 1e-4);
+        const pad = 1.3; // leave a margin, approximating fitBounds padding
+        orthoZoom = Math.min(
+          Math.log2(W / (lngSpan * pad)),
+          Math.log2(H / (latSpan * pad)),
+          mapboxZoomToOrtho(20),
+        );
+      }
+      setGeodeticCommand({
+        center: [cLng, cLat],
+        zoom: orthoZoom,
+        nonce: (geodeticCmdNonceRef.current += 1),
+      });
+      setFocusLayerRequest(null);
+      return;
+    }
 
     minLng = clampLng(minLng);
     maxLng = clampLng(maxLng);
@@ -4091,6 +4655,12 @@ const MapComponent = ({
   // Uses roundedZoom (from debouncedZoom) to only update after user stops zooming
   const getZoomVisibility = useCallback(
     (layer: LayerProps): boolean => {
+      // Hand-drawn sketches (lines/polygons/points/azimuths) are small features
+      // shown on demand via the Sketch panel's visibility toggle. They must never
+      // be zoom-gated — otherwise the auto-computed minzoom (e.g. 9 for a small
+      // bbox) hides them at low zoom and toggling "visible" appears to do nothing.
+      if (isSketchLayer(layer)) return true;
+
       let minZoom: number | undefined = layer.minzoom;
       let maxZoom = layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM;
 
@@ -4654,7 +5224,7 @@ const MapComponent = ({
               return {
                 position: point,
                 color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
-                radius: index === 0 ? 8 : 6, // Smaller radius in meters that scales with zoom
+                radius: index === 0 ? 8 : 6, // Fixed-pixel handles (start vertex slightly larger)
               };
             })
             .filter((item): item is NonNullable<typeof item> => item !== null);
@@ -4673,10 +5243,17 @@ const MapComponent = ({
               visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
               getPosition: (d: any) => d.position,
               getRadius: (d: any) => d.radius,
-              radiusUnits: "meters",
+              // Size vertex handles in PIXELS, not meters. The geodetic (EPSG:4326)
+              // base map renders through a cartesian OrthographicView where deck.gl
+              // has no projection to convert meters against, so meter-based radius
+              // and — worse — the meter-based stroke below blow up into huge pale
+              // rings. Pixel units render identically on both mapbox (mercator) and
+              // the geodetic view.
+              radiusUnits: "pixels",
               getFillColor: (d: any) => d.color,
               getLineColor: [255, 255, 255, 200],
               getLineWidth: 2,
+              lineWidthUnits: "pixels",
               stroked: true,
               pickable: false,
               radiusMinPixels: 4,
@@ -4837,7 +5414,14 @@ const MapComponent = ({
             f.geometry?.type === "Point" ? (layer.pointRadius ?? 5) : 0,
           getLineWidth: (f: any) => {
             const type = f.geometry?.type;
-            if (type === "LineString" || type === "MultiLineString") {
+            // GeometryCollection features (e.g. highway networks) carry their lines
+            // inside `geometries`, so the feature's own type is "GeometryCollection"
+            // — include it or the slider can't change their width (drew at 2 always).
+            if (
+              type === "LineString" ||
+              type === "MultiLineString" ||
+              type === "GeometryCollection"
+            ) {
               return lineWidth;
             }
             return 2;
@@ -5094,7 +5678,7 @@ const MapComponent = ({
     if (isDrawing && currentPath.length > 0) {
       const previewPointData = currentPath.map((point, index) => ({
         position: point,
-        radius: index === 0 ? 8 : 6, // Smaller radius in meters that scales with zoom
+        radius: index === 0 ? 6 : 5, // pixels — see radiusUnits note below
         color: index === 0 ? [255, 255, 0] : [255, 0, 255],
       }));
       previewLayers.push(
@@ -5103,11 +5687,16 @@ const MapComponent = ({
           data: previewPointData,
           getPosition: (d: any) => d.position,
           getRadius: (d: any) => d.radius,
-          radiusUnits: "meters",
+          // Pixels, NOT meters: on the geodetic OrthographicView world units are
+          // degrees, so a "meters" radius blows up and pins to radiusMaxPixels
+          // (~10px) — the oversized dots. Mapbox meanwhile pinned to the 4px min,
+          // so the two views disagreed. Fixed pixels keeps a small, identical dot
+          // on every projection, matching the pbf/mercator feel.
+          radiusUnits: "pixels",
           getFillColor: (d: any) => d.color,
           pickable: false,
-          radiusMinPixels: 4,
-          radiusMaxPixels: 10,
+          radiusMinPixels: 3,
+          radiusMaxPixels: 8,
         }),
       );
     }
@@ -5208,6 +5797,39 @@ const MapComponent = ({
     routeState.snappedB,
     routeState.selectedLayerId,
   ]);
+
+  // The user-location marker for the geodetic view. The mapbox overlay builds its
+  // own (below), but deckGlLayers deliberately excludes it — so the OrthographicView
+  // never got the "Your location" pin. The IconLayer is pixel-sized, so it renders
+  // identically here. (The mapbox accuracy ring uses radiusUnits:"meters", which is
+  // meaningless on the non-geospatial ortho view, so it is omitted here.)
+  const geodeticUserLocationLayers = useMemo(() => {
+    if (!userLocation || !showUserLocation) return [];
+    return [
+      new IconLayer({
+        id: "user-location-layer",
+        data: [{ position: [userLocation.lng, userLocation.lat] }],
+        getIcon: () => ({
+          url: USER_LOCATION_ICON_URL,
+          width: 24,
+          height: 24,
+          anchorY: 24,
+        }),
+        getPosition: (d: any) => d.position,
+        sizeScale: 1,
+        sizeMinPixels: 24,
+        sizeMaxPixels: 48,
+        pickable: true,
+        pickingRadius: 20,
+        onHover: handleLayerHover,
+      }),
+    ];
+  }, [userLocation, showUserLocation, handleLayerHover]);
+
+  const geodeticLayers = useMemo(
+    () => [...deckGlLayers, ...geodeticUserLocationLayers],
+    [deckGlLayers, geodeticUserLocationLayers],
+  );
 
   return (
     <div
@@ -5509,6 +6131,12 @@ const MapComponent = ({
 
                       return finalUrl;
                     });
+                    // PRESERVE the tileset's own maxzoom (built-in style declares 14)
+                    // so mapbox OVERZOOMS beyond it instead of 404-ing the missing
+                    // higher zooms and blanking the map. The old code overwrote it
+                    // with the camera max — that was the bug. Fall back only if absent.
+                    source.minzoom = MAP_MIN_ZOOM;
+                    source.maxzoom = source.maxzoom ?? TILE_SOURCE_MAX_NATIVE_ZOOM;
                   }
                 });
               }
@@ -5530,8 +6158,20 @@ const MapComponent = ({
 
               // Set up style.load handler BEFORE applying style
               mapInstance.once("style.load", () => {
-                // Double-check and force update tile URLs after style loads
                 const currentStyle = mapInstance.getStyle();
+                // A real style WITH sources loaded → the tiles are present, so clear
+                // any spurious "Map Data Not Found" error (e.g. a transient
+                // style.error fired during startup). The genuine no-data case takes
+                // the catch below and applies an EMPTY style (no sources), so this
+                // never clears it. Fixes the dialog appearing over a working map on
+                // relaunch.
+                if (
+                  currentStyle?.sources &&
+                  Object.keys(currentStyle.sources).length > 0
+                ) {
+                  setTileDataError(null);
+                }
+                // Double-check and force update tile URLs after style loads
                 if (currentStyle && currentStyle.sources) {
                   Object.keys(currentStyle.sources).forEach((sourceKey) => {
                     const source = mapInstance.getSource(sourceKey);
@@ -5573,8 +6213,9 @@ const MapComponent = ({
                               type: "vector",
                               tiles: updatedTiles,
                               minzoom: MAP_MIN_ZOOM,
-                              maxzoom: MAP_MAX_ZOOM,
-                              maxNativeZoom: TILE_SOURCE_MAX_NATIVE_ZOOM,
+                              // Native max: mapbox overzooms beyond it instead of
+                              // 404-ing the missing higher zooms. See constants.
+                              maxzoom: TILE_SOURCE_MAX_NATIVE_ZOOM,
                             });
                           } catch (e) {
                             console.error(
@@ -5594,7 +6235,7 @@ const MapComponent = ({
               mapInstance.setStyle(styleJson);
             } catch (error) {
               console.error("[Map] Failed to fetch and apply style:", error);
-              setTileDataError(
+              showTileDataError(
                 `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
               );
               mapInstance.setStyle({
@@ -5610,19 +6251,55 @@ const MapComponent = ({
               sources: {},
               layers: [],
             });
-            setTileDataError(
+            showTileDataError(
               `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
             );
           }
 
           mapInstance.once("style.error", (e: any) => {
             console.error("[Map] Style loading error:", e);
-            setTileDataError(
+            // Ignored if the map already has a working style — a later single-resource
+            // 404 (glyph/sprite/tile, often transient on relaunch) is not "not found".
+            showTileDataError(
               "Failed to load map style. The tile data may be missing or corrupted at the expected location.",
             );
           });
 
           mapInstance.setMaxBounds(null);
+
+          // Live "the map is actually rendering tiles" signal. `idle` fires every
+          // time the map finishes settling (after any style/source/tile change),
+          // and `styledata` on every style mutation — so `mapHasTiles` always
+          // reflects the CURRENT truth: does the map have a loaded style with at
+          // least one source? The dialog is gated on this (see its `open=` below),
+          // which is why a stale/late error from any path can never keep it visible
+          // over a working map — the next idle flips the gate shut. A genuinely
+          // empty map (no tiles folder → empty style, zero sources) stays false, so
+          // the real "not found" case still shows.
+          const refreshHasTiles = () => {
+            try {
+              const has =
+                mapInstance.isStyleLoaded() &&
+                Object.keys(mapInstance.getStyle()?.sources ?? {}).length > 0;
+              // LATCH: once the map has ever rendered a style WITH sources, the tile
+              // data provably exists on disk — so never flip back to false. Style
+              // re-applies (vectorStyleNonce reloads, basemap switches) transiently
+              // report isStyleLoaded()===false; without this latch that made
+              // mapHasTiles flap true→false→true and the dialog reappeared over a
+              // fully-loaded map. Data-on-disk is a one-way fact for the session.
+              if (has) setMapHasTiles(true);
+            } catch {
+              /* style not queryable mid-transition — ignore */
+            }
+          };
+          mapInstance.on("idle", refreshHasTiles);
+          mapInstance.on("styledata", refreshHasTiles);
+          refreshHasTiles();
+
+          // The mapbox instance is ready. Let the custom-basemap apply effect
+          // re-run so a basemap restored from a previous session actually gets
+          // applied (its first run may have bailed on a not-yet-created map).
+          setMapLoaded(true);
         }}
         onClick={handleMapClick}
         onMouseMove={handleMouseMove}
@@ -5634,8 +6311,8 @@ const MapComponent = ({
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        dragPan={!isRubberBandDrawing}
-        touchZoomRotate={!isRubberBandDrawing}
+        dragPan={!rubberBandMode && !isRubberBandDrawing}
+        touchZoomRotate={!rubberBandMode && !isRubberBandDrawing}
         onMoveEnd={(e: any) => {
           if (e && e.viewState) {
             // Throttle updates to reduce re-renders during map operations
@@ -5656,7 +6333,13 @@ const MapComponent = ({
         <DeckGLOverlay
           overlayRef={deckOverlayRef}
           demRasterPickSuppressRef={demRasterPickSuppressRef}
-          layers={[
+          // In geodetic mode the geodetic DeckGL owns these layer instances; feed
+          // the covered mapbox overlay an empty list so deck.gl doesn't mutate the
+          // same instances from two Deck renderers.
+          layers={
+            geodeticBasemap
+              ? []
+              : [
             ...deckGlLayers,
             // Rubber band overlay layers (render on top)
             ...(rubberBandRectangle
@@ -5696,7 +6379,7 @@ const MapComponent = ({
                     id: "user-location-layer",
                     data: [{ position: [userLocation.lng, userLocation.lat] }],
                     getIcon: () => ({
-                      url: "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJDNy41ODIgMiA0IDUuNTgyIDQgMTBDNCAxNi4wODggMTIgMjIgMTIgMjJDMTIgMjIgMjAgMTYuMDg4IDIwIDEwQzIwIDUuNTgyIDE2LjQxOCAyIDEyIDJaIiBmaWxsPSIjM0I4MkY2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMCIgcj0iMyIgZmlsbD0id2hpdGUiLz4KPC9zdmc+",
+                      url: USER_LOCATION_ICON_URL,
                       width: 24,
                       height: 24,
                       anchorY: 24,
@@ -5719,6 +6402,65 @@ const MapComponent = ({
           showZoom={true}
         />
       </Map>
+
+      {/* EPSG:4326 plate-carrée surface — mounts above the (covered) mapbox map
+          only while a 4326 base map is active, so it reaches the full ±90°. */}
+      {geodeticBasemap && (
+        // No z-index: sits above the (covered) mapbox map by DOM order but stays
+        // BELOW the tooltip (zIndex 5) and UI panels (z-50), which must show over it.
+        <div className="absolute inset-0">
+          <GeodeticBasemapView
+            baseUrl={geodeticBasemap.baseUrl}
+            config={geodeticBasemap.config}
+            cacheKey={basemapActiveId ?? "default"}
+            layers={geodeticLayers}
+            rasterLayers={geodeticRasterLayers}
+            initialCenter={geodeticInitRef.current.center}
+            initialZoom={geodeticInitRef.current.zoom}
+            commandView={geodeticCommand}
+            onViewStateChange={(center, zoom) => {
+              geodeticViewRef.current = { center, zoom };
+            }}
+            onMapClick={(pick) =>
+              // Route through the same handler mapbox uses so Route Finder A/B
+              // placement, drawing, and tap-to-inspect all work in geodetic mode.
+              handleMapClick({
+                lngLat: { lng: pick.coordinate[0], lat: pick.coordinate[1] },
+                coordinate: pick.coordinate,
+                point: { x: pick.x, y: pick.y },
+                object: pick.object,
+                layer: pick.layer,
+              })
+            }
+            onHover={(info) => {
+              const i = info as PickingInfo<unknown>;
+              if (drawingMode && i?.coordinate) {
+                // Keep the drawing preview segment following the cursor; otherwise
+                // its endpoint stays stale and draws a stray line to a random point.
+                setMousePosition([i.coordinate[0], i.coordinate[1]]);
+                return;
+              }
+              // On TOUCH there is no real hover: after a tap opens a tooltip, deck
+              // still emits a hover with no object here, which would instantly close
+              // it (the "opens then closes" on Android). Taps drive the tooltip via
+              // onMapClick, so ignore hover on coarse pointers — use it only for a
+              // desktop mouse, where hovering on/off a feature is the intended way to
+              // open/close the tooltip.
+              const coarsePointer =
+                typeof window !== "undefined" &&
+                typeof window.matchMedia === "function" &&
+                window.matchMedia("(pointer: coarse)").matches;
+              if (coarsePointer) return;
+              commitDeckPickToHover(i);
+            }}
+            // Rubber-band zoom lives inside the geodetic view (the mapbox-based one
+            // can't reach this covered surface). Exit the mode after one zoom, to
+            // match the mercator behaviour.
+            rubberBandMode={rubberBandMode && !drawingMode && !isDrawing}
+            onRubberBandComplete={() => setRubberBandMode(false)}
+          />
+        </div>
+      )}
 
       <Tooltip />
       {/* Settings Button with Paths Info */}
@@ -5817,7 +6559,13 @@ const MapComponent = ({
       {/* UDP Config Dialog removed - port is now fixed at 40074, data arrives automatically */}
 
       <Dialog
-        open={tileDataError !== null}
+        // HARD gate: never show this over a working map. `tileDataErrorConfirmed` is
+        // true only after an error has held AND the map has stayed tile-less for the
+        // grace period (see the debounce effect). Because `mapHasTiles` latches true
+        // the instant the map renders, a stale/transient error — no matter which
+        // path set it or how many times — can neither flash nor reappear here. It
+        // only shows for a genuinely tile-less map: the true "not found" case.
+        open={tileDataErrorConfirmed}
         onOpenChange={(open) => {
           if (!open) setTileDataError(null);
         }}

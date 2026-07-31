@@ -38,6 +38,17 @@ export interface OfflineTileServerPlugin {
    * @returns true if permissions are granted, false otherwise
    */
   checkStoragePermission(): Promise<{ hasPermission: boolean }>;
+
+  /**
+   * Point the /basemap/ route at a folder (or clear it with an empty path).
+   * Same server / same port — leaves the default tiles + user rasters untouched.
+   * @param options.path - Absolute folder path (Electron) or SAF tree URI (Android)
+   */
+  basemapSetFolder(options: { path: string }): Promise<{
+    ok?: boolean;
+    baseUrl: string | null;
+    port?: number;
+  }>;
 }
 
 // ── Platform detection ──
@@ -63,6 +74,9 @@ function createDesktopPlugin(): OfflineTileServerPlugin {
     },
     async checkStoragePermission() {
       return await api().tileServerCheckPermission();
+    },
+    async basemapSetFolder(options: { path: string }) {
+      return await api().basemapSetFolder(options.path);
     },
   };
 }

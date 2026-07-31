@@ -71,11 +71,15 @@ export const TooltipProperty = ({
         {label}:
       </span>
       <span
-        className="leading-snug wrap-break-word whitespace-pre-wrap"
+        className="leading-snug whitespace-pre-wrap"
         style={{
           fontFamily: "inherit",
           fontSize: "inherit",
           color: tooltipValueColor,
+          // Wrap onto as many lines as needed instead of truncating with an
+          // ellipsis — break even long unbroken tokens so nothing is clipped.
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
         }}
       >
         {value}
@@ -102,13 +106,13 @@ export const TooltipProperties = ({
   if (useGridLayout && properties.length > 6) {
     const midPoint = Math.ceil(properties.length / 2);
     return (
-      <div className={cn("flex gap-2 overflow-hidden", className)}>
-        <div className="flex-1 space-y-0.5 pr-2 border-r border-gray-200 overflow-hidden">
+      <div className={cn("flex gap-2", className)}>
+        <div className="flex-1 min-w-0 space-y-0.5 pr-2 border-r border-gray-200">
           {properties.slice(0, midPoint).map((prop, idx) => (
             <TooltipProperty key={idx} label={prop.label} value={prop.value} />
           ))}
         </div>
-        <div className="flex-1 space-y-0.5 pl-2 overflow-hidden">
+        <div className="flex-1 min-w-0 space-y-0.5 pl-2">
           {properties.slice(midPoint).map((prop, idx) => (
             <TooltipProperty key={idx} label={prop.label} value={prop.value} />
           ))}
@@ -118,7 +122,7 @@ export const TooltipProperties = ({
   }
 
   return (
-    <div className={cn("space-y-1 overflow-hidden", className)}>
+    <div className={cn("space-y-1", className)}>
       {properties.map((prop, idx) => (
         <TooltipProperty key={idx} label={prop.label} value={prop.value} />
       ))}
@@ -145,7 +149,7 @@ export const TooltipBox = ({
   return (
     <div
       className={cn(
-        "bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl p-2 overflow-hidden min-w-[180px]",
+        "bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl p-2 min-w-[180px]",
         maxWidth,
         className,
       )}

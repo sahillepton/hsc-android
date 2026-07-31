@@ -142,6 +142,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("tileServer:selectTileFolder"),
   tileServerGetSavedFolder: () =>
     ipcRenderer.invoke("tileServer:getSavedFolderUri"),
+  basemapSetFolder: (folderPath: string) =>
+    ipcRenderer.invoke("basemap:setFolder", folderPath),
 
   // Raster tiling (via gdal-async child Node worker)
   tilingProbe: (absolutePath: string) =>

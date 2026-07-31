@@ -174,14 +174,25 @@ export const calculateBearingDegrees = (
   a: [number, number],
   b: [number, number]
 ) => {
+  // Azimuth = the angle the DRAWN straight line makes with true north, i.e. the
+  // rhumb-line (loxodrome / constant-heading) bearing. This is a single fixed
+  // heading — unlike the great-circle *initial* bearing, which changes along the
+  // path and reads e.g. ~86.8° for a long due-east line that visually sits at 90°.
+  // The rhumb bearing gives exactly 90° there, matching the line you see; for short
+  // spans (antenna sectors) the two are indistinguishable.
   const lat1 = toRadians(a[1]);
   const lat2 = toRadians(b[1]);
-  const dLon = toRadians(b[0] - a[0]);
-  const y = Math.sin(dLon) * Math.cos(lat2);
-  const x =
-    Math.cos(lat1) * Math.sin(lat2) -
-    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-  const brng = Math.atan2(y, x);
+  let dLon = toRadians(b[0] - a[0]);
+  // Difference of "stretched" (Mercator) latitudes; 0 for an east-west line, which
+  // is what makes a due-east segment come out as exactly 90°.
+  const dPhi = Math.log(
+    Math.tan(Math.PI / 4 + lat2 / 2) / Math.tan(Math.PI / 4 + lat1 / 2)
+  );
+  // Cross the antimeridian by the shorter east/west arc.
+  if (Math.abs(dLon) > Math.PI) {
+    dLon = dLon > 0 ? dLon - 2 * Math.PI : dLon + 2 * Math.PI;
+  }
+  const brng = Math.atan2(dLon, dPhi);
   return (toDegrees(brng) + 360) % 360; // Normalize 0-360
 };
 
@@ -276,7 +287,7 @@ const formatCoordinate = (
 
   const [lng, lat] = point;
   const degreeSymbol = addDegrees ? "°" : "";
-  return `${lat.toFixed(4)}${degreeSymbol}, ${lng.toFixed(4)}${degreeSymbol}`;
+  return `${lat.toFixed(6)}${degreeSymbol}, ${lng.toFixed(6)}${degreeSymbol}`;
 };
 
 const getPathLengthMeters = (path?: [number, number][]) => {

@@ -25,7 +25,7 @@ export function formatShortestRouteLayerName(
 ): string {
   const [lng1, lat1] = from;
   const [lng2, lat2] = to;
-  return `${SHORTEST_ROUTE_LAYER_PREFIX} (${lat1.toFixed(5)}°, ${lng1.toFixed(5)}° to ${lat2.toFixed(5)}°, ${lng2.toFixed(5)}°)`;
+  return `${SHORTEST_ROUTE_LAYER_PREFIX} (${lat1.toFixed(6)}°, ${lng1.toFixed(6)}° to ${lat2.toFixed(6)}°, ${lng2.toFixed(6)}°)`;
 }
 
 /** Endpoints from a persisted shortest-route GeoJSON line (for display even if name is stale). */
@@ -65,7 +65,7 @@ export function getShortestRouteCoordinateSubtitle(
   if (!endpoints) return null;
   const [lng1, lat1] = endpoints.from;
   const [lng2, lat2] = endpoints.to;
-  return `(${lat1.toFixed(5)}°, ${lng1.toFixed(5)}° to ${lat2.toFixed(5)}°, ${lng2.toFixed(5)}°)`;
+  return `(${lat1.toFixed(6)}°, ${lng1.toFixed(6)}° to ${lat2.toFixed(6)}°, ${lng2.toFixed(6)}°)`;
 }
 
 export function getShortestRouteDisplayName(layer: LayerProps): string {

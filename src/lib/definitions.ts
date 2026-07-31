@@ -64,6 +64,12 @@ export interface LayerProps {
   distanceMeters?: number;
   minzoom?: number;
   maxzoom?: number;
+  /**
+   * Whitelist of feature-property keys to show in the tooltip. `undefined` means
+   * show all (default); an array shows only those keys (used to trim tooltips for
+   * layers with many attributes). Chosen in the layers panel's layer settings.
+   */
+  tooltipAttributes?: string[];
 
   // ── Tiling (large GeoTIFF served on-demand by the local tile server) ──
   // Set on layers that took the tiling path instead of in-renderer

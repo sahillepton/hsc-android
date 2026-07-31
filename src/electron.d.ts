@@ -129,6 +129,10 @@ export interface ElectronAPI {
   tileServerCheckPermission: () => Promise<{ hasPermission: boolean }>;
   tileServerSelectFolder: () => Promise<{ uri: string }>;
   tileServerGetSavedFolder: () => Promise<{ uri: string | null }>;
+  /** Point the /basemap/ route at a folder (or clear with ""). Stable port. */
+  basemapSetFolder: (
+    folderPath: string,
+  ) => Promise<{ ok: boolean; baseUrl: string | null }>;
 
   // Raster tiling (gdal-async via child Node worker)
   tilingProbe: (absolutePath: string) => Promise<TilingProbeResult>;

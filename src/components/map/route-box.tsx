@@ -161,7 +161,7 @@ const RouteBox = ({
         const igrs = calculateIgrs(point[0], point[1]);
         if (igrs) return igrs;
       }
-      return `${point[1].toFixed(5)}°, ${point[0].toFixed(5)}°`;
+      return `${point[1].toFixed(6)}°, ${point[0].toFixed(6)}°`;
     },
     [useIgrs],
   );

@@ -12,9 +12,18 @@ export const DEFAULT_ZOOM = 3;
 export const INITIAL_MAP_ZOOM = 4;
 export const GEOLOCATION_ZOOM = 14;
 export const MAP_MIN_ZOOM = 0;
-export const MAP_MAX_ZOOM = 18;
+export const MAP_MAX_ZOOM = 18; // camera zoom limit (you can zoom this far in)
 export const MAP_MAX_PITCH = 85;
-export const TILE_SOURCE_MAX_NATIVE_ZOOM = 5;
+/**
+ * FALLBACK native max zoom for a vector source, used ONLY when the tileset's
+ * style.json omits `maxzoom`. Normally the source's own `maxzoom` is preserved (the
+ * tile server declares it correctly per tileset). In mapbox-gl the source `maxzoom`
+ * is the native max — beyond it mapbox OVERZOOMS (scales the last real tiles) and
+ * requests no further tiles. Setting it HIGHER than what exists makes mapbox 404 the
+ * missing zooms → blank. (mapbox ignores `maxNativeZoom`, a Leaflet prop, so only
+ * `maxzoom` matters.) The built-in tileset is z0–14.
+ */
+export const TILE_SOURCE_MAX_NATIVE_ZOOM = 14;
 /**
  * Web Mercator (EPSG:3857) valid latitude limit. Latitudes beyond this are off-world:
  * when the map is rotated/pitched, screen pixels in the surrounding whitespace void
@@ -63,3 +72,10 @@ export const STORAGE_PERMISSION_TIMEOUT_MS = 5000;
 
 // ── Zoom visibility ──────────────────────────────────────────────────────────
 export const DEFAULT_LAYER_MAX_ZOOM = 20;
+
+// ── Tooltip ──────────────────────────────────────────────────────────────────
+/** How many feature attributes a tooltip shows by DEFAULT (before the user picks
+ *  fields in the layer settings). Keeps big-schema features compact and reliably
+ *  positioned; the same number seeds the initial selection so the settings panel
+ *  and the tooltip always agree. */
+export const TOOLTIP_DEFAULT_ATTR_LIMIT = 10;

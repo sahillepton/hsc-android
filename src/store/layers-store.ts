@@ -2,6 +2,7 @@ import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
 import { computeLayerBounds, calculateLayerZoomRange } from "@/lib/layers";
+import { isSketchLayer } from "@/lib/sketch-layers";
 import {
   markLayerStagedDelete,
   updateManifestColor,
@@ -86,9 +87,12 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   },
   addLayer: (layer) => {
     set((state) => {
-      // Calculate zoom range before saving if not already set (skip point layers)
-      let layerWithZoomRange = { ...layer };
-      if (layer.type !== "point") {
+      // Calculate zoom range before saving if not already set. Skip hand-drawn
+      // sketches (point/line/polygon/azimuth): they are shown on demand via the
+      // Sketch panel and must never be zoom-gated, so we never stamp an
+      // auto-computed minzoom on them (which would hide them at low zoom).
+      const layerWithZoomRange = { ...layer };
+      if (!isSketchLayer(layer)) {
         // If minzoom is not set, calculate both minzoom and maxzoom
         if (layer.minzoom === undefined) {
           const zoomRange = calculateLayerZoomRange(layer);
@@ -182,9 +186,11 @@ const useLayerStore = create<LayerState>()((set, get) => ({
             ? ([...updatedLayer.color] as typeof updatedLayer.color)
             : updatedLayer.color;
 
-          // Calculate zoom range if needed (skip point layers)
-          let finalLayer = { ...updatedLayer };
-          if (updatedLayer.type !== "point") {
+          // Calculate zoom range if needed. Skip hand-drawn sketches
+          // (point/line/polygon/azimuth) — they are never zoom-gated, so we don't
+          // stamp an auto-computed minzoom that would hide them at low zoom.
+          const finalLayer = { ...updatedLayer };
+          if (!isSketchLayer(updatedLayer)) {
             // If minzoom is not set, calculate both minzoom and maxzoom
             if (updatedLayer.minzoom === undefined) {
               const zoomRange = calculateLayerZoomRange(updatedLayer);

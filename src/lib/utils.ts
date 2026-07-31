@@ -645,10 +645,12 @@ export const calculateIgrs = (lon: number, lat: number): string | null => {
   const num14 = num5 * num13 * Math.pow(x1, y);
   const num15 = num5 * num13 * Math.pow(x2, y);
   const num16 = y * (num4 - num7);
-  let tempX = Math.round(num10 + num14 * Math.sin(num16));
-  let tempY = Math.round(num11 + num15 - num14 * Math.cos(num16));
-  tempX = Math.round(tempX * scaleFactor);
-  tempY = Math.round(tempY * scaleFactor);
+  // DEAL's C++ casts these doubles to `long`, which TRUNCATES toward zero (it does
+  // not round). Use Math.trunc — not Math.round — to match their result exactly.
+  let tempX = Math.trunc(num10 + num14 * Math.sin(num16));
+  let tempY = Math.trunc(num11 + num15 - num14 * Math.cos(num16));
+  tempX = Math.trunc(tempX * scaleFactor);
+  tempY = Math.trunc(tempY * scaleFactor);
 
   let X = Math.floor(tempX / 100000);
   let Y = Math.floor(tempY / 100000);

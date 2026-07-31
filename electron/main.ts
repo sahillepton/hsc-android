@@ -31,6 +31,10 @@ let mainWindow: BrowserWindow | null = null;
 let tileServer: http.Server | null = null;
 let tileServerPort: number = 0;
 let tileServerFolder: string = "";
+// Custom base map folder, served under /basemap/ on the SAME server (stable
+// port). Swappable at runtime without rebinding, so switching the base map never
+// disturbs the default tiles or already-loaded user raster layers.
+let basemapFolder: string = "";
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -997,6 +1001,7 @@ function getMimeType(ext: string): string {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".json": "application/json",
+    ".txt": "text/plain",
     ".svg": "image/svg+xml",
     ".ttf": "font/ttf",
     ".otf": "font/otf",
@@ -1097,6 +1102,50 @@ function startTileServer(
             res.end((err as Error).message || "Tile render failed");
           }
         })();
+        return;
+      }
+
+      // ── /basemap/... — custom base map tiles + config.txt ──
+      // Served from `basemapFolder` (swappable via basemap:setFolder) so the
+      // default tiles served from `folder` and the stable port are untouched.
+      if (urlPath === "/basemap" || urlPath.startsWith("/basemap/")) {
+        if (!basemapFolder) {
+          res.writeHead(404);
+          res.end("No base map folder set");
+          return;
+        }
+        // Drop any ?v= cache-busting token before resolving the file.
+        const rel = urlPath.split("?")[0].replace(/^\/basemap\/?/, "");
+        const bmRoot = path.resolve(basemapFolder);
+        const bmPath = path.resolve(path.join(basemapFolder, rel));
+        if (bmPath !== bmRoot && !bmPath.startsWith(bmRoot + path.sep)) {
+          res.writeHead(403);
+          res.end("Forbidden");
+          return;
+        }
+        // Stream directly (no blocking existsSync/statSync on the main thread);
+        // a missing/dir path surfaces as a stream error → 404. Tiles are immutable
+        // for a given URL (folder identity is in the ?v= token), so allow the
+        // browser to cache them permanently → re-panning a visited area is instant.
+        const bmExt = path.extname(bmPath);
+        const bmStream = fsSync.createReadStream(bmPath);
+        let bmHeaded = false;
+        bmStream.on("open", () => {
+          bmHeaded = true;
+          res.writeHead(200, {
+            "Content-Type": getMimeType(bmExt),
+            "Cache-Control": "public, max-age=31536000, immutable",
+          });
+        });
+        bmStream.on("error", () => {
+          if (!bmHeaded && !res.headersSent) {
+            res.writeHead(404);
+            res.end("Not found");
+          } else {
+            res.end();
+          }
+        });
+        bmStream.pipe(res);
         return;
       }
 
@@ -1221,6 +1270,16 @@ ipcMain.handle(
 
 ipcMain.handle("tileServer:checkStoragePermission", async () => {
   return { hasPermission: true };
+});
+
+// Point the /basemap/ route at a folder (or clear it with ""). Same server /
+// same port — no rebinding, so existing tiles and user raster layers are safe.
+ipcMain.handle("basemap:setFolder", async (_e, folderPath: string) => {
+  basemapFolder = folderPath || "";
+  return {
+    ok: true,
+    baseUrl: tileServerPort > 0 ? `http://localhost:${tileServerPort}` : null,
+  };
 });
 
 ipcMain.handle("tileServer:selectTileFolder", async () => {

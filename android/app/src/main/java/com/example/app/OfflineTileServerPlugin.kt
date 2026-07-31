@@ -181,6 +181,28 @@ class OfflineTileServerPlugin : Plugin() {
     }
     
     @PluginMethod
+    fun basemapSetFolder(call: PluginCall) {
+        val path = call.getString("path")
+        try {
+            if (tileServer == null) {
+                initializeServer()
+            }
+            if (path.isNullOrBlank()) {
+                tileServer?.updateBasemapFolder(null)
+            } else {
+                tileServer?.updateBasemapFolder(Uri.parse(path))
+            }
+            val ret = JSObject()
+            ret.put("ok", true)
+            ret.put("baseUrl", "http://localhost:8080")
+            ret.put("port", 8080)
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject("Failed to set base map folder: ${e.message}")
+        }
+    }
+
+    @PluginMethod
     fun checkStoragePermission(call: PluginCall) {
         val ret = JSObject()
         val hasPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -253,6 +275,24 @@ class TileServer(
         android.util.Log.d("TileServer", "Folder path updated to: ${baseDir.absolutePath}")
     }
 
+    /**
+     * Custom base map folder, served under /basemap/ (swappable at runtime, same
+     * server/port). Null when no custom base map is selected. Kept separate from
+     * `baseDir` so the default tiles + user raster layers are never disturbed.
+     */
+    @Volatile
+    private var basemapDir: File? = null
+
+    fun updateBasemapFolder(newUri: Uri?) {
+        basemapDir = try {
+            newUri?.let { resolveBaseDir(it) }
+        } catch (e: Exception) {
+            android.util.Log.e("TileServer", "basemap folder resolve failed: ${e.message}")
+            null
+        }
+        android.util.Log.d("TileServer", "Base map folder: ${basemapDir?.absolutePath ?: "(cleared)"}")
+    }
+
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         return try {
             val uri = session.uri
@@ -287,6 +327,44 @@ class TileServer(
                     res.addHeader("Access-Control-Allow-Origin", "*")
                     res
                 }
+            }
+
+            // ── /basemap/... — custom base map tiles + config.txt ──
+            // Served from `basemapDir` (swappable via basemapSetFolder) with the
+            // same immutable-cache policy as the raster route. The default tiles
+            // (served from baseDir) and the stable port stay untouched.
+            if (uri == "/basemap" || uri.startsWith("/basemap/")) {
+                val dir = basemapDir ?: return corsNotFound("No base map folder set")
+                val rel = uri.removePrefix("/basemap").removePrefix("/")
+                val file = File(dir, rel)
+                // Path-guard: must stay within the base map folder (separator-aware
+                // so a sibling like ".../tiles2" can't match ".../tiles").
+                val dirCanon = dir.canonicalPath
+                val fileCanon = file.canonicalPath
+                if (fileCanon != dirCanon &&
+                    !fileCanon.startsWith(dirCanon + File.separator)
+                ) {
+                    val res = NanoHTTPD.newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.FORBIDDEN,
+                        NanoHTTPD.MIME_PLAINTEXT,
+                        "Forbidden"
+                    )
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
+                }
+                if (!file.exists() || !file.isFile) {
+                    return corsNotFound("Not found")
+                }
+                val bytes = file.readBytes()
+                val res = NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    basemapMime(file.name),
+                    ByteArrayInputStream(bytes),
+                    bytes.size.toLong()
+                )
+                res.addHeader("Cache-Control", "public, max-age=31536000, immutable")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
             }
 
             // Handle style.json request
@@ -487,5 +565,30 @@ class TileServer(
             NanoHTTPD.MIME_PLAINTEXT,
             message
         )
+    }
+
+    /** 404 with the CORS header (browser tile loads require it). */
+    private fun corsNotFound(message: String): NanoHTTPD.Response {
+        val res = NanoHTTPD.newFixedLengthResponse(
+            NanoHTTPD.Response.Status.NOT_FOUND,
+            NanoHTTPD.MIME_PLAINTEXT,
+            message
+        )
+        res.addHeader("Access-Control-Allow-Origin", "*")
+        return res
+    }
+
+    /** MIME type for a base map file by extension. */
+    private fun basemapMime(name: String): String {
+        val n = name.lowercase()
+        return when {
+            n.endsWith(".png") -> "image/png"
+            n.endsWith(".jpg") || n.endsWith(".jpeg") -> "image/jpeg"
+            n.endsWith(".webp") -> "image/webp"
+            n.endsWith(".json") -> "application/json"
+            n.endsWith(".txt") -> "text/plain"
+            n.endsWith(".pbf") -> "application/x-protobuf"
+            else -> "application/octet-stream"
+        }
     }
 }

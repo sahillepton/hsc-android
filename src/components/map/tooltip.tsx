@@ -5,7 +5,10 @@ import {
   formatLabel,
   calculateIgrs,
 } from "@/lib/utils";
-import { DEFAULT_LAYER_MAX_ZOOM } from "@/lib/constants";
+import {
+  DEFAULT_LAYER_MAX_ZOOM,
+  TOOLTIP_DEFAULT_ATTR_LIMIT,
+} from "@/lib/constants";
 import {
   normalizeAngleSigned,
   computePolygonPerimeterMeters,
@@ -17,7 +20,7 @@ import {
   useIgrsPreference,
   useUserLocation,
 } from "@/store/layers-store";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Video, Upload, MessageSquare, PhoneCall } from "lucide-react";
 import {
   TooltipBox,
@@ -40,6 +43,7 @@ import {
   getShortestRouteCoordinateSubtitle,
   SHORTEST_ROUTE_LAYER_PREFIX,
 } from "@/lib/route-layer";
+import { isSketchLayer } from "@/lib/sketch-layers";
 
 const SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS = new Set([
   "shortestRoute",
@@ -127,7 +131,16 @@ const formatTooltipValue = (key: string, value: unknown): string => {
     }
     return value.trim();
   }
-  if (typeof value === "number" || typeof value === "boolean") {
+  if (typeof value === "number") {
+    // Cap displayed precision at 6 decimals to match the coordinate readouts —
+    // feature attributes like `latitude`/`longitude` otherwise print ~14 digits.
+    // toFixed→Number trims trailing zeros, so integers and short decimals are
+    // unchanged (16787941 stays 16787941, 86.21 stays 86.21).
+    return Number.isFinite(value)
+      ? String(Number(value.toFixed(6)))
+      : String(value);
+  }
+  if (typeof value === "boolean") {
     return String(value);
   }
   if (Array.isArray(value) || (value && typeof value === "object")) {
@@ -181,6 +194,12 @@ const Tooltip = () => {
   const [mapZoom, setMapZoom] = useState<number | null>(null);
   const tooltipRafRef = useRef<number | null>(null);
   const lastTooltipPositionRef = useRef<{ x: number; y: number } | null>(null);
+  // Measured tooltip box size, used to keep it on-screen (flip left / clamp).
+  const tooltipBoxRef = useRef<HTMLDivElement | null>(null);
+  const [boxSize, setBoxSize] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
   const mapRef = (window as any).mapRef;
   const featureAccessMap = useFeatureAccessMapStore(
     (s: FeatureAccessMapState) => s.map,
@@ -283,8 +302,15 @@ const Tooltip = () => {
 
     const updatePosition = () => {
       try {
+        // Geodetic (plate-carrée) mode renders in a separate deck OrthographicView,
+        // so the hidden mapbox map's project() would deviate. We still resolve the
+        // feature's lng/lat below, then project it through the geodetic view's own
+        // live camera so the tooltip TRACKS the feature on pan/zoom instead of
+        // sticking to the stale pick pixel.
+        const isGeodetic = !!(hoverInfo as unknown as { __geodetic?: boolean })
+          .__geodetic;
         const map = mapRef.current.getMap();
-        if (!map) return;
+        if (!map && !isGeodetic) return;
 
         // Get object coordinates
         let lng: number | undefined;
@@ -392,11 +418,56 @@ const Tooltip = () => {
           lng = hoverInfo.object.position[0];
           lat = hoverInfo.object.position[1];
         }
+        // PRIORITY 6: deck LineLayer segment (source/target) — anchor at midpoint
+        else if (
+          lng === undefined &&
+          lat === undefined &&
+          Array.isArray(hoverInfo.object?.sourcePosition) &&
+          Array.isArray(hoverInfo.object?.targetPosition)
+        ) {
+          const s = hoverInfo.object.sourcePosition;
+          const t = hoverInfo.object.targetPosition;
+          lng = (s[0] + t[0]) / 2;
+          lat = (s[1] + t[1]) / 2;
+        }
+        // PRIORITY 7: deck PathLayer line (object.path) — anchor at midpoint vertex
+        else if (
+          lng === undefined &&
+          lat === undefined &&
+          Array.isArray(hoverInfo.object?.path) &&
+          hoverInfo.object.path.length > 0
+        ) {
+          const pathPts = hoverInfo.object.path;
+          const mid = pathPts[Math.floor(pathPts.length / 2)];
+          if (Array.isArray(mid) && mid.length >= 2) {
+            lng = mid[0];
+            lat = mid[1];
+          }
+        }
 
         if (lng !== undefined && lat !== undefined) {
-          // Project geographic coordinates to screen coordinates
-          const point = map.project([lng, lat]);
-          setPositionSafely(point.x, point.y);
+          if (isGeodetic) {
+            // Project through the geodetic view's live camera (exposed on window
+            // by GeodeticBasemapView). Fall back to the pick pixel if unavailable.
+            const project = (
+              window as unknown as {
+                __geodeticProject?: (
+                  lng: number,
+                  lat: number,
+                ) => { x: number; y: number };
+              }
+            ).__geodeticProject;
+            const p = project?.(lng, lat);
+            if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+              setPositionSafely(p.x, p.y);
+            } else {
+              setPositionSafely(hoverInfo.x || 0, hoverInfo.y || 0);
+            }
+          } else {
+            // Project geographic coordinates to screen coordinates
+            const point = map.project([lng, lat]);
+            setPositionSafely(point.x, point.y);
+          }
         } else {
           // Fallback to original x, y if coordinates can't be determined
           setPositionSafely(hoverInfo.x || 0, hoverInfo.y || 0);
@@ -434,6 +505,9 @@ const Tooltip = () => {
 
       map.on("move", schedulePositionUpdate);
       map.on("zoom", handleZoom);
+      // The geodetic view's camera is not the mapbox map, so its pan/zoom arrives
+      // as a window event (dispatched by GeodeticBasemapView). Re-project on it too.
+      window.addEventListener("geodetic-view-change", schedulePositionUpdate);
 
       return () => {
         if (tooltipRafRef.current !== null) {
@@ -442,6 +516,7 @@ const Tooltip = () => {
         }
         map.off("move", schedulePositionUpdate);
         map.off("zoom", handleZoom);
+        window.removeEventListener("geodetic-view-change", schedulePositionUpdate);
       };
     }
   }, [hoverInfo, mapRef, layers, topologyNodes]);
@@ -456,6 +531,16 @@ const Tooltip = () => {
       hoverInfo.object
     );
   }, [hoverInfo?.object, hoverInfo?.layer?.id, topologyNodes]);
+
+  // Measure the rendered tooltip so we can flip/clamp it on-screen. Depends on
+  // content drivers (not position), so it doesn't re-measure on every pan frame.
+  useLayoutEffect(() => {
+    const el = tooltipBoxRef.current;
+    if (!el) return;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    setBoxSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+  }, [hoverInfo, object, useIgrs, mapZoom]);
 
   if (!hoverInfo) {
     return null;
@@ -510,8 +595,11 @@ const Tooltip = () => {
     return null;
   }
 
-  // Check if layer is outside its zoom range
-  if (layerInfo && mapZoom !== null) {
+  // Check if layer is outside its zoom range. Hand-drawn sketches are never
+  // zoom-gated (they render at every zoom), so their tooltip must not be gated
+  // either — otherwise an existing sketch that still carries a stale stored
+  // minzoom would render on the map but show no tooltip at low zoom.
+  if (layerInfo && mapZoom !== null && !isSketchLayer(layerInfo)) {
     const effectiveZoom = Math.floor(mapZoom);
     const minZoomCheck =
       layerInfo.minzoom === undefined || effectiveZoom >= layerInfo.minzoom;
@@ -528,7 +616,7 @@ const Tooltip = () => {
       const igrs = calculateIgrs(point[0], point[1]);
       if (igrs) return igrs;
     }
-    return `[${point[1]?.toFixed(4)}°, ${point[0]?.toFixed(4)}°]`;
+    return `[${point[1]?.toFixed(6)}°, ${point[0]?.toFixed(6)}°]`;
   };
   const coordinateLabel = useIgrs ? "IGRS" : "lat, lng";
 
@@ -600,11 +688,11 @@ const Tooltip = () => {
           label: useIgrs ? "IGRS" : "Latitude",
           value: useIgrs
             ? (calculateIgrs(lng, lat) ?? "—")
-            : `${lat.toFixed(5)}°`,
+            : `${lat.toFixed(6)}°`,
         },
       ];
       if (!useIgrs) {
-        properties.push({ label: "Longitude", value: `${lng.toFixed(5)}°` });
+        properties.push({ label: "Longitude", value: `${lng.toFixed(6)}°` });
       }
 
       let valueLabel = "Value";
@@ -705,14 +793,14 @@ const Tooltip = () => {
               label: useIgrs ? "IGRS" : "Latitude",
               value: useIgrs
                 ? (calculateIgrs(lng, lat) ?? "—")
-                : `${lat.toFixed(5)}°`,
+                : `${lat.toFixed(6)}°`,
             },
           ];
 
           if (!useIgrs) {
             properties.push({
               label: "Longitude",
-              value: `${lng.toFixed(5)}°`,
+              value: `${lng.toFixed(6)}°`,
             });
           }
 
@@ -778,8 +866,8 @@ const Tooltip = () => {
           label: "Location",
           value: useIgrs
             ? calculateIgrs(object.longitude, object.latitude) ||
-              `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(4)}°]`
-            : `[${object.latitude.toFixed(4)}°, ${object.longitude.toFixed(4)}°]`,
+              `[${object.latitude.toFixed(6)}°, ${object.longitude.toFixed(6)}°]`
+            : `[${object.latitude.toFixed(6)}°, ${object.longitude.toFixed(6)}°]`,
         });
       }
       if (
@@ -1213,27 +1301,67 @@ const Tooltip = () => {
         });
       }
 
-      // Add other properties
-      const propertyEntries = Object.entries(properties).filter(
-        ([key, value]) =>
-          isMeaningfulPropertyValue(value) &&
-          !(isShortestRoute && SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS.has(key)),
-      );
-
-      propertyEntries
-        .sort(([a], [b]) => a.localeCompare(b))
-        .forEach(([key, value]) => {
+      // Feature attribute rows. Two modes:
+      //  • No selection yet (undefined): show only meaningful values, alphabetically,
+      //    capped — a compact, well-positioned default for big-schema features.
+      //  • Explicit selection (array, from the layer's "Tooltip Attributes" panel):
+      //    AUTHORITATIVE — show EXACTLY the ticked keys, in full, no cap, and render
+      //    a ticked-but-empty/absent field as "—" so "ticked = shown" always holds
+      //    (e.g. a field that exists on other features but is blank on this one).
+      const attrWhitelist = layerInfo?.tooltipAttributes;
+      let hiddenAttrCount = 0;
+      if (attrWhitelist === undefined) {
+        const meaningful = Object.entries(properties)
+          .filter(
+            ([key, value]) =>
+              isMeaningfulPropertyValue(value) &&
+              !(isShortestRoute && SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS.has(key)),
+          )
+          .sort(([a], [b]) => a.localeCompare(b));
+        const shown = meaningful.slice(0, TOOLTIP_DEFAULT_ATTR_LIMIT);
+        hiddenAttrCount = meaningful.length - shown.length;
+        shown.forEach(([key, value]) => {
           tooltipProperties.push({
             label: formatAttributeLabel(key),
             value: formatTooltipValue(key, value),
           });
         });
+      } else {
+        [...attrWhitelist]
+          .filter(
+            (key) =>
+              !(isShortestRoute && SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS.has(key)),
+          )
+          .sort((a, b) => a.localeCompare(b))
+          .slice(0, TOOLTIP_DEFAULT_ATTR_LIMIT) // hard cap, mirrors the panel limit
+          .forEach((key) => {
+            const value = (properties as Record<string, unknown>)[key];
+            tooltipProperties.push({
+              label: formatAttributeLabel(key),
+              value: isMeaningfulPropertyValue(value)
+                ? formatTooltipValue(key, value)
+                : "—",
+            });
+          });
+      }
 
       const useGridLayout = tooltipProperties.length > 10;
 
       return (
         <TooltipBox
           maxWidth={useGridLayout ? "max-w-[380px]" : "max-w-[200px]"}
+          style={{
+            // A feature with many attributes (e.g. 100 fields) would otherwise make
+            // the box taller than the screen; the on-screen clamp then pins it to
+            // the top edge, so it lands far from the cursor and reads as "not
+            // opening". Cap the height and let it scroll. pointerEvents:auto
+            // re-enables scrolling for THIS box even though the positioning wrapper
+            // is pointerEvents:none. (Trimming fields via the layer's "Tooltip
+            // Attributes" selector remains the way to make it compact.)
+            maxHeight: "60vh",
+            overflowY: "auto",
+            pointerEvents: "auto",
+          }}
         >
           {layerInfo?.name && (
             <TooltipHeading
@@ -1254,6 +1382,12 @@ const Tooltip = () => {
             properties={tooltipProperties}
             useGridLayout={useGridLayout}
           />
+          {hiddenAttrCount > 0 && (
+            <div className="mt-1 text-gray-500" style={{ fontSize: "0.85em" }}>
+              +{hiddenAttrCount} more field{hiddenAttrCount === 1 ? "" : "s"} —
+              choose which to show in layer settings
+            </div>
+          )}
         </TooltipBox>
       );
     }
@@ -1466,6 +1600,53 @@ const Tooltip = () => {
       );
     }
 
+    // Deck.gl PathLayer line (object.path = [[lng, lat], ...]) — plain uploaded
+    // lines and generated node/SNR connection lines. Without this branch these
+    // fall through to the generic "Map Feature" placeholder below and, lacking a
+    // geographic anchor, the tooltip also fails to follow the map on pan.
+    if (
+      Array.isArray(object.path) &&
+      object.path.length >= 2 &&
+      Array.isArray(object.path[0])
+    ) {
+      const path = object.path as [number, number][];
+      let totalKm = 0;
+      for (let i = 0; i < path.length - 1; i++) {
+        totalKm += parseFloat(getDistance(path[i], path[i + 1]));
+      }
+      const from = path[0];
+      const to = path[path.length - 1];
+
+      const properties: { label: string; value: string }[] = [];
+      const width = layerInfo?.lineWidth ?? object.width;
+      if (width) {
+        properties.push({ label: "Width", value: `${width} px` });
+      }
+      properties.push({
+        label: "Distance",
+        value: `${totalKm.toFixed(2)} km`,
+      });
+      properties.push(
+        {
+          label: `From (${coordinateLabel})`,
+          value: formatCoordinatePair(from),
+        },
+        {
+          label: `To (${coordinateLabel})`,
+          value: formatCoordinatePair(to),
+        },
+      );
+
+      return (
+        <TooltipBox>
+          {layerInfo?.name && (
+            <TooltipHeading title={layerInfo.name} subtitle="Line" />
+          )}
+          <TooltipProperties properties={properties} />
+        </TooltipBox>
+      );
+    }
+
     return (
       <TooltipBox>
         <TooltipHeading title="Map Feature" />
@@ -1476,12 +1657,47 @@ const Tooltip = () => {
     );
   };
 
+  // Keep the tooltip fully on-screen. Default to the lower-right of the anchor,
+  // but flip to the LEFT when a feature near the right edge would push it off, and
+  // clamp so it never spills past any edge. Uses the measured box size.
+  const viewportW = typeof window !== "undefined" ? window.innerWidth : 0;
+  const viewportH = typeof window !== "undefined" ? window.innerHeight : 0;
+  const edgeMargin = 8;
+  const anchorGap = 12;
+  // Only keep the box pinned on-screen while the ANCHOR is still visible. Once the
+  // feature is panned off an edge (into the off-screen "dead" area), the tooltip
+  // should travel WITH it rather than sticking to the edge — so the clamps below
+  // are gated per axis on the anchor being on-screen. (At the exact edge the clamp
+  // is already a no-op, so disabling it just past the edge is seamless.) The flip
+  // stays unconditional, so a feature near — but still inside — the right edge
+  // still opens leftward as before.
+  const anchorOnScreenX = x >= 0 && x <= viewportW;
+  const anchorOnScreenY = y >= 0 && y <= viewportH;
+  let boxLeft = x + anchorGap;
+  if (boxSize.w > 0 && boxLeft + boxSize.w > viewportW - edgeMargin) {
+    boxLeft = x - anchorGap - boxSize.w; // open to the left of the anchor
+  }
+  if (anchorOnScreenX) {
+    if (boxLeft < edgeMargin) boxLeft = edgeMargin;
+    if (boxSize.w > 0 && boxLeft + boxSize.w > viewportW - edgeMargin) {
+      boxLeft = Math.max(edgeMargin, viewportW - edgeMargin - boxSize.w);
+    }
+  }
+  let boxTop = y - 10;
+  if (anchorOnScreenY) {
+    if (boxSize.h > 0 && boxTop + boxSize.h > viewportH - edgeMargin) {
+      boxTop = viewportH - edgeMargin - boxSize.h;
+    }
+    if (boxTop < edgeMargin) boxTop = edgeMargin;
+  }
+
   return (
     <div
+      ref={tooltipBoxRef}
       style={{
         position: "absolute",
-        left: x + 10,
-        top: y - 10,
+        left: boxLeft,
+        top: boxTop,
         pointerEvents:
           layer?.id === "udp-network-members-layer" ||
           layer?.id === "udp-targets-layer" ||

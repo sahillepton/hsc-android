@@ -338,12 +338,12 @@ const NetworkLayersPanel = ({
       // calculateIgrs expects (longitude, latitude)
       const igrs = calculateIgrs(lng, lat);
       return {
-        value: igrs || `${lat.toFixed(4)}° , ${lng.toFixed(4)}°`,
+        value: igrs || `${lat.toFixed(6)}° , ${lng.toFixed(6)}°`,
         isIgrsAvailable: igrs !== null,
       };
     }
     return {
-      value: `${lat.toFixed(4)}° , ${lng.toFixed(4)}°`,
+      value: `${lat.toFixed(6)}° , ${lng.toFixed(6)}°`,
       isIgrsAvailable: true, // Not using IGRS, so no issue
     };
   };
