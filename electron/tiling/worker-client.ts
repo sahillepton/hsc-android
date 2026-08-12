@@ -105,7 +105,6 @@ function resolveNodeBin(): string {
   if (process.resourcesPath) {
     const bundled = path.join(process.resourcesPath, "node.exe");
     if (fs.existsSync(bundled)) {
-      console.log(`[Tiling] using bundled Node at ${bundled}`);
       return bundled;
     }
   }
@@ -145,10 +144,6 @@ function startWorker(): Promise<void> {
     const script = resolveWorkerScript();
     const nodeBin = resolveNodeBin();
     const workerNodePath = buildWorkerNodePath();
-    console.log(`[Tiling] spawning ${nodeBin} ${script}`);
-    if (workerNodePath) {
-      console.log(`[Tiling]   NODE_PATH=${workerNodePath}`);
-    }
 
     const env: NodeJS.ProcessEnv = { ...process.env };
     if (workerNodePath) env.NODE_PATH = workerNodePath;
@@ -175,7 +170,6 @@ function startWorker(): Promise<void> {
       // First message from worker on successful start: {id:0, ok:true, ready:true, gdal:"3.x"}
       if (!readyAcked && msg.ready) {
         readyAcked = true;
-        console.log(`[Tiling worker] ready, GDAL ${msg.gdal}`);
         restartAttempts = 0;
         resolve();
         return;
@@ -207,9 +201,7 @@ function startWorker(): Promise<void> {
     });
 
     proc.on("exit", (code, signal) => {
-      console.warn(
-        `[Tiling worker] exited code=${code} signal=${signal}`,
-      );
+      console.warn(`[Tiling worker] exited code=${code} signal=${signal}`);
       cleanupAfterExit(`worker exited (${code}/${signal})`);
     });
   });
@@ -228,9 +220,6 @@ function cleanupAfterExit(reason: string) {
   // Auto-restart up to MAX_RESTARTS.
   if (restartAttempts < MAX_RESTARTS) {
     restartAttempts++;
-    console.log(
-      `[Tiling worker] auto-restart attempt ${restartAttempts}/${MAX_RESTARTS}`,
-    );
     setTimeout(() => {
       startWorker().catch((e) =>
         console.error("[Tiling worker] restart failed", e),
@@ -352,10 +341,11 @@ export async function workerRenderTile(args: {
     p = (async () => {
       // Worker now returns { image, format } (WebP). The legacy `png` field
       // is read as a fallback so older worker builds still work.
-      const r = await request<{ image?: string; png?: string; format?: string }>(
-        "renderTile",
-        args,
-      );
+      const r = await request<{
+        image?: string;
+        png?: string;
+        format?: string;
+      }>("renderTile", args);
       const b64 = r.image ?? r.png;
       if (!b64) throw new Error("renderTile returned no image bytes");
       return Buffer.from(b64, "base64");

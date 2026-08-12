@@ -56,11 +56,6 @@ function fmtBytes(n) {
 
 async function probe(filePath) {
   const stat = await fs.stat(filePath);
-  console.log("\n══════════════════════════════════════════════════════════════");
-  console.log(`📄 ${path.basename(filePath)}`);
-  console.log(`   ${filePath}`);
-  console.log(`   On-disk size: ${fmtBytes(stat.size)}`);
-  console.log("──────────────────────────────────────────────────────────────");
 
   const tiff = await fromFile(filePath);
   const imageCount = await tiff.getImageCount();
@@ -74,9 +69,11 @@ async function probe(filePath) {
     ? Array.from(fd.BitsPerSample).join(", ")
     : "?";
   const compressionCode = fd.Compression || 1;
-  const compressionName = COMPRESSION[compressionCode] || `Unknown(${compressionCode})`;
+  const compressionName =
+    COMPRESSION[compressionCode] || `Unknown(${compressionCode})`;
   const photometricCode = fd.PhotometricInterpretation;
-  const photometricName = PHOTOMETRIC[photometricCode] || `Unknown(${photometricCode})`;
+  const photometricName =
+    PHOTOMETRIC[photometricCode] || `Unknown(${photometricCode})`;
   const sampleFormatCode = fd.SampleFormat ? fd.SampleFormat[0] : 1;
   const sampleFormatName = SAMPLE_FORMAT[sampleFormatCode] || "?";
 
@@ -127,30 +124,12 @@ async function probe(filePath) {
     /* noop */
   }
 
-  console.log(`   Format:           ${isBigTiff ? "BigTIFF (>4 GB capable)" : "Classic TIFF (≤4 GB)"}`);
-  console.log(`   Dimensions:       ${width.toLocaleString()} × ${height.toLocaleString()} px = ${(width * height / 1e6).toFixed(1)} megapixels`);
-  console.log(`   Samples/pixel:    ${samples} (${photometricName})`);
-  console.log(`   Bits/sample:      ${bitsPerSample}`);
-  console.log(`   Sample format:    ${sampleFormatName}`);
-  console.log(`   Compression:      ${compressionName}`);
-  console.log(`   Storage layout:   ${layout}`);
-  console.log(`   Theoretical raw:  ${fmtBytes(uncompressedBytes)}`);
-  console.log(`   Compression ratio: ${ratio.toFixed(2)}× (raw ÷ on-disk)`);
-  console.log(`   CRS:              ${crs}`);
-  console.log(`   Pixel size:       ${pixelSize}`);
-  console.log(`   Bounding box:     ${bbox}`);
-  console.log(`   IFDs (overviews): ${imageCount > 1 ? `${imageCount} (${imageCount - 1} overview level(s))` : "1 (no overviews)"}`);
-  if (fd.ColorMap) {
-    console.log(`   Color map:        present (${fd.ColorMap.length} entries → palette TIFF)`);
-  }
-
   // Mirror what dem-worker does: chunked decimated read at 4096-cap.
   const MAX = 4096;
   const maxDim = Math.max(width, height);
   const scale = maxDim > MAX ? MAX / maxDim : 1;
   const tw = Math.max(1, Math.round(width * scale));
   const th = Math.max(1, Math.round(height * scale));
-  console.log(`\n   ▶ Testing chunked readRasterDecimated at ${tw}×${th}…`);
 
   // Inline a JS port of src/lib/geotiff-decimated.ts for the standalone probe.
   async function readRasterDecimated(img, opts) {
@@ -159,13 +138,18 @@ async function probe(filePath) {
     const sLen = opts.interleave !== false ? opts.samples.length : 1;
     if (sW * sH < 100_000_000) {
       const r = await img.readRasters({
-        samples: opts.samples, width: opts.width, height: opts.height,
+        samples: opts.samples,
+        width: opts.width,
+        height: opts.height,
         interleave: opts.interleave !== false,
       });
       return Array.isArray(r) ? r[0] : r;
     }
     const bps = (img.fileDirectory && img.fileDirectory.BitsPerSample) || [8];
-    const bytesPerSample = Math.max(1, Math.ceil((bps[opts.samples[0]] || 8) / 8));
+    const bytesPerSample = Math.max(
+      1,
+      Math.ceil((bps[opts.samples[0]] || 8) / 8),
+    );
     const bytesPerRow = sW * bytesPerSample * sLen;
     const cap = opts.maxChunkBytes || 32 * 1024 * 1024;
     const chunkH = Math.max(1, Math.min(sH, Math.floor(cap / bytesPerRow)));
@@ -174,8 +158,8 @@ async function probe(filePath) {
     let idx = 0;
     for (let y0 = 0; y0 < sH; y0 += chunkH) {
       const y1 = Math.min(y0 + chunkH, sH);
-      const tY0 = Math.floor(y0 * opts.height / sH);
-      const tY1 = Math.min(opts.height, Math.ceil(y1 * opts.height / sH));
+      const tY0 = Math.floor((y0 * opts.height) / sH);
+      const tY1 = Math.min(opts.height, Math.ceil((y1 * opts.height) / sH));
       if (tY1 <= tY0) continue;
       const chunk = await img.readRasters({
         window: [0, y0, sW, y1],
@@ -185,7 +169,8 @@ async function probe(filePath) {
         interleave: opts.interleave !== false,
       });
       const arr = Array.isArray(chunk) ? chunk[0] : chunk;
-      if (output === null) output = new arr.constructor(opts.width * opts.height * sLen);
+      if (output === null)
+        output = new arr.constructor(opts.width * opts.height * sLen);
       output.set(arr, tY0 * opts.width * sLen);
       idx++;
       if (opts.onChunkProgress) opts.onChunkProgress(idx, totalChunks);
@@ -206,24 +191,24 @@ async function probe(filePath) {
         const now = Date.now();
         if (now - lastPrint > 5000 || done === total) {
           lastPrint = now;
-          process.stdout.write(`     chunk ${done}/${total} (${Math.round(done/total*100)}%) heap=${fmtBytes(process.memoryUsage().heapUsed)}\n`);
+          process.stdout.write(
+            `     chunk ${done}/${total} (${Math.round((done / total) * 100)}%) heap=${fmtBytes(process.memoryUsage().heapUsed)}\n`,
+          );
         }
       },
     });
     const ms = Date.now() - t0;
     const memAfter = process.memoryUsage();
-    console.log(`   ✓ chunked read OK in ${(ms / 1000).toFixed(1)}s`);
-    console.log(`     output length: ${raster.length.toLocaleString()} samples (${fmtBytes(raster.byteLength || raster.length)})`);
-    console.log(`     heap: ${fmtBytes(memBefore.heapUsed)} → ${fmtBytes(memAfter.heapUsed)} (peak rss ${fmtBytes(memAfter.rss)})`);
   } catch (err) {
     const ms = Date.now() - t0;
-    console.log(`   ✗ chunked read FAILED after ${(ms / 1000).toFixed(1)}s: ${err.message}`);
   }
 }
 
 const files = process.argv.slice(2);
 if (!files.length) {
-  console.error("Usage: node scripts/probe-tiff.mjs <file1.tif> [file2.tif ...]");
+  console.error(
+    "Usage: node scripts/probe-tiff.mjs <file1.tif> [file2.tif ...]",
+  );
   process.exit(1);
 }
 
@@ -234,4 +219,3 @@ for (const f of files) {
     console.error(`\n✗ ${f}: ${err.message}`);
   }
 }
-console.log("");

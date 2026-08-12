@@ -46,11 +46,8 @@ async function buildElectron() {
 }
 
 async function main() {
-  console.log("⏳ Waiting for Vite dev server...");
   await waitForVite();
-  console.log("✅ Vite is ready, building Electron...");
   await buildElectron();
-  console.log("🚀 Launching Electron...");
 
   // Get the path to the electron binary directly from the package
   const electronPath = String(require("electron"));

@@ -119,7 +119,8 @@
       "target": [
         "nsis"
       ],
-      "icon": "public/vite.svg"
+      "icon": "public/vite.svg",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,

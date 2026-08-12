@@ -460,39 +460,6 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
 
   const classification = classifyTiff(image);
 
-  // Log a concise diagnostic — critical for troubleshooting "black" / "wrong
-  // place" TIFFs. Shows photometric, samples, bits, dimensions, and any GeoKeys
-  // the file actually carries.
-  try {
-    const fd: Record<string, unknown> =
-      (image as unknown as { fileDirectory?: Record<string, unknown> })
-        .fileDirectory ?? {};
-    const geoKeys =
-      typeof (image as unknown as { getGeoKeys?: () => unknown }).getGeoKeys ===
-      "function"
-        ? (image as unknown as { getGeoKeys: () => unknown }).getGeoKeys()
-        : undefined;
-    console.log("[dem-worker] GeoTIFF diagnostic", {
-      width,
-      height,
-      classification: {
-        kind: classification.kind,
-        mode: classification.mode,
-        samplesPerPixel: classification.samplesPerPixel,
-        bitsPerSample: classification.bitsPerSample,
-        photometric: classification.photometric,
-      },
-      compression: fd.Compression,
-      hasModelTiepoint: Array.isArray(fd.ModelTiepointTag),
-      hasModelPixelScale: Array.isArray(fd.ModelPixelScaleTag),
-      hasTransformationMatrix: Array.isArray(fd.GeoTransformationMatrix),
-      geoAsciiParams: fd.GeoAsciiParamsTag,
-      geoKeys,
-    });
-  } catch {
-    // ignore diagnostic failures
-  }
-
   let bounds: [number, number, number, number];
   let lccParams: LCCProjectionParams | null = null;
 
@@ -677,10 +644,6 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
             Math.max(...lngs),
             Math.max(...lats),
           ];
-          console.log(
-            `[dem-worker] Reprojected bounds from ${projCode} to EPSG:4326.`,
-            bounds,
-          );
         } catch (reprojErr) {
           console.warn(
             `[dem-worker] Could not reproject from ${projCode} — proj4 has no definition for this CRS. Bounds remain in source CRS.`,
@@ -739,12 +702,6 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
     }
     return null;
   })();
-  if (gdalNoDataValue !== null) {
-    console.log(
-      `[dem-worker] GDAL_NODATA sentinel = ${gdalNoDataValue} — pixels matching this value will be rendered transparent.`,
-    );
-  }
-
   // Color branch. We prefer MANUAL decoding so we can honor GDAL_NODATA and
   // control alpha per-pixel. readRGB() is used only for photometrics we can't
   // trivially decode ourselves (YCbCr JPEG, CMYK, CIELab), where nodata is
@@ -760,12 +717,6 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
     let maxVal = -Infinity;
     let nodataPixels = 0;
     let decoded = false;
-
-    if (texWidth !== width || texHeight !== height) {
-      console.log(
-        `[dem-worker] Downsampling color TIFF ${width}x${height} -> ${texWidth}x${texHeight} (GPU max-texture-dim cap ${MAX_TEXTURE_DIM}).`,
-      );
-    }
 
     // Branch 1: Palette (PhotometricInterpretation=3). Decode ourselves so we
     // can mark GDAL_NODATA pixels transparent instead of letting the palette
@@ -931,9 +882,6 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
         nonZeroRGB++;
       }
     }
-    console.log(
-      `[dem-worker] Color decode complete: ${texWidth}x${texHeight}, nodata pixels = ${nodataPixels} (${((nodataPixels / texPixelCount) * 100).toFixed(1)}%), non-zero sampled = ${nonZeroRGB}.`,
-    );
     if (nonZeroRGB === 0 && nodataPixels < texPixelCount) {
       console.warn(
         "[dem-worker] Decoded RGBA buffer has no visible pixels (all zeros) despite the raster not being fully nodata. Check palette entries or photometric interpretation — the source file may encode visible pixels as black or require a different decoder path.",
@@ -974,11 +922,6 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
     height,
   );
   const demPixelCount = demTexWidth * demTexHeight;
-  if (demTexWidth !== width || demTexHeight !== height) {
-    console.log(
-      `[dem-worker] Downsampling DEM TIFF ${width}x${height} -> ${demTexWidth}x${demTexHeight} (GPU max-texture-dim cap ${MAX_TEXTURE_DIM}).`,
-    );
-  }
 
   const raster = (await image.readRasters({
     interleave: true,
@@ -1010,12 +953,6 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
     }
     return null;
   })();
-  if (demNoData !== null) {
-    console.log(
-      `[dem-worker] DEM GDAL_NODATA sentinel = ${demNoData} — excluded from range and rendered transparent.`,
-    );
-  }
-
   let minVal = Infinity;
   let maxVal = -Infinity;
   let validCount = 0;
@@ -1036,10 +973,7 @@ const parseGeoTIFF = async (buffer: ArrayBuffer) => {
   // instead of an all-transparent texture. Only auto-disable for the
   // common "0" pitfall — a sentinel like -32767 or 9999 is almost
   // certainly an actual NoData value and must be honoured.
-  if (
-    demNoData === 0 &&
-    validCount < raster.length * 0.5
-  ) {
+  if (demNoData === 0 && validCount < raster.length * 0.5) {
     console.warn(
       `[dem-worker] NoData=0 would render ${(100 * (1 - validCount / raster.length)).toFixed(1)}% of pixels transparent — likely misset, disabling NoData treatment.`,
     );

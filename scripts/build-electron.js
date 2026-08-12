@@ -41,13 +41,9 @@ async function buildElectron() {
     "electron/tiling/worker.cjs",
     "dist-electron/tiling/worker.cjs",
   );
-
-  console.log("✅ Electron main & preload built to dist-electron/");
-  console.log("✅ Tiling worker copied to dist-electron/tiling/worker.cjs");
 }
 
 buildElectron().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-

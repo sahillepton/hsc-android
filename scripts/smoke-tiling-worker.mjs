@@ -16,9 +16,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TARGET = process.argv[2] || "D:/TIFF/clutter-india-25m.tif";
 const WORKER = path.join(__dirname, "..", "electron", "tiling", "worker.cjs");
 
-console.log(`[smoke] worker:  ${WORKER}`);
-console.log(`[smoke] target:  ${TARGET}\n`);
-
 const proc = spawn("node", [WORKER], {
   stdio: ["pipe", "pipe", "pipe"],
   windowsHide: true,
@@ -45,7 +42,6 @@ rl.on("line", (line) => {
   }
   if (!ready && msg.ready) {
     ready = true;
-    console.log(`[smoke] worker ready, GDAL ${msg.gdal}\n`);
     runTests();
     return;
   }
@@ -86,37 +82,24 @@ async function runTests() {
     // Test 1: ping
     {
       const r = await send("ping");
-      console.log(`✓ ping        ${fmtMs(r._ms)}  GDAL ${r.version}`);
     }
 
     // Test 2: probe
     let probe;
     {
       probe = await send("probe", { path: TARGET });
-      console.log(
-        `✓ probe       ${fmtMs(probe._ms)}  ` +
-          `${probe.width.toLocaleString()}×${probe.height.toLocaleString()} ` +
-          `band=${probe.dtype} crs=${probe.sourceCrs} ` +
-          `bounds=${probe.boundsWgs84 ? probe.boundsWgs84.map((n) => n.toFixed(2)).join(",") : "?"} ` +
-          `nativeZoom=${probe.nativeZoom} palette=${probe.palette ? probe.palette.length : "no"}`,
-      );
     }
 
     // Test 2.5: buildOverviews — first call may take a while (one-time);
     // a second call should report "already-exists".
     {
       const r = await send("buildOverviews", { path: TARGET });
-      console.log(
-        `✓ overviews   ${fmtMs(r._ms)}  built=${r.built}` +
-          (r.reason ? ` reason=${r.reason}` : "") +
-          (r.kind ? ` kind=${r.kind} levels=${r.levels.join(",")}` : ""),
-      );
     }
 
     // Test 3: renderTile at a few zooms covering India
     // India centroid ~ lon 78.96, lat 20.59. Convert to tile coords for z=4..8
     const TEST_TILES = [
-      { z: 3, x: 5, y: 4 },   // India whole
+      { z: 3, x: 5, y: 4 }, // India whole
       { z: 5, x: 22, y: 14 }, // India zoomed
       { z: 7, x: 90, y: 56 }, // central India
     ];
@@ -124,9 +107,7 @@ async function runTests() {
       const r = await send("renderTile", { path: TARGET, ...t });
       const b64 = r.image ?? r.png;
       const bytes = Buffer.from(b64, "base64");
-      console.log(
-        `✓ renderTile  ${fmtMs(r._ms)}  z=${t.z} x=${t.x} y=${t.y}  ${r.format ?? "png"}=${(bytes.length / 1024).toFixed(1)} KB`,
-      );
+
       // Save the first one so we can eyeball it.
       if (t.z === 5) {
         const ext = r.format === "webp" ? "webp" : "png";
@@ -136,7 +117,6 @@ async function runTests() {
           `smoke-tile-z${t.z}-${t.x}-${t.y}.${ext}`,
         );
         writeFileSync(out, bytes);
-        console.log(`              → wrote sample tile to ${out}`);
       }
     }
 
@@ -147,15 +127,11 @@ async function runTests() {
         lon: 78.96,
         lat: 20.59,
       });
-      console.log(
-        `✓ sampleAt    ${fmtMs(r._ms)}  lon=78.96 lat=20.59 → value=${r.value} (dtype=${r.dtype})`,
-      );
     }
 
     // Test 5: cache reuse (second probe should be near-instant)
     {
       const r = await send("probe", { path: TARGET });
-      console.log(`✓ probe(re)   ${fmtMs(r._ms)}  (cache hit expected)`);
     }
 
     // Test 6: parallel tile renders — confirm async actually concurrentizes.
@@ -174,16 +150,11 @@ async function runTests() {
       ];
       const t0 = Date.now();
       const results = await Promise.all(
-        PARALLEL_TILES.map((t) =>
-          send("renderTile", { path: TARGET, ...t }),
-        ),
+        PARALLEL_TILES.map((t) => send("renderTile", { path: TARGET, ...t })),
       );
       const wall = Date.now() - t0;
       const sumSerial = results.reduce((a, r) => a + r._ms, 0);
       const speedup = (sumSerial / wall).toFixed(2);
-      console.log(
-        `✓ parallel×8  wall=${wall}ms  sum-of-each=${sumSerial}ms  speedup=${speedup}×`,
-      );
       if (wall >= sumSerial * 0.95) {
         console.warn(
           "  ⚠ parallel wall time ≈ serial sum — concurrency not effective",
@@ -191,7 +162,6 @@ async function runTests() {
       }
     }
 
-    console.log("\n[smoke] all tests passed");
     proc.kill();
     process.exit(0);
   } catch (e) {

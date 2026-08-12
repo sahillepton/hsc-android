@@ -25,14 +25,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const DIST = path.join(ROOT, "dist");
-const CAP_ASSETS = path.join(
-  ROOT,
-  "android",
-  "app",
-  "src",
-  "main",
-  "assets",
-);
+const CAP_ASSETS = path.join(ROOT, "android", "app", "src", "main", "assets");
 const KT_PLUGINS = path.join(ROOT, "kt-msca-plugins");
 
 const APP_ROOT = path.join(ROOT, "..", "app");
@@ -61,7 +54,6 @@ async function syncDir(srcDir, destDir, label) {
   await fs.rm(destDir, { recursive: true, force: true });
   await fs.mkdir(path.dirname(destDir), { recursive: true });
   await fs.cp(srcDir, destDir, { recursive: true });
-  console.log(`[sync-integration-assets] ${srcDir} -> ${destDir}`);
 }
 
 /** Copy a single file, creating the parent dir if needed. */
@@ -73,7 +65,6 @@ async function syncFile(src, dest, label) {
   }
   await fs.mkdir(path.dirname(dest), { recursive: true });
   await fs.copyFile(src, dest);
-  console.log(`[sync-integration-assets] ${src} -> ${dest}`);
 }
 
 async function main() {
@@ -89,7 +80,6 @@ async function main() {
   await fs.rm(APP_PUBLIC, { recursive: true, force: true });
   await fs.mkdir(path.dirname(APP_PUBLIC), { recursive: true });
   await fs.cp(DIST, APP_PUBLIC, { recursive: true });
-  console.log(`[sync-integration-assets] ${DIST} -> ${APP_PUBLIC}`);
 
   // ── 2. Capacitor metadata (plugins.json, config.json) ───────────────
   const files = ["capacitor.plugins.json", "capacitor.config.json"];
@@ -102,7 +92,6 @@ async function main() {
       process.exit(1);
     }
     await fs.copyFile(src, dest);
-    console.log(`[sync-integration-assets] ${src} -> ${dest}`);
   }
 
   // ── 3. Raster-tiling native artifacts ───────────────────────────────
@@ -131,8 +120,6 @@ async function main() {
     path.join(APP_PROJ_DIR, "proj.db"),
     "PROJ datum database",
   );
-
-  console.log("[sync-integration-assets] Done.");
 }
 
 main().catch((err) => {

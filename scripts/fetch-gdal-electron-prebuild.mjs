@@ -58,27 +58,17 @@ if (fs.existsSync(STAGING_NODE)) {
   const dstSz = fs.statSync(STAGING_NODE).size;
   const srcSz = fs.statSync(process.execPath).size;
   if (dstSz === srcSz && dstSz > 0) {
-    console.log(
-      `${TAG} OK — ${STAGING_NODE} already matches build-machine node.exe (${formatBytes(dstSz)}). Skipping copy.`,
-    );
     process.exit(0);
   }
-  console.log(`${TAG} ${STAGING_NODE} stale (size differs) — refreshing.`);
 }
 
 // ── Copy build-machine node.exe ─────────────────────────────────────────
-console.log(
-  `${TAG} bundling Node ${localNodeVersion} runtime from ${process.execPath}…`,
-);
+
 fs.copyFileSync(process.execPath, STAGING_NODE);
 
 if (!fs.existsSync(STAGING_NODE) || fs.statSync(STAGING_NODE).size === 0) {
   fail(`Copy failed: ${STAGING_NODE} missing or empty.`);
 }
-
-console.log(
-  `${TAG} OK — wrote ${STAGING_NODE} (${formatBytes(fs.statSync(STAGING_NODE).size)}).`,
-);
 
 // ── Sanity-check the bundled binary actually reports ABI 127 ────────────
 // Spawning a quick `node -p process.versions.modules` would be ideal, but

@@ -566,104 +566,97 @@ async function extractZipRecursive(
   const results: ExtractedFileInfo[] = [];
 
   await new Promise<void>((resolve, reject) => {
-    yauzl.fromBuffer(
-      zipBuf,
-      { lazyEntries: true },
-      (err, zipfile) => {
-        if (err || !zipfile) {
-          reject(err ?? new Error("yauzl returned no zipfile"));
-          return;
+    yauzl.fromBuffer(zipBuf, { lazyEntries: true }, (err, zipfile) => {
+      if (err || !zipfile) {
+        reject(err ?? new Error("yauzl returned no zipfile"));
+        return;
+      }
+
+      const fail = (e: unknown) => {
+        try {
+          zipfile.close();
+        } catch {
+          /* ignore */
         }
+        reject(e instanceof Error ? e : new Error(String(e)));
+      };
 
-        const fail = (e: unknown) => {
-          try {
-            zipfile.close();
-          } catch {
-            /* ignore */
+      zipfile.on("error", fail);
+      zipfile.on("end", () => resolve());
+
+      zipfile.on("entry", (entry: yauzl.Entry) => {
+        (async () => {
+          // Directory entry — yauzl marks these by trailing slash.
+          if (/\/$/.test(entry.fileName)) {
+            zipfile.readEntry();
+            return;
           }
-          reject(e instanceof Error ? e : new Error(String(e)));
-        };
 
-        zipfile.on("error", fail);
-        zipfile.on("end", () => resolve());
+          const fileName = path.basename(entry.fileName);
+          const lowerName = fileName.toLowerCase();
+          const ext =
+            lowerName.lastIndexOf(".") > 0
+              ? lowerName.substring(lowerName.lastIndexOf(".") + 1)
+              : "";
 
-        zipfile.on("entry", (entry: yauzl.Entry) => {
-          (async () => {
-            // Directory entry — yauzl marks these by trailing slash.
-            if (/\/$/.test(entry.fileName)) {
-              zipfile.readEntry();
-              return;
-            }
+          if (!ext || !ALLOWED_EXTENSIONS.has(ext)) {
+            zipfile.readEntry();
+            return;
+          }
 
-            const fileName = path.basename(entry.fileName);
-            const lowerName = fileName.toLowerCase();
-            const ext =
-              lowerName.lastIndexOf(".") > 0
-                ? lowerName.substring(lowerName.lastIndexOf(".") + 1)
-                : "";
-
-            if (!ext || !ALLOWED_EXTENSIONS.has(ext)) {
-              zipfile.readEntry();
-              return;
-            }
-
-            // Nested ZIP — buffer in memory and recurse. Necessary because
-            // extractZipRecursive's signature takes a Buffer.
-            if (lowerName.endsWith(".zip")) {
-              try {
-                const buf = await readEntryToBuffer(zipfile, entry);
-                const nested = await extractZipRecursive(
-                  buf,
-                  destDir,
-                  depth + 1,
-                  maxDepth,
-                );
-                results.push(...nested);
-              } catch (e) {
-                fail(e);
-                return;
-              }
-              zipfile.readEntry();
-              return;
-            }
-
-            // Pick a unique output path (avoid clobbering existing files).
-            let outputPath = path.join(destDir, fileName);
-            let counter = 1;
-            const dotIdx = fileName.lastIndexOf(".");
-            const baseName =
-              dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
-            const extPart = dotIdx > 0 ? fileName.substring(dotIdx) : "";
-            while (await pathExists(outputPath)) {
-              outputPath = path.join(
-                destDir,
-                `${baseName}_${counter}${extPart}`,
-              );
-              counter++;
-            }
-
-            // Stream the entry directly to disk — avoids holding a
-            // multi-hundred-MB TIFF in a single allocation.
+          // Nested ZIP — buffer in memory and recurse. Necessary because
+          // extractZipRecursive's signature takes a Buffer.
+          if (lowerName.endsWith(".zip")) {
             try {
-              await streamEntryToFile(zipfile, entry, outputPath);
-              const stat = await fs.stat(outputPath);
-              results.push({
-                absolutePath: outputPath,
-                name: path.basename(outputPath),
-                type: getFileType(lowerName),
-                size: stat.size,
-              });
+              const buf = await readEntryToBuffer(zipfile, entry);
+              const nested = await extractZipRecursive(
+                buf,
+                destDir,
+                depth + 1,
+                maxDepth,
+              );
+              results.push(...nested);
             } catch (e) {
               fail(e);
               return;
             }
             zipfile.readEntry();
-          })().catch(fail);
-        });
+            return;
+          }
 
-        zipfile.readEntry();
-      },
-    );
+          // Pick a unique output path (avoid clobbering existing files).
+          let outputPath = path.join(destDir, fileName);
+          let counter = 1;
+          const dotIdx = fileName.lastIndexOf(".");
+          const baseName =
+            dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
+          const extPart = dotIdx > 0 ? fileName.substring(dotIdx) : "";
+          while (await pathExists(outputPath)) {
+            outputPath = path.join(destDir, `${baseName}_${counter}${extPart}`);
+            counter++;
+          }
+
+          // Stream the entry directly to disk — avoids holding a
+          // multi-hundred-MB TIFF in a single allocation.
+          try {
+            await streamEntryToFile(zipfile, entry, outputPath);
+            const stat = await fs.stat(outputPath);
+            results.push({
+              absolutePath: outputPath,
+              name: path.basename(outputPath),
+              type: getFileType(lowerName),
+              size: stat.size,
+            });
+          } catch (e) {
+            fail(e);
+            return;
+          }
+          zipfile.readEntry();
+        })().catch(fail);
+      });
+
+      zipfile.readEntry();
+    });
   });
 
   return results;
@@ -968,7 +961,6 @@ ipcMain.handle("udp:create", async () => {
     });
 
     socket.bind(UDP_LISTEN_PORT, () => {
-      console.log(`[UDP] Listening on port ${UDP_LISTEN_PORT}`);
       udpSocket = socket;
       resolve({ ok: true, port: UDP_LISTEN_PORT });
     });
@@ -987,7 +979,6 @@ ipcMain.handle("udp:closeAllSockets", async () => {
       /* ignore */
     }
     udpSocket = null;
-    console.log("[UDP] Socket closed");
   }
   return { ok: true };
 });
@@ -1075,22 +1066,13 @@ function startTileServer(
           try {
             const cached = await readCachedTile(sourcePath, z, x, y);
             if (cached) {
-              console.log(
-                `[Tiling] ${layerId} z=${z} x=${x} y=${y} cache-hit (${cached.length}B)`,
-              );
               res.writeHead(200, tileHeaders);
               res.end(cached);
               return;
             }
-            console.log(
-              `[Tiling] ${layerId} z=${z} x=${x} y=${y} rendering…`,
-            );
             const png = await workerRenderTile({ path: sourcePath, z, x, y });
             // Write-through to disk cache (best-effort).
             void writeCachedTile(sourcePath, z, x, y, png);
-            console.log(
-              `[Tiling] ${layerId} z=${z} x=${x} y=${y} rendered in ${Date.now() - t0}ms (${png.length}B)`,
-            );
             res.writeHead(200, tileHeaders);
             res.end(png);
           } catch (err) {
@@ -1198,9 +1180,6 @@ function startTileServer(
       if (addr && typeof addr === "object") {
         tileServerPort = addr.port;
         tileServer = server;
-        console.log(
-          `[TileServer] Running at http://localhost:${tileServerPort} serving ${folder}`,
-        );
         resolve({
           baseUrl: `http://localhost:${tileServerPort}`,
           port: tileServerPort,
@@ -1226,8 +1205,13 @@ app.whenReady().then(async () => {
     if (!fsSync.existsSync(defaultTileFolder)) {
       await fs.mkdir(defaultTileFolder, { recursive: true });
     }
-    const result = await startTileServer(defaultTileFolder);
-    console.log(`[TileServer] Auto-started: ${result.baseUrl}`);
+    // Do NOT delete this call when stripping logs. It was previously written as
+    // `const result = await startTileServer(...)` purely so the next line could
+    // log result.baseUrl, so a log cleanup took the whole statement with it and
+    // the server stopped starting at app-ready — it then came up only lazily, on
+    // the renderer's first tileServer:getServerUrl. The return value is unused on
+    // purpose; the port is read back from module state.
+    await startTileServer(defaultTileFolder);
   } catch (err) {
     console.error("[TileServer] Failed to auto-start:", err);
   }
@@ -1235,9 +1219,7 @@ app.whenReady().then(async () => {
   // Configure tiling cache: scan the HSC sessions folder for *.tilecache dirs
   // when enforcing budget.
   configureCache({
-    cacheRoots: [
-      path.join(app.getPath("userData"), "HSC-SESSIONS", "FILES"),
-    ],
+    cacheRoots: [path.join(app.getPath("userData"), "HSC-SESSIONS", "FILES")],
     budgetBytes: 1024 * 1024 * 1024, // 1 GB
   });
   // Run a budget pass at startup (catches any leftover bloat from prior runs).
@@ -1311,11 +1293,7 @@ ipcMain.handle("tiling:buildOverviews", async (_e, absolutePath: string) => {
   if (!fsSync.existsSync(absolutePath)) {
     throw new Error(`Source file not found: ${absolutePath}`);
   }
-  const t0 = Date.now();
   const result = await workerBuildOverviews(absolutePath);
-  console.log(
-    `[Tiling] buildOverviews ${absolutePath}: ${JSON.stringify(result)} (${Date.now() - t0}ms)`,
-  );
   return result;
 });
 

@@ -49,13 +49,9 @@ if (!Number.isFinite(COLS) || !Number.isFinite(ROWS) || COLS < 1 || ROWS < 1) {
 }
 
 // ── Subdivide ────────────────────────────────────────────────────────────
-console.log(`[generate-stress-tifs] reading ${SRC}`);
 const ds = gdal.open(SRC);
 const W = ds.rasterSize.x;
 const H = ds.rasterSize.y;
-console.log(
-  `[generate-stress-tifs] source ${W}×${H} px, bands=${ds.bands.count()}, dtype=${ds.bands.get(1).dataType}`,
-);
 
 fs.rmSync(OUT_DIR, { recursive: true, force: true });
 fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -63,9 +59,6 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
 const tw = Math.floor(W / COLS);
 const th = Math.floor(H / ROWS);
 const total = COLS * ROWS;
-console.log(
-  `[generate-stress-tifs] subdividing into ${COLS}×${ROWS} = ${total} tiles (~${tw}×${th} px each)`,
-);
 
 let done = 0;
 const t0 = Date.now();
@@ -113,24 +106,22 @@ for (let r = 0; r < ROWS; r++) {
     done++;
     if (done % 25 === 0 || done === total) {
       const pct = ((done / total) * 100).toFixed(0);
-      console.log(`  ${done}/${total} (${pct}%)`);
     }
   }
 }
 ds.close();
 
 const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
-console.log(`[generate-stress-tifs] generated ${done} tiles in ${elapsedSec}s`);
 
 // ── Sanity check size distribution ───────────────────────────────────────
 const files = fs.readdirSync(OUT_DIR).filter((f) => f.endsWith(".tif"));
 const sizes = files.map((f) => fs.statSync(path.join(OUT_DIR, f)).size);
-const avgKB = (sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024).toFixed(0);
+const avgKB = (sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024).toFixed(
+  0,
+);
 const minKB = (Math.min(...sizes) / 1024).toFixed(0);
 const maxKB = (Math.max(...sizes) / 1024).toFixed(0);
-console.log(
-  `[generate-stress-tifs] tile sizes: avg=${avgKB} KB, min=${minKB} KB, max=${maxKB} KB`,
-);
+
 if (Math.max(...sizes) > 2 * 1024 * 1024) {
   console.warn(
     `[generate-stress-tifs] WARNING: at least one tile > 2 MB — those will route through the tiling pipeline, not the BitmapLayer path. Bump --cols / --rows to subdivide further.`,
@@ -138,7 +129,6 @@ if (Math.max(...sizes) > 2 * 1024 * 1024) {
 }
 
 // ── Zip via PowerShell (avoids adding a JS zip dep) ──────────────────────
-console.log(`[generate-stress-tifs] zipping → ${OUT_ZIP}`);
 const psArgs = [
   "-NoProfile",
   "-Command",
@@ -152,4 +142,3 @@ if (r.status !== 0) {
   process.exit(1);
 }
 const zipMB = (fs.statSync(OUT_ZIP).size / 1024 / 1024).toFixed(1);
-console.log(`[generate-stress-tifs] OK — ${OUT_ZIP} (${zipMB} MB)`);

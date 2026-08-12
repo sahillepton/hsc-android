@@ -11,12 +11,6 @@ export async function initSessionPaths(): Promise<void> {
     try {
       const session = await SessionInfo.getSession();
       configureSessionPathsFromUsername(session.username);
-      if (session.username?.trim()) {
-        console.log(
-          "[SessionPaths] Using user-scoped session dir:",
-          session.username,
-        );
-      }
     } catch (e) {
       console.warn(
         "[SessionPaths] SessionInfo failed; using default HSC-SESSIONS",
