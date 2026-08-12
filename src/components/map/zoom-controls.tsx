@@ -110,6 +110,8 @@ const ZoomControls = ({
   onRestoreSession,
   onToggleUserLocation,
   onResetHome,
+  onZoomIn,
+  onZoomOut,
   onCaptureScreenshot,
   showUserLocation,
   isLayersBoxOpen,
@@ -138,6 +140,8 @@ const ZoomControls = ({
   onRestoreSession?: () => void;
   onToggleUserLocation?: () => void;
   onResetHome?: () => void;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
   onCaptureScreenshot?: () => void;
   showUserLocation?: boolean;
   isLayersBoxOpen?: boolean;
@@ -211,6 +215,12 @@ const ZoomControls = ({
   }, [autoSaveEnabled]);
 
   const handleZoomIn = () => {
+    // Prefer the parent handler — it knows whether we're in geodetic (EPSG:4326)
+    // mode and drives the OrthographicView; the mapbox easeTo below is inert there.
+    if (onZoomIn) {
+      onZoomIn();
+      return;
+    }
     if (mapRef.current) {
       const map = mapRef.current.getMap();
       const currentZoom = map.getZoom();
@@ -219,6 +229,10 @@ const ZoomControls = ({
   };
 
   const handleZoomOut = () => {
+    if (onZoomOut) {
+      onZoomOut();
+      return;
+    }
     if (mapRef.current) {
       const map = mapRef.current.getMap();
       const currentZoom = map.getZoom();

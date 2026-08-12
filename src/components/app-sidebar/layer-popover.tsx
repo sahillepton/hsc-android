@@ -4,7 +4,14 @@ import { Slider } from "../ui/slider";
 import { Separator } from "../ui/separator";
 import { rgbToHex, hexToRgb, getDistance, getPolygonArea } from "@/lib/utils";
 import { TOOLTIP_DEFAULT_ATTR_LIMIT } from "@/lib/constants";
-import { useMemo, useState, useEffect } from "react";
+import {
+  getRasterTooltipAttributeKeys,
+  getRasterTooltipAttributes,
+  isRasterTooltipLayer,
+  type RasterTooltipAttribute,
+} from "@/lib/raster-tooltip-attributes";
+import { useIgrsPreference } from "@/store/layers-store";
+import { useMemo, useState, useEffect, useRef } from "react";
 
 interface LayerPopoverProps {
   layer: any;
@@ -23,6 +30,49 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
   useEffect(() => {
     setZoomPreview(layer.minzoom ?? 0);
   }, [layer.minzoom]);
+
+  // Close this settings panel when the user scrolls a container OUTSIDE it — the
+  // layer list or the page — so it doesn't float detached from its row. We listen
+  // ONLY to the `scroll` event (which fires when a real overflow container scrolls,
+  // by wheel OR touch), NOT `wheel`/`touchmove`: those also fire on the MAP's
+  // wheel-zoom / pinch-zoom, and intercepting them made map zoom stutter after the
+  // panel had been used. Radix already closes the panel on an outside pointer-down
+  // (clicking the map), so map interaction still dismisses it — just not zoom.
+  // Scrolls INSIDE the panel (its own overflow) are ignored so every control stays
+  // reachable.
+  const [open, setOpen] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideScroll = (e: Event) => {
+      const t = e.target as Node | null;
+      if (t && contentRef.current?.contains(t)) return; // scrolling within the panel
+      // Never close while the user is actively TYPING in one of this panel's
+      // fields. On Android, focusing the Layer Name input opens the soft keyboard,
+      // which shrinks the viewport; the WebView then scrolls the layer list to keep
+      // the focused field visible — an OUTSIDE scroll, which would close the panel
+      // and unmount the input mid-rename.
+      //
+      // Scoped to text-entry elements ON PURPOSE. An earlier version skipped the
+      // close whenever focus was anywhere inside the panel, but Radix moves focus
+      // to the content container as soon as the popover opens — so that condition
+      // was true almost always and scroll-close stopped working altogether. Only a
+      // focused input/textarea/contenteditable implies a keyboard is up and a
+      // rename is in progress; a merely-open panel must still close on scroll.
+      const active = document.activeElement as HTMLElement | null;
+      const isTextEntry =
+        !!active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.isContentEditable);
+      if (isTextEntry && contentRef.current?.contains(active)) return;
+      setOpen(false);
+    };
+    window.addEventListener("scroll", closeOnOutsideScroll, true);
+    return () => {
+      window.removeEventListener("scroll", closeOnOutsideScroll, true);
+    };
+  }, [open]);
 
   // A feature's geometry may be a GeometryCollection whose parts hold the actual
   // lines/points (e.g. highway networks), so recurse into it — otherwise the
@@ -73,7 +123,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
 
   // Feature-property keys available for a vector layer, for the tooltip-attribute
   // selector below. Sampled (not every feature) so huge sets stay cheap.
-  const availableAttributes = useMemo<string[]>(() => {
+  const geojsonAttributeKeys = useMemo<string[]>(() => {
     const features = layer.geojson?.features;
     if (!Array.isArray(features) || features.length === 0) return [];
     const keys = new Set<string>();
@@ -86,6 +136,34 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
     return Array.from(keys).sort((a, b) => a.localeCompare(b));
   }, [layer.geojson]);
 
+  // A raster (DEM / GeoTIFF) has no feature properties — its tooltip renders a
+  // fixed set of synthesised rows (coordinates, sampled value, range, CRS, …)
+  // instead. Listing those gives rasters the SAME show/hide control vector layers
+  // have; without this the whole section was gated off and a TIFF's settings
+  // panel showed nothing but Layer Name and Min Zoom.
+  const useIgrs = useIgrsPreference();
+  const isRaster = isRasterTooltipLayer(layer);
+
+  // Both kinds normalise to { key, label }: a vector attribute is its own label,
+  // a raster row gets the label the tooltip actually prints for it.
+  const availableAttributes = useMemo<RasterTooltipAttribute[]>(() => {
+    if (isRaster) return getRasterTooltipAttributes(layer, useIgrs);
+    return geojsonAttributeKeys.map((key) => ({ key, label: key }));
+  }, [isRaster, layer, useIgrs, geojsonAttributeKeys]);
+
+  // The keys an unconfigured layer counts as selected. For a raster this is the
+  // FULL key set rather than the listing above: the IGRS preference hides the
+  // Longitude row, and seeding a toggle from the visible listing would silently
+  // drop `longitude` from the stored selection, so it would come back unticked
+  // when the user switched IGRS off again.
+  const defaultSelectionKeys = useMemo<string[]>(
+    () =>
+      isRaster
+        ? getRasterTooltipAttributeKeys(layer)
+        : availableAttributes.map((a) => a.key),
+    [isRaster, layer, availableAttributes],
+  );
+
   // undefined = not yet configured; array = the exact keys to show.
   const selectedAttributes = layer.tooltipAttributes as string[] | undefined;
 
@@ -94,12 +172,19 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
   // small one seeds to all. Without this, an unconfigured layer showed EVERY box
   // ticked while the tooltip silently capped at N — the mismatch reported here.
   useEffect(() => {
+    // Rasters need no seed: they have at most a handful of rows, always under the
+    // cap, and `isRasterTooltipAttrShown` already treats "unconfigured" as "show
+    // all" — so panel and tooltip agree with no write. Skipping it matters
+    // because this component mounts for every layer row scrolled into view, and
+    // a zip import can bring in hundreds of rasters: seeding each would fire a
+    // store write (and a full layers re-render) per row.
+    if (isRaster) return;
     if (availableAttributes.length === 0) return;
     if (selectedAttributes === undefined) {
       // Seed a default selection (up to the cap) so the panel and tooltip agree.
       updateLayer(layer.id, {
         ...layer,
-        tooltipAttributes: availableAttributes.slice(
+        tooltipAttributes: defaultSelectionKeys.slice(
           0,
           TOOLTIP_DEFAULT_ATTR_LIMIT,
         ),
@@ -119,21 +204,51 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
   }, [selectedAttributes, availableAttributes]);
 
   // Before the seed lands, treat the first N as shown so the panel never flashes
-  // every box ticked (which would contradict the cap).
+  // every box ticked (which would contradict the cap). A raster is never seeded
+  // and always fits under the cap, so unconfigured means every row is shown —
+  // exactly what `isRasterTooltipAttrShown` does on the tooltip side.
   const isAttrShown = (key: string) =>
     selectedAttributes === undefined
-      ? availableAttributes.indexOf(key) < TOOLTIP_DEFAULT_ATTR_LIMIT
+      ? isRaster ||
+        availableAttributes.findIndex((a) => a.key === key) <
+          TOOLTIP_DEFAULT_ATTR_LIMIT
       : selectedAttributes.includes(key);
 
-  const selectedCount =
-    selectedAttributes?.length ??
-    Math.min(availableAttributes.length, TOOLTIP_DEFAULT_ATTR_LIMIT);
-  const atCap = selectedCount >= TOOLTIP_DEFAULT_ATTR_LIMIT;
+  // Counts the LISTED rows that are ticked. Not the stored array's length: a
+  // raster's stored selection can hold `longitude` while IGRS hides that row, and
+  // a vector layer's can hold a key absent from the sampled first 300 features —
+  // either would make the footer read "Showing 6 of 5".
+  const shownCount = availableAttributes.filter((a) =>
+    isAttrShown(a.key),
+  ).length;
+
+  // A raster's stored selection, narrowed to keys this layer actually owns. The
+  // raster keys are a small fixed vocabulary, so a stored array holding anything
+  // else is foreign (only reachable from a hand-edited or externally-written
+  // session). Counting those foreign keys toward the cap would mark a raster
+  // `atCap`, disable every checkbox, and make `toggleAttribute` a no-op — a
+  // permanently dead panel, since rasters deliberately skip the truncation branch
+  // that would otherwise heal it. Narrowing here keeps the cap honest AND makes
+  // the first click rewrite the array clean.
+  const effectiveSelection =
+    isRaster && selectedAttributes
+      ? selectedAttributes.filter((k) => defaultSelectionKeys.includes(k))
+      : selectedAttributes;
+
+  // The cap applies to what is STORED (that is what the tooltip renders), so it
+  // is measured against the effective selection, not the visible listing.
+  const effectiveSelectionCount =
+    effectiveSelection?.length ??
+    Math.min(defaultSelectionKeys.length, TOOLTIP_DEFAULT_ATTR_LIMIT);
+  const atCap = effectiveSelectionCount >= TOOLTIP_DEFAULT_ATTR_LIMIT;
+  // Only a layer with more rows than the cap can be truncated by it; for a raster
+  // (≤ 6 rows) the cap is never reachable, so its wording stays out of the way.
+  const capApplies = availableAttributes.length > TOOLTIP_DEFAULT_ATTR_LIMIT;
 
   // Selections are stored EXPLICITLY (the tooltip honors exactly what is ticked),
   // and turning ON is blocked once the cap is reached — turning OFF is always fine.
   const toggleAttribute = (key: string) => {
-    const current = selectedAttributes ?? availableAttributes;
+    const current = effectiveSelection ?? defaultSelectionKeys;
     const isOn = current.includes(key);
     if (!isOn && current.length >= TOOLTIP_DEFAULT_ATTR_LIMIT) return;
     const next = isOn
@@ -147,22 +262,39 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
       ...layer,
       // "All" is capped — select the first N (the most the tooltip will show).
       tooltipAttributes: show
-        ? availableAttributes.slice(0, TOOLTIP_DEFAULT_ATTR_LIMIT)
+        ? defaultSelectionKeys.slice(0, TOOLTIP_DEFAULT_ATTR_LIMIT)
         : [],
     });
   };
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent
+        ref={contentRef}
         className="w-72 p-3 space-y-4"
         side="left"
         align="start"
         sideOffset={8}
         collisionPadding={12}
         sticky="always"
-        hideWhenDetached
+        // `hideWhenDetached` is deliberately NOT set. It makes Radix add Floating
+        // UI's `hide({ strategy: "referenceHidden" })` middleware
+        // (@radix-ui/react-popper index.mjs:126), and on `referenceHidden` Radix
+        // writes `visibility: "hidden"` onto the popper wrapper (index.mjs:161-163).
+        // With `collisionBoundary` left at its default `[]` the clipping boundary is
+        // the VISUAL viewport (@floating-ui/dom: `height = visualViewport.height`),
+        // which the Android soft keyboard shrinks — and `visualViewport` is itself a
+        // resize source for `autoUpdate`. So opening the keyboard on the LAST layer
+        // row (the one row that always sits in the band the keyboard covers) marked
+        // its trigger as hidden, the wrapper went `visibility: hidden`, and Blink
+        // cannot keep focus in an invisible subtree: it blurred the Layer Name input
+        // and Android dismissed the keyboard mid-rename. The app is locked to
+        // landscape (AndroidManifest `screenOrientation="landscape"`) where the IME
+        // eats most of the short screen, which is why it reproduced every time.
+        // The "don't leave the panel floating detached from its row" intent this
+        // prop served is already covered by the outside-scroll close above plus
+        // Radix's own dismiss-on-outside-pointer-down.
       >
         <style>{`
           [data-slot='slider-track'] {
@@ -325,7 +457,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                     className="text-blue-600 hover:underline"
                     onClick={() => setAllAttributes(true)}
                   >
-                    First {TOOLTIP_DEFAULT_ATTR_LIMIT}
+                    {capApplies ? `First ${TOOLTIP_DEFAULT_ATTR_LIMIT}` : "All"}
                   </button>
                   <span className="text-muted-foreground">·</span>
                   <button
@@ -338,7 +470,7 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                 </div>
               </div>
               <div className="max-h-40 overflow-y-auto rounded-md border border-border/60 p-2 space-y-1">
-                {availableAttributes.map((key) => {
+                {availableAttributes.map(({ key, label }) => {
                   const shown = isAttrShown(key);
                   const locked = !shown && atCap; // cap reached — can't add more
                   return (
@@ -355,14 +487,15 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
                         disabled={locked}
                         onChange={() => toggleAttribute(key)}
                       />
-                      <span className="min-w-0 break-all">{key}</span>
+                      <span className="min-w-0 break-all">{label}</span>
                     </label>
                   );
                 })}
               </div>
               <p className="mt-1 text-[10px] text-muted-foreground">
-                {`Showing ${selectedCount} of ${availableAttributes.length} · max ${TOOLTIP_DEFAULT_ATTR_LIMIT}`}
-                {atCap && " (deselect one to add another)"}
+                {`Showing ${shownCount} of ${availableAttributes.length}`}
+                {capApplies && ` · max ${TOOLTIP_DEFAULT_ATTR_LIMIT}`}
+                {capApplies && atCap && " (deselect one to add another)"}
               </p>
             </div>
           </>

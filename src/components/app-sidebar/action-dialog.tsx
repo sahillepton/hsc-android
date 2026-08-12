@@ -1,12 +1,23 @@
 import { MessageSquare, Upload, Video } from "lucide-react";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
-import { useNodeDialog, useSelectedNode } from "@/store/layers-store";
+import {
+  useIgrsPreference,
+  useNodeDialog,
+  useSelectedNode,
+} from "@/store/layers-store";
+import { calculateIgrs } from "@/lib/utils";
 import type { Node } from "@/lib/definitions";
 
 const ActionDialog = () => {
   const { isNodeDialogOpen, setIsNodeDialogOpen } = useNodeDialog();
   const { selectedNode } = useSelectedNode();
+  const useIgrs = useIgrsPreference();
+  // calculateIgrs takes (longitude, latitude) and returns null outside its window.
+  const nodeIgrs =
+    useIgrs && selectedNode
+      ? calculateIgrs(selectedNode.longitude, selectedNode.latitude)
+      : null;
   const handleVoiceCall = (node: Node) => {
     alert(`Voice call with Node ${node.userId} - Feature coming soon!`);
   };
@@ -57,11 +68,16 @@ const ActionDialog = () => {
 
             <div className="border-t pt-6 space-y-2">
               <span className="font-medium text-gray-600 text-sm">
-                Location:
+                {useIgrs && nodeIgrs ? "Location (IGRS):" : "Location:"}
               </span>
               <p className="font-mono text-sm text-gray-800 bg-gray-50 p-3 rounded-lg">
-                {selectedNode.latitude.toFixed(6)},{" "}
-                {selectedNode.longitude.toFixed(6)}
+                {/* Honour the IGRS preference like every other coordinate readout.
+                    Falls back to lat/long when IGRS is on but the node is outside
+                    the IGRS window (calculateIgrs returns null there), so the field
+                    never renders blank. */}
+                {useIgrs && nodeIgrs
+                  ? nodeIgrs
+                  : `${selectedNode.latitude.toFixed(6)}, ${selectedNode.longitude.toFixed(6)}`}
               </p>
             </div>
 

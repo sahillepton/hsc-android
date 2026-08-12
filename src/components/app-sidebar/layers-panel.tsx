@@ -11,6 +11,7 @@ import {
   useHoverInfo,
 } from "@/store/layers-store";
 import { isSketchLayer } from "@/lib/sketch-layers";
+import { isStoreLayerPickObject } from "@/lib/layers";
 import LayersList from "./layers-list";
 
 type LayersPanelProps = {
@@ -95,7 +96,7 @@ const LayersPanel = ({
 
       if ((hoveredObject as any)?.layerId) {
         hoveredLayerId = (hoveredObject as any).layerId;
-      } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+      } else if (isStoreLayerPickObject(hoveredObject)) {
         hoveredLayerId = (hoveredObject as any).id;
       } else if (hoverInfo.layer?.id) {
         const deckLayerId = hoverInfo.layer.id;

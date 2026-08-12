@@ -116,6 +116,37 @@ export const generateLayerId = () => {
   return `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 };
 
+/**
+ * True when a deck.gl pick's `object` is a store layer (`LayerProps`) rather
+ * than a picked GeoJSON feature.
+ *
+ * Several hover paths identify "the picked object IS the layer" by the shape
+ * `object.id && object.type` — true for sketch point/line data items, which
+ * carry the whole `LayerProps`. But it is ALSO true for a GeoJSON feature that
+ * has a top-level `id`: QGIS/ogr2ogr routinely write one (`{"type":"Feature",
+ * "id":1,...}`), so `type` is `"Feature"` and `id` is a feature id like `1`.
+ * Those paths then looked up a layer with id `1`, found none, and concluded the
+ * hovered layer was gone — which wiped the tooltip the instant it appeared.
+ *
+ * Store layer ids are always strings (`generateLayerId`) and `LayerProps` has
+ * no `geometry`, so requiring a string id and rejecting anything Feature-shaped
+ * separates the two cases cleanly.
+ */
+export const isStoreLayerPickObject = (object: unknown): boolean => {
+  if (!object || typeof object !== "object") return false;
+  const candidate = object as {
+    id?: unknown;
+    type?: unknown;
+    geometry?: unknown;
+  };
+  if (typeof candidate.id !== "string" || !candidate.type) return false;
+  // GeoJSON feature — never a store layer.
+  if (candidate.type === "Feature" || candidate.type === "FeatureCollection") {
+    return false;
+  }
+  return candidate.geometry === undefined || candidate.geometry === null;
+};
+
 export const toRadians = (deg: number) => (deg * Math.PI) / 180;
 export const toDegrees = (rad: number) => (rad * 180) / Math.PI;
 

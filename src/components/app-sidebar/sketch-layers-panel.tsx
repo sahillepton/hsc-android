@@ -27,6 +27,7 @@ import {
   calculateBearingDegrees,
   formatLayerMeasurements,
   normalizeAngleSigned,
+  isStoreLayerPickObject,
   type LayerMeasurement,
 } from "@/lib/layers";
 import { isSketchLayer } from "@/lib/sketch-layers";
@@ -78,7 +79,9 @@ const SketchLayerCardItem = ({
   }
 
   return (
-    <div className="mb-3">
+    // pb-3, not mb-3 — virtuoso item root; a child margin collapses out of the
+    // measured box and shortens the list's scroll range. See LayerCardSkeleton.
+    <div className="pb-3">
       <div
         key={layer.id}
         className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
@@ -352,7 +355,7 @@ const SketchLayersPanel = ({
       hoveredLayerId = (hoveredObject as any).layer.id;
     } else if ((hoveredObject as any)?.layerId) {
       hoveredLayerId = (hoveredObject as any).layerId;
-    } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+    } else if (isStoreLayerPickObject(hoveredObject)) {
       hoveredLayerId = (hoveredObject as any).id;
     } else if (hoverInfo.layer?.id) {
       const deckLayerId = hoverInfo.layer.id;
@@ -382,7 +385,11 @@ const SketchLayersPanel = ({
 
     return (
       <Virtuoso
-        style={{ height: "100%" }}
+        // `none`, not `contain`. Both stop scroll-chaining to the map/page, but
+        // only `none` also suppresses the LOCAL overscroll affordance — `contain`
+        // still lets the container rubber-band past its own ends, which is the
+        // bounce seen when scrolling rapidly to the bottom on Android.
+        style={{ height: "100%", overscrollBehavior: "none" }}
         data={sketchLayers}
         increaseViewportBy={280}
         itemContent={(_, layer) => {

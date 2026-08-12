@@ -6,13 +6,13 @@ import {
   calculateIgrs,
 } from "@/lib/utils";
 import {
-  DEFAULT_LAYER_MAX_ZOOM,
   TOOLTIP_DEFAULT_ATTR_LIMIT,
 } from "@/lib/constants";
 import {
   normalizeAngleSigned,
   computePolygonPerimeterMeters,
   computePolygonAreaMeters,
+  isStoreLayerPickObject,
 } from "@/lib/layers";
 import {
   useHoverInfo,
@@ -41,9 +41,11 @@ import { useUdpDataStore } from "@/store/udp-data-store";
 import {
   isShortestRouteLayer,
   getShortestRouteCoordinateSubtitle,
-  SHORTEST_ROUTE_LAYER_PREFIX,
 } from "@/lib/route-layer";
-import { isSketchLayer } from "@/lib/sketch-layers";
+import {
+  RASTER_TOOLTIP_ATTRIBUTES,
+  isRasterTooltipAttrShown,
+} from "@/lib/raster-tooltip-attributes";
 
 const SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS = new Set([
   "shortestRoute",
@@ -83,6 +85,37 @@ function liveTopologyTooltipObject(
     latitude: live.lat,
     altitude: live.altitude,
   };
+}
+
+type LngLat = [number, number];
+
+/**
+ * Closest point to `p` on the segment a→b, in lng/lat space.
+ *
+ * Plain 2D projection onto the segment. Degrees are not isotropic (a degree of
+ * longitude is shorter than a degree of latitude away from the equator), so this
+ * is not the true geodesic nearest point — but the input is only ever a few pixels
+ * off the line, over which the distortion is far below one pixel. Using degrees
+ * directly keeps it exact in the space the anchor is actually projected from.
+ */
+function closestPointOnSegment(p: LngLat, a: LngLat, b: LngLat): LngLat {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return [a[0], a[1]];
+  let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t)); // clamp to the segment, not the infinite line
+  return [a[0] + t * dx, a[1] + t * dy];
+}
+
+/** True when every element looks like a [lng, lat] pair. */
+function isCoordPath(v: unknown): v is ReadonlyArray<ReadonlyArray<number>> {
+  return (
+    Array.isArray(v) &&
+    v.length > 0 &&
+    Array.isArray(v[0]) &&
+    typeof (v[0] as unknown[])[0] === "number"
+  );
 }
 
 const isMeaningfulPropertyValue = (value: unknown): boolean => {
@@ -192,7 +225,6 @@ const Tooltip = () => {
     y: number;
   } | null>(null);
   const [mapZoom, setMapZoom] = useState<number | null>(null);
-  const tooltipRafRef = useRef<number | null>(null);
   const lastTooltipPositionRef = useRef<{ x: number; y: number } | null>(null);
   // Measured tooltip box size, used to keep it on-screen (flip left / clamp).
   const tooltipBoxRef = useRef<HTMLDivElement | null>(null);
@@ -208,6 +240,11 @@ const Tooltip = () => {
     (s: FeatureAccessMapState) => s.featureMapLoading,
   );
   const topologyNodes = useUdpDataStore((s) => s.udpData.topology.nodes);
+  // Live connections map (key → SNR) so a topology-LINK tooltip shows the current
+  // signal, not the value captured when it was clicked.
+  const topologyConnections = useUdpDataStore(
+    (s) => s.udpData.topology.connections,
+  );
 
   // Lazy-load native feature map when user opens the topology tooltip (Android integrated / GIS APK).
   useEffect(() => {
@@ -330,126 +367,168 @@ const Tooltip = () => {
           }
         }
 
-        // PRIORITY 1: Always use hoverInfo.coordinate if available
-        // This is the actual hovered point on the map (works for raster, LineString, etc.)
-        // This is especially important for DEM/raster layers and LineString layers
-        if (lng === undefined && lat === undefined && hoverInfo.coordinate && hoverInfo.coordinate.length >= 2) {
-          [lng, lat] = hoverInfo.coordinate;
-        }
-        // PRIORITY 2: Try to get coordinates from object geometry (only if object exists)
-        else if (lng === undefined && lat === undefined && hoverInfo.object?.geometry?.coordinates) {
-          // GeoJSON Point
-          if (
-            Array.isArray(hoverInfo.object.geometry.coordinates) &&
-            hoverInfo.object.geometry.coordinates.length >= 2 &&
-            !Array.isArray(hoverInfo.object.geometry.coordinates[0])
-          ) {
-            lng = hoverInfo.object.geometry.coordinates[0];
-            lat = hoverInfo.object.geometry.coordinates[1];
-          } else if (
-            hoverInfo.object.geometry.type === "Polygon" &&
-            Array.isArray(hoverInfo.object.geometry.coordinates[0])
-          ) {
-            // Polygon - use first point of first ring as reference
-            const firstRing = hoverInfo.object.geometry.coordinates[0];
-            if (
-              firstRing &&
-              firstRing.length > 0 &&
-              Array.isArray(firstRing[0])
-            ) {
-              lng = firstRing[0][0];
-              lat = firstRing[0][1];
-            }
-          } else if (
-            hoverInfo.object.geometry.type === "LineString" &&
-            Array.isArray(hoverInfo.object.geometry.coordinates) &&
-            hoverInfo.object.geometry.coordinates.length > 0 &&
-            Array.isArray(hoverInfo.object.geometry.coordinates[0])
-          ) {
-            // LineString - use first point as fallback (coordinate should be handled above)
-            const firstPoint = hoverInfo.object.geometry.coordinates[0];
-            if (firstPoint && firstPoint.length >= 2) {
-              lng = firstPoint[0];
-              lat = firstPoint[1];
-            }
-          }
-        }
-        // PRIORITY 3: Direct polygon layer (only if object exists)
-        else if (
+        // Live topology CONNECTION — anchor at the midpoint of its two nodes' LIVE
+        // positions so the tooltip tracks the moving link (not the click pixel).
+        // Falls back to the click-time snapshot endpoints if a node isn't live.
+        if (
+          deckLayerId === "udp-topology-connections-layer" &&
+          hoverInfo.object &&
           lng === undefined &&
-          lat === undefined &&
-          hoverInfo.object?.polygon &&
-          Array.isArray(hoverInfo.object.polygon)
+          lat === undefined
         ) {
-          // Direct polygon layer - use first point as reference
-          const firstRing =
-            Array.isArray(hoverInfo.object.polygon[0]) &&
-            Array.isArray(hoverInfo.object.polygon[0][0])
-              ? hoverInfo.object.polygon[0] // Array of rings
-              : hoverInfo.object.polygon; // Single ring
-          if (
-            firstRing &&
-            firstRing.length > 0 &&
-            Array.isArray(firstRing[0])
-          ) {
-            lng = firstRing[0][0];
-            lat = firstRing[0][1];
-          }
-        }
-        // PRIORITY 4: Direct coordinates from object (only if object exists)
-        else if (
-          lng === undefined &&
-          lat === undefined &&
-          hoverInfo.object?.longitude !== undefined &&
-          hoverInfo.object?.latitude !== undefined
-        ) {
-          // Direct coordinates
-          lng = hoverInfo.object.longitude;
-          lat = hoverInfo.object.latitude;
-        }
-        // PRIORITY 5: Position array (only if object exists)
-        else if (
-          lng === undefined &&
-          lat === undefined &&
-          hoverInfo.object?.position &&
-          Array.isArray(hoverInfo.object.position)
-        ) {
-          // Position array [lng, lat]
-          lng = hoverInfo.object.position[0];
-          lat = hoverInfo.object.position[1];
-        }
-        // PRIORITY 6: deck LineLayer segment (source/target) — anchor at midpoint
-        else if (
-          lng === undefined &&
-          lat === undefined &&
-          Array.isArray(hoverInfo.object?.sourcePosition) &&
-          Array.isArray(hoverInfo.object?.targetPosition)
-        ) {
-          const s = hoverInfo.object.sourcePosition;
-          const t = hoverInfo.object.targetPosition;
-          lng = (s[0] + t[0]) / 2;
-          lat = (s[1] + t[1]) / 2;
-        }
-        // PRIORITY 7: deck PathLayer line (object.path) — anchor at midpoint vertex
-        else if (
-          lng === undefined &&
-          lat === undefined &&
-          Array.isArray(hoverInfo.object?.path) &&
-          hoverInfo.object.path.length > 0
-        ) {
-          const pathPts = hoverInfo.object.path;
-          const mid = pathPts[Math.floor(pathPts.length / 2)];
-          if (Array.isArray(mid) && mid.length >= 2) {
-            lng = mid[0];
-            lat = mid[1];
+          const o = hoverInfo.object as {
+            fromId?: number;
+            toId?: number;
+            from?: { longitude: number; latitude: number };
+            to?: { longitude: number; latitude: number };
+          };
+          const f = o.fromId !== undefined ? topologyNodes.get(o.fromId) : undefined;
+          const t = o.toId !== undefined ? topologyNodes.get(o.toId) : undefined;
+          if (f && t) {
+            lng = (f.long + t.long) / 2;
+            lat = (f.lat + t.lat) / 2;
+          } else if (o.from && o.to) {
+            lng = (o.from.longitude + o.to.longitude) / 2;
+            lat = (o.from.latitude + o.to.latitude) / 2;
           }
         }
 
-        if (lng !== undefined && lat !== undefined) {
+        // ── Anchor resolution ───────────────────────────────────────────────
+        // The order here is the OPPOSITE of what it used to be, and that was the
+        // "tooltip floats away from the point" bug.
+        //
+        // It used to take `hoverInfo.coordinate` first, for everything. That is the
+        // lng/lat under the cursor at PICK time — and deck picks within a radius
+        // (20 px, 28 px on touch), so for a POINT it sits off the point's centre.
+        // Frozen as a lng/lat, that offset re-projects to
+        // `offset × 2^(zoomNow − zoomAtPick)` screen px: tap a point at z4, zoom in
+        // 6 levels, and the tooltip is ~1280 px away — off-screen. It looked right
+        // at the pick zoom because there the error is only the pick radius, which is
+        // exactly the "correct at z2–z4, drifts as I zoom" symptom.
+        //
+        // So resolve the FEATURE's own position first — that is zoom-invariant —
+        // and keep the cursor coordinate only for subjects that have no geometry
+        // (rasters/DEM, where the sampled pixel under the cursor IS the subject).
+        // Lines get the cursor coordinate SNAPPED onto the geometry, which removes
+        // the perpendicular pick offset that made them drift more mildly.
+        const picked: LngLat | null =
+          hoverInfo.coordinate && hoverInfo.coordinate.length >= 2
+            ? [hoverInfo.coordinate[0], hoverInfo.coordinate[1]]
+            : null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const obj = hoverInfo.object as any;
+        const geom = obj?.geometry;
+        const gType = geom?.type;
+        const gCoords = geom?.coordinates;
+
+        const setAnchor = (c: LngLat | null | undefined): boolean => {
+          if (!c || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) return false;
+          lng = c[0];
+          lat = c[1];
+          return true;
+        };
+
+        // 1. POINT-LIKE — anchor at the exact centre.
+        if (lng === undefined && lat === undefined) {
+          if (
+            gType === "Point" &&
+            Array.isArray(gCoords) &&
+            gCoords.length >= 2 &&
+            !Array.isArray(gCoords[0])
+          ) {
+            setAnchor([gCoords[0], gCoords[1]]);
+          } else if (
+            Array.isArray(obj?.position) &&
+            obj.position.length >= 2
+          ) {
+            // Sketch point layers: the deck data item IS the store layer.
+            setAnchor([obj.position[0], obj.position[1]]);
+          } else if (
+            typeof obj?.longitude === "number" &&
+            typeof obj?.latitude === "number"
+          ) {
+            setAnchor([obj.longitude, obj.latitude]);
+          }
+        }
+
+        // 2. LINE-LIKE — collect the vertex paths. The actual snap happens AFTER
+        //    projection (see `screenAnchor` below), because a straight deck line
+        //    between two lng/lat points is straight in the RENDERER's space, not in
+        //    degrees, so snapping here would land off the drawn line on mapbox.
+        //    A midpoint/vertex is still resolved as the lng/lat fallback for when
+        //    there is no pick to snap (e.g. a synthesised hover).
+        const linePathsForSnap: ReadonlyArray<ReadonlyArray<number>>[] = [];
+        if (lng === undefined && lat === undefined) {
+          if (gType === "LineString" && isCoordPath(gCoords)) {
+            linePathsForSnap.push(gCoords);
+          } else if (gType === "MultiLineString" && Array.isArray(gCoords)) {
+            for (const part of gCoords) {
+              if (isCoordPath(part)) linePathsForSnap.push(part);
+            }
+          } else if (isCoordPath(obj?.path)) {
+            linePathsForSnap.push(obj.path);
+          } else if (
+            Array.isArray(obj?.sourcePosition) &&
+            Array.isArray(obj?.targetPosition) &&
+            obj.sourcePosition.length >= 2 &&
+            obj.targetPosition.length >= 2
+          ) {
+            linePathsForSnap.push([
+              [obj.sourcePosition[0], obj.sourcePosition[1]],
+              [obj.targetPosition[0], obj.targetPosition[1]],
+            ]);
+          }
+
+          if (linePathsForSnap.length > 0) {
+            // lng/lat fallback: the middle vertex of the first path, or the segment
+            // midpoint. Only used if the screen-space snap cannot run.
+            const first = linePathsForSnap[0];
+            if (first.length === 2) {
+              setAnchor([
+                (first[0][0] + first[1][0]) / 2,
+                (first[0][1] + first[1][1]) / 2,
+              ]);
+            } else {
+              const mid = first[Math.floor(first.length / 2)];
+              if (mid && mid.length >= 2) setAnchor([mid[0], mid[1]]);
+            }
+          }
+        }
+
+        // 3. AREAS, RASTERS, anything else — the picked coordinate. For a filled
+        //    polygon the pick is INSIDE the feature, so it is already on the feature
+        //    and stays correct at any zoom; preferring it over a ring vertex also
+        //    avoids yanking the tooltip to a far corner. For a raster the sampled
+        //    pixel under the cursor is the whole point.
+        if (lng === undefined && lat === undefined) {
+          if (!setAnchor(picked)) {
+            if (
+              gType === "Polygon" &&
+              Array.isArray(gCoords) &&
+              isCoordPath(gCoords[0])
+            ) {
+              setAnchor([gCoords[0][0][0], gCoords[0][0][1]]);
+            } else if (Array.isArray(obj?.polygon)) {
+              const ring = isCoordPath(obj.polygon[0])
+                ? obj.polygon[0]
+                : obj.polygon;
+              if (isCoordPath(ring)) {
+                setAnchor([ring[0][0], ring[0][1]]);
+              }
+            }
+          }
+        }
+
+        // One projection for both placement and the line snap below, so the two can
+        // never disagree about where a coordinate lands on screen.
+        const projectLngLat = (
+          plng: number,
+          plat: number,
+        ): { x: number; y: number } | null => {
           if (isGeodetic) {
-            // Project through the geodetic view's live camera (exposed on window
-            // by GeodeticBasemapView). Fall back to the pick pixel if unavailable.
-            const project = (
+            // The geodetic view's live camera, exposed on window by
+            // GeodeticBasemapView (the covered mapbox map's project() would deviate).
+            const gp = (
               window as unknown as {
                 __geodeticProject?: (
                   lng: number,
@@ -457,16 +536,61 @@ const Tooltip = () => {
                 ) => { x: number; y: number };
               }
             ).__geodeticProject;
-            const p = project?.(lng, lat);
-            if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
-              setPositionSafely(p.x, p.y);
-            } else {
-              setPositionSafely(hoverInfo.x || 0, hoverInfo.y || 0);
+            const p = gp?.(plng, plat);
+            return p && Number.isFinite(p.x) && Number.isFinite(p.y) ? p : null;
+          }
+          const p = map.project([plng, plat]);
+          return p && Number.isFinite(p.x) && Number.isFinite(p.y)
+            ? { x: p.x, y: p.y }
+            : null;
+        };
+
+        // ── Line anchors are snapped in SCREEN space, not in degrees ──────────
+        // A deck line between two lng/lat points is drawn straight in the
+        // RENDERER's space. On mapbox that is Web Mercator, where a straight chord
+        // in degrees is CURVED — so a degree-space snap lands off the line that is
+        // actually drawn, by an error that grows with zoom exactly like the bug it
+        // was meant to fix (measured up to 242 px at z15.5 and 1397 px at z18 for a
+        // ~300 km segment). Snapping after projection is correct in BOTH renderers,
+        // because it uses whatever space the line is really drawn in, and it is
+        // recomputed every frame so it stays exact at any zoom.
+        let screenAnchor: { x: number; y: number } | null = null;
+        if (picked && linePathsForSnap.length > 0) {
+          const pickedPx = projectLngLat(picked[0], picked[1]);
+          if (pickedPx) {
+            let bestDistSq = Infinity;
+            for (const path of linePathsForSnap) {
+              let prev: { x: number; y: number } | null = null;
+              for (const v of path) {
+                const cur =
+                  v.length >= 2 ? projectLngLat(v[0], v[1]) : null;
+                if (prev && cur) {
+                  const c = closestPointOnSegment(
+                    [pickedPx.x, pickedPx.y],
+                    [prev.x, prev.y],
+                    [cur.x, cur.y],
+                  );
+                  const dSq =
+                    (c[0] - pickedPx.x) ** 2 + (c[1] - pickedPx.y) ** 2;
+                  if (dSq < bestDistSq) {
+                    bestDistSq = dSq;
+                    screenAnchor = { x: c[0], y: c[1] };
+                  }
+                }
+                if (cur) prev = cur;
+              }
             }
+          }
+        }
+
+        if (screenAnchor) {
+          setPositionSafely(screenAnchor.x, screenAnchor.y);
+        } else if (lng !== undefined && lat !== undefined) {
+          const p = projectLngLat(lng, lat);
+          if (p) {
+            setPositionSafely(p.x, p.y);
           } else {
-            // Project geographic coordinates to screen coordinates
-            const point = map.project([lng, lat]);
-            setPositionSafely(point.x, point.y);
+            setPositionSafely(hoverInfo.x || 0, hoverInfo.y || 0);
           }
         } else {
           // Fallback to original x, y if coordinates can't be determined
@@ -480,45 +604,27 @@ const Tooltip = () => {
 
     updatePosition();
 
-    // Listen to map move events
-    const map = mapRef.current?.getMap();
-    if (map) {
-      // Get initial zoom
-      const initialZoom = map.getZoom();
-      setMapZoom(initialZoom);
-
-      const schedulePositionUpdate = () => {
-        if (tooltipRafRef.current !== null) return;
-        tooltipRafRef.current = requestAnimationFrame(() => {
-          tooltipRafRef.current = null;
-          updatePosition();
-        });
-      };
-
-      const handleZoom = () => {
-        const zoom = map.getZoom();
+    // Keep the tooltip anchored to its feature on EVERY camera frame — pan AND,
+    // crucially, ZOOM. Previously this re-projected only on discrete map "move" /
+    // "zoom" / "geodetic-view-change" events; those can skip frames during a zoom
+    // animation (and mapbox emits none at all in the geodetic view), so the tooltip
+    // drifted off the feature — the "moves independently on zoom" bug. Re-projecting
+    // once per animation frame from the LIVE camera (map.project / __geodeticProject,
+    // via the SAME updatePosition that already handles x/y) follows the feature
+    // exactly at any zoom level. `setPositionSafely` skips sub-pixel deltas so a
+    // static tooltip forces no re-renders, and the loop stops when it closes.
+    let rafId = requestAnimationFrame(function tick() {
+      updatePosition();
+      const m = mapRef.current?.getMap?.();
+      if (m) {
+        const z = m.getZoom();
         setMapZoom((prev) =>
-          prev === null || Math.abs(prev - zoom) >= 0.01 ? zoom : prev,
+          prev === null || Math.abs(prev - z) >= 0.01 ? z : prev,
         );
-        schedulePositionUpdate();
-      };
-
-      map.on("move", schedulePositionUpdate);
-      map.on("zoom", handleZoom);
-      // The geodetic view's camera is not the mapbox map, so its pan/zoom arrives
-      // as a window event (dispatched by GeodeticBasemapView). Re-project on it too.
-      window.addEventListener("geodetic-view-change", schedulePositionUpdate);
-
-      return () => {
-        if (tooltipRafRef.current !== null) {
-          cancelAnimationFrame(tooltipRafRef.current);
-          tooltipRafRef.current = null;
-        }
-        map.off("move", schedulePositionUpdate);
-        map.off("zoom", handleZoom);
-        window.removeEventListener("geodetic-view-change", schedulePositionUpdate);
-      };
-    }
+      }
+      rafId = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(rafId);
   }, [hoverInfo, mapRef, layers, topologyNodes]);
 
   const object = useMemo(() => {
@@ -568,9 +674,23 @@ const Tooltip = () => {
   if ((object as any)?.layerId) {
     layerInfo = layers.find((l) => l.id === (object as any).layerId);
   }
-  // Check if the object is a LayerProps itself (for point/polygon layers)
-  else if ((object as any)?.id && (object as any)?.type) {
+  // Check if the object is a LayerProps itself (for point/polygon layers).
+  // Guarded: an uploaded GeoJSON feature with a top-level `id` (QGIS/ogr2ogr
+  // write one) is also `{id, type}`-shaped, and used to match here — resolving
+  // to NO layer, so the feature's tooltip lost its name/width and fell through
+  // none of the later branches that need `layerInfo`.
+  else if (isStoreLayerPickObject(object)) {
     layerInfo = layers.find((l) => l.id === (object as any).id);
+  }
+  // Combined deck layers (sketch POLYGONS and AZIMUTHS) render every feature in ONE
+  // deck layer whose id ("polygon-layer" / "azimuth-lines-layer") matches no store
+  // layer — instead each data item carries the FULL store layer on `object.layer`.
+  // Without this, those tooltips can't find their name and fall back to a generic
+  // "Polygon"/no-name. Prefer the live store copy; fall back to the embedded one.
+  else if ((object as any)?.layer?.id) {
+    layerInfo =
+      layers.find((l) => l.id === (object as any).layer.id) ??
+      ((object as any).layer as (typeof layers)[0]);
   }
   // Check if the deck.gl layer has an id that matches a store layer (for GeoJSON layers, node layers, etc.)
   else if (layer?.id) {
@@ -595,20 +715,16 @@ const Tooltip = () => {
     return null;
   }
 
-  // Check if layer is outside its zoom range. Hand-drawn sketches are never
-  // zoom-gated (they render at every zoom), so their tooltip must not be gated
-  // either — otherwise an existing sketch that still carries a stale stored
-  // minzoom would render on the map but show no tooltip at low zoom.
-  if (layerInfo && mapZoom !== null && !isSketchLayer(layerInfo)) {
-    const effectiveZoom = Math.floor(mapZoom);
-    const minZoomCheck =
-      layerInfo.minzoom === undefined || effectiveZoom >= layerInfo.minzoom;
-    const maxZoomCheck =
-      effectiveZoom <= (layerInfo.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM);
-    if (!minZoomCheck || !maxZoomCheck) {
-      return null;
-    }
-  }
+  // NOTE: the tooltip is intentionally NOT zoom-gated here. A selected/hovered
+  // feature's tooltip must stay attached to it until the feature is un-hovered,
+  // explicitly closed, or another object is selected. The previous zoom-range check
+  // compared the LIVE `mapZoom` against the layer's stored min/max, while the
+  // feature's on-map visibility uses the DEBOUNCED, 0.5-rounded zoom — so mid-zoom
+  // the two desynced and the tooltip vanished for a feature that was still visible,
+  // reappearing on zoom-out (the "tooltip disappears at certain zoom levels" bug).
+  // Visibility is already governed by the `layerInfo.visible === false` check above
+  // (hidden layer → no tooltip) and by deck's hover clearing when the cursor leaves
+  // the feature, so a dedicated zoom gate here is both redundant and wrong.
 
   const formatCoordinatePair = (point?: [number, number]) => {
     if (!point || point.length < 2) return "—";
@@ -679,20 +795,37 @@ const Tooltip = () => {
 
       // While sampling: show coords + "…" so tap-to-inspect feels immediate.
       // After sampling: hide only when we know the pixel is NoData (still no value).
+      // NOTE: this is a DATA check, not a display one — it stays independent of
+      // the row selection below, so hiding the Value row can never make a live
+      // raster tooltip vanish.
       if (!hasValue && !loading) {
         return null;
       }
 
-      const properties = [
-        {
-          label: useIgrs ? "IGRS" : "Latitude",
-          value: useIgrs
-            ? (calculateIgrs(lng, lat) ?? "—")
-            : `${lat.toFixed(6)}°`,
-        },
-      ];
-      if (!useIgrs) {
-        properties.push({ label: "Longitude", value: `${lng.toFixed(6)}°` });
+      // Row selection from the layer's "Tooltip Attributes" panel. Unconfigured
+      // (undefined) shows every row.
+      const showRow = (key: string) =>
+        isRasterTooltipAttrShown(layerInfo, key);
+
+      const properties: { label: string; value: string }[] = [];
+      if (useIgrs) {
+        // IGRS collapses Latitude + Longitude into one row, gated by LATITUDE.
+        if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+          properties.push({
+            label: "IGRS",
+            value: calculateIgrs(lng, lat) ?? "—",
+          });
+        }
+      } else {
+        if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+          properties.push({
+            label: "Latitude",
+            value: `${lat.toFixed(6)}°`,
+          });
+        }
+        if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LONGITUDE)) {
+          properties.push({ label: "Longitude", value: `${lng.toFixed(6)}°` });
+        }
       }
 
       let valueLabel = "Value";
@@ -708,17 +841,23 @@ const Tooltip = () => {
         valueStr = "…";
       }
 
-      properties.push({
-        label: valueLabel,
-        value: valueStr,
-      });
-      if (typeof min === "number" && typeof max === "number") {
+      if (showRow(RASTER_TOOLTIP_ATTRIBUTES.VALUE)) {
+        properties.push({
+          label: valueLabel,
+          value: valueStr,
+        });
+      }
+      if (
+        showRow(RASTER_TOOLTIP_ATTRIBUTES.RANGE) &&
+        typeof min === "number" &&
+        typeof max === "number"
+      ) {
         properties.push({
           label: "Range",
           value: `${min.toFixed(2)} – ${max.toFixed(2)}`,
         });
       }
-      if (layerInfo.sourceCrs) {
+      if (showRow(RASTER_TOOLTIP_ATTRIBUTES.CRS) && layerInfo.sourceCrs) {
         properties.push({ label: "CRS", value: String(layerInfo.sourceCrs) });
       }
 
@@ -788,39 +927,58 @@ const Tooltip = () => {
             elevation !== null &&
             elevation !== undefined;
 
-          const properties = [
-            {
-              label: useIgrs ? "IGRS" : "Latitude",
-              value: useIgrs
-                ? (calculateIgrs(lng, lat) ?? "—")
-                : `${lat.toFixed(6)}°`,
-            },
-          ];
+          // Row selection from the layer's "Tooltip Attributes" panel.
+          // Unconfigured (undefined) shows every row.
+          const showRow = (key: string) =>
+            isRasterTooltipAttrShown(layerInfo, key);
 
-          if (!useIgrs) {
-            properties.push({
-              label: "Longitude",
-              value: `${lng.toFixed(6)}°`,
-            });
+          const properties: { label: string; value: string }[] = [];
+          if (useIgrs) {
+            // IGRS collapses Latitude + Longitude into one row, gated by LATITUDE.
+            if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+              properties.push({
+                label: "IGRS",
+                value: calculateIgrs(lng, lat) ?? "—",
+              });
+            }
+          } else {
+            if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+              properties.push({
+                label: "Latitude",
+                value: `${lat.toFixed(6)}°`,
+              });
+            }
+            if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LONGITUDE)) {
+              properties.push({
+                label: "Longitude",
+                value: `${lng.toFixed(6)}°`,
+              });
+            }
           }
 
-          properties.push(
-            { label: "Pixel Index", value: `(${x}, ${y})` },
-            {
+          if (showRow(RASTER_TOOLTIP_ATTRIBUTES.PIXEL_INDEX)) {
+            properties.push({ label: "Pixel Index", value: `(${x}, ${y})` });
+          }
+          if (showRow(RASTER_TOOLTIP_ATTRIBUTES.VALUE)) {
+            properties.push({
               label: "Elevation",
               value: hasValidElevation
                 ? `${elevation.toFixed(2)} m`
                 : "No data",
-            },
-            {
+            });
+          }
+          if (showRow(RASTER_TOOLTIP_ATTRIBUTES.RANGE)) {
+            properties.push({
               label: "Elevation Range",
               value: `${min.toFixed(1)}–${max.toFixed(1)} m`,
-            },
-            {
+            });
+          }
+          if (showRow(RASTER_TOOLTIP_ATTRIBUTES.RASTER_SIZE)) {
+            properties.push({
               label: "Raster Size",
               value: `${width} × ${height} px`,
-            },
-          );
+            });
+          }
 
           return (
             <TooltipBox maxWidth="max-w-[200px]">
@@ -837,6 +995,52 @@ const Tooltip = () => {
     // For non-DEM content, we require a valid object to render a tooltip
     if (!object) {
       return null;
+    }
+
+    // Topology CONNECTION line (an edge between two nodes). Its data item is
+    // { from, to, snr, ... } — NOT sourcePosition/targetPosition — so it used to
+    // fall through to the generic "Map Feature / Hover for details" placeholder.
+    // Show the link's actual info (signal quality + geometry) instead.
+    if (
+      layer?.id === "udp-topology-connections-layer" &&
+      (object as any)?.from &&
+      (object as any)?.to
+    ) {
+      const o = object as any;
+      // Re-read the endpoints from the LIVE node map (fall back to the click-time
+      // snapshot), so coordinates + distance update as the aircraft move.
+      const liveFrom = o.fromId !== undefined ? topologyNodes.get(o.fromId) : undefined;
+      const liveTo = o.toId !== undefined ? topologyNodes.get(o.toId) : undefined;
+      const from: [number, number] = liveFrom
+        ? [liveFrom.long, liveFrom.lat]
+        : [o.from.longitude, o.from.latitude];
+      const to: [number, number] = liveTo
+        ? [liveTo.long, liveTo.lat]
+        : [o.to.longitude, o.to.latitude];
+      // Live SNR from the connections map (fall back to the snapshot value).
+      const liveSnr =
+        o.connectionKey !== undefined
+          ? topologyConnections.get(o.connectionKey)
+          : undefined;
+      const snr = liveSnr ?? o.snr;
+      const properties: { label: string; value: string }[] = [];
+      if (snr !== undefined && snr !== null && !Number.isNaN(Number(snr))) {
+        properties.push({ label: "SNR", value: `${snr} dB` });
+      }
+      properties.push(
+        {
+          label: "Distance",
+          value: `${parseFloat(getDistance(from, to)).toFixed(2)} km`,
+        },
+        { label: `From (${coordinateLabel})`, value: formatCoordinatePair(from) },
+        { label: `To (${coordinateLabel})`, value: formatCoordinatePair(to) },
+      );
+      return (
+        <TooltipBox>
+          <TooltipHeading title="Topology Link" />
+          <TooltipProperties properties={properties} />
+        </TooltipBox>
+      );
     }
 
     // Handle UDP layers
@@ -1107,8 +1311,8 @@ const Tooltip = () => {
       return (
         <TooltipBox>
           <TooltipHeading
-            title="Bearing Calculation"
-            subtitle={layerInfo?.name}
+            title={layerInfo?.name ?? "Azimuth"}
+            subtitle="Bearing Calculation"
           />
           <TooltipProperties properties={properties} />
         </TooltipBox>
@@ -1327,11 +1531,12 @@ const Tooltip = () => {
           });
         });
       } else {
+        // An explicit selection is AUTHORITATIVE: show EXACTLY the ticked keys.
+        // Do NOT apply SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS here — that filter is for
+        // the no-selection DEFAULT only. Applying it to an explicit whitelist made
+        // ticking/unticking a route's attributes do nothing (all of a route's
+        // properties live in the hidden set), breaking "ticked = shown".
         [...attrWhitelist]
-          .filter(
-            (key) =>
-              !(isShortestRoute && SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS.has(key)),
-          )
           .sort((a, b) => a.localeCompare(b))
           .slice(0, TOOLTIP_DEFAULT_ATTR_LIMIT) // hard cap, mirrors the panel limit
           .forEach((key) => {
@@ -1365,14 +1570,12 @@ const Tooltip = () => {
         >
           {layerInfo?.name && (
             <TooltipHeading
-              title={
-                isShortestRoute
-                  ? SHORTEST_ROUTE_LAYER_PREFIX
-                  : layerInfo.name
-              }
+              // Use the layer's actual (renamable) name, not the hardcoded
+              // "Shortest Route" prefix — otherwise a rename never shows here.
+              title={layerInfo.name}
               subtitle={
                 isShortestRoute
-                  ? (getShortestRouteCoordinateSubtitle(layerInfo) ??
+                  ? (getShortestRouteCoordinateSubtitle(layerInfo, useIgrs) ??
                     `${geometryType} Feature`)
                   : `${geometryType} Feature`
               }

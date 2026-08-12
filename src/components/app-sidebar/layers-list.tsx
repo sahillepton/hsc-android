@@ -15,8 +15,8 @@ import {
   isShortestRouteLayer,
   getShortestRouteCoordinateSubtitle,
   getShortestRouteDisplayName,
-  SHORTEST_ROUTE_LAYER_PREFIX,
 } from "@/lib/route-layer";
+import { useIgrsPreference } from "@/store/layers-store";
 
 type LayerCardItemProps = {
   layer: LayerProps;
@@ -32,6 +32,8 @@ type LayerCardItemProps = {
   setFocusedLayerId: (layerId: string | null) => void;
   onItemRendered: (layerId: string) => void;
   isRendered: boolean;
+  /** IGRS display preference, subscribed once by the parent list. */
+  useIgrs: boolean;
 };
 
 const LayerCardItem = ({
@@ -48,6 +50,7 @@ const LayerCardItem = ({
   setFocusedLayerId,
   onItemRendered,
   isRendered,
+  useIgrs,
 }: LayerCardItemProps) => {
   useEffect(() => {
     if (!isRendered) {
@@ -66,11 +69,14 @@ const LayerCardItem = ({
     ? getShortestRouteDisplayName(layer)
     : layer.name;
   const routeCoordSubtitle = isShortestRouteLayer(layer)
-    ? getShortestRouteCoordinateSubtitle(layer)
+    ? getShortestRouteCoordinateSubtitle(layer, useIgrs)
     : null;
 
   return (
-    <div className="mb-3">
+    // pb-3, not mb-3 — virtuoso measures this item wrapper with
+    // getBoundingClientRect().height, which excludes a child's collapsing margin.
+    // See LayerCardSkeleton for the full explanation; the two must stay in sync.
+    <div className="pb-3">
       <div
         key={layer.id}
         className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
@@ -146,8 +152,8 @@ const LayerCardItem = ({
             <div className="flex flex-col gap-0.5 min-w-0">
               {routeCoordSubtitle ? (
                 <>
-                  <div className="text-sm font-semibold text-foreground">
-                    {SHORTEST_ROUTE_LAYER_PREFIX}
+                  <div className="text-sm font-semibold text-foreground truncate max-w-[200px]">
+                    {layer.name}
                   </div>
                   <div className="text-xs text-muted-foreground break-words">
                     {routeCoordSubtitle}
@@ -197,6 +203,10 @@ const LayersList = ({
   onUpdateLayer,
 }: LayersListProps) => {
   const [searchQuery] = useState("");
+  // Subscribed ONCE here and passed down, rather than per row: the list is
+  // virtualised, so a hook inside the row component would add a store subscription
+  // for every visible card.
+  const useIgrs = useIgrsPreference();
   const containerRef = useRef<HTMLDivElement>(null);
   const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
@@ -351,7 +361,12 @@ const LayersList = ({
             }}
           >
             <Virtuoso
-              style={{ height: "100%" }}
+              // `none`, not `contain`. Both stop scroll-chaining to the map/page,
+              // but only `none` also suppresses the LOCAL overscroll affordance —
+              // `contain` still lets the container rubber-band past its own ends,
+              // which is the bounce seen when scrolling rapidly to the bottom on
+              // Android. (Per spec `contain` = no chaining, affordance kept.)
+              style={{ height: "100%", overscrollBehavior: "none" }}
               data={filteredLayers.sort((a, b) => {
                 const aTime =
                   (a as any).uploadedAt || (a as any).createdAt || 0;
@@ -383,6 +398,7 @@ const LayersList = ({
                     setFocusedLayerId={setFocusedLayerId}
                     onItemRendered={handleItemRendered}
                     isRendered={isRendered}
+                    useIgrs={useIgrs}
                   />
                 );
               }}

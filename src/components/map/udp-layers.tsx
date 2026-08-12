@@ -93,8 +93,6 @@ const globalConnectionState = {
 
 /** Log effective topology UDP payload once per page load (dev/debug). */
 let rawTopologyPacketLoggedOnce = false;
-/** Log wire INT32 lat/lon per fused node once per page load (dev/debug). */
-let rawLatLonPerMemberLoggedOnce = false;
 
 // UdpLayerData interface is now defined in udp-data-store.ts
 
@@ -285,12 +283,6 @@ const parseTopologyBinary = (
     const lonRaw = view.getInt32(offset, false);
     offset += 4;
 
-    if (!rawLatLonPerMemberLoggedOnce) {
-      console.log(
-        `[Topology] node id=${nodeId} raw lat (INT32)=${latRaw} raw lon (INT32)=${lonRaw}`,
-      );
-    }
-
     const lat = latRaw * TOPO_LATLON_RAW_TO_DEG;
     const long = lonRaw * TOPO_LATLON_RAW_TO_DEG;
 
@@ -306,8 +298,6 @@ const parseTopologyBinary = (
 
     nodes.set(nodeId, { id: nodeId, ip, lat, long, altitude, neighbors });
   }
-
-  rawLatLonPerMemberLoggedOnce = true;
 
   return { motherNodeId, nodes, connections };
 };
@@ -519,7 +509,6 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
       if (!rawTopologyPacketLoggedOnce) {
         rawTopologyPacketLoggedOnce = true;
-        console.log("packet", packet);
       }
 
       // Topology-only UDP mode.
@@ -860,6 +849,12 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           connectionData.push({
             from: { longitude: fromNode.long, latitude: fromNode.lat },
             to: { longitude: toNode.long, latitude: toNode.lat },
+            // Node ids + the connections-map key let the tooltip follow this link
+            // LIVE: it re-reads the two nodes' current positions and the current SNR
+            // as they move, instead of showing a stale click-time snapshot.
+            fromId: nodeId1,
+            toId: nodeId2,
+            connectionKey: key,
             snr,
             color: getSnrColor(snr),
             width: getSnrWidth(snr, effectiveSnrLineWidths),

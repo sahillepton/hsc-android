@@ -1,7 +1,11 @@
 import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
-import { computeLayerBounds, calculateLayerZoomRange } from "@/lib/layers";
+import {
+  computeLayerBounds,
+  calculateLayerZoomRange,
+  isStoreLayerPickObject,
+} from "@/lib/layers";
 import { isSketchLayer } from "@/lib/sketch-layers";
 import {
   markLayerStagedDelete,
@@ -145,7 +149,7 @@ const useLayerStore = create<LayerState>()((set, get) => ({
 
         if ((hoveredObject as any)?.layerId) {
           hoveredLayerId = (hoveredObject as any).layerId;
-        } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+        } else if (isStoreLayerPickObject(hoveredObject)) {
           hoveredLayerId = (hoveredObject as any).id;
         } else if (state.hoverInfo.layer?.id) {
           const deckLayerId = state.hoverInfo.layer.id;

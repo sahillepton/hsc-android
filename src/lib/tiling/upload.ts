@@ -48,19 +48,17 @@ export async function runTilingUpload(
   // 1.5. Build overview pyramid if missing (one-time, big rasters only).
   // This is what makes low-zoom tiles fast — without overviews, every
   // z=4 tile of a 1 GB BigTIFF takes 2-5 s. With them, ~50 ms.
+  //
+  // Do NOT delete this call. It is the only producer of the .ovr/internal
+  // pyramid that the worker's `-ovr AUTO` warp selects from; without it every
+  // tile at every zoom reads the raster at FULL resolution and downsamples on
+  // the fly. It is also what gives the "optimizing" phase its duration — drop
+  // it and the phase toast flashes past, so a slow upload looks like a hang.
   cb?.onPhase?.("optimizing");
   try {
-    const ovr = await RasterTiling.buildOverviews({ path: input.absolutePath });
-    if (ovr.built) {
-      console.log(
-        `[Tiling] overviews built (${ovr.kind}, levels=${ovr.levels?.join(",")})`,
-      );
-    } else {
-      console.log(`[Tiling] skipped overview build: ${ovr.reason}`);
-    }
-  } catch (err) {
-    // Non-fatal — tiles will still render, just slower for low zooms.
-    console.warn("[Tiling] buildOverviews failed (non-fatal):", err);
+    await RasterTiling.buildOverviews({ path: input.absolutePath });
+  } catch {
+    // Non-fatal — tiles still render, just slower at low zoom.
   }
 
   // 2. Register layerId → source path with the tile server.

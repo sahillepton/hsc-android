@@ -4,6 +4,7 @@ import { NativeUploader } from "@/plugins/native-uploader";
 import { HSC_DIRECTORY } from "@/sessions/constants";
 import { stampedFileName, sanitizeFileName } from "@/sessions/nativeFile";
 import { upsertManifestEntry } from "@/sessions/manifestStore";
+import { calculateIgrs } from "./utils";
 
 export const SHORTEST_ROUTE_LAYER_PREFIX = "Shortest Route";
 
@@ -18,15 +19,14 @@ export function isShortestRouteLayer(layer: LayerProps): boolean {
   );
 }
 
-/** Display name: Shortest Route (lat°, lon° to lat°, lon°) */
-export function formatShortestRouteLayerName(
-  from: [number, number],
-  to: [number, number],
-): string {
-  const [lng1, lat1] = from;
-  const [lng2, lat2] = to;
-  return `${SHORTEST_ROUTE_LAYER_PREFIX} (${lat1.toFixed(6)}°, ${lng1.toFixed(6)}° to ${lat2.toFixed(6)}°, ${lng2.toFixed(6)}°)`;
-}
+// NOTE: there used to be a `formatShortestRouteLayerName(from, to)` here that built
+// "Shortest Route (lat°, lon° to lat°, lon°)". It was the layer's stored NAME, which
+// put the coordinates in the panel heading (duplicating the subtitle), could not
+// honour the IGRS preference — a name is persisted, the preference is not — and left
+// no short label to identify a route by. Routes are now named sequentially via
+// `nextShortestRouteName`, with the coordinates supplied by
+// `getShortestRouteCoordinateSubtitle`, which does honour IGRS. Deleted rather than
+// left unused so it cannot be wired back in by accident.
 
 /** Endpoints from a persisted shortest-route GeoJSON line (for display even if name is stale). */
 export function getShortestRouteEndpoints(
@@ -57,23 +57,83 @@ export function getShortestRouteEndpoints(
   };
 }
 
-/** Coordinate subtitle with ° — derived from geometry, not stored name. */
+/**
+ * One endpoint of a route, in the user's chosen coordinate system.
+ *
+ * Falls back to lat/long when IGRS is on but the point lies outside the IGRS
+ * window (`calculateIgrs` returns null beyond roughly lon 68–104 / lat 8–39.5), so
+ * a route with one endpoint outside India still reads sensibly instead of showing
+ * a blank.
+ */
+function formatRouteEndpoint(
+  point: [number, number],
+  useIgrs: boolean,
+): string {
+  const [lng, lat] = point;
+  if (useIgrs) {
+    const igrs = calculateIgrs(lng, lat);
+    if (igrs) return igrs;
+  }
+  return `${lat.toFixed(6)}°, ${lng.toFixed(6)}°`;
+}
+
+/**
+ * Coordinate subtitle for a route row — derived from the geometry, not the stored
+ * name, and rendered in IGRS when that preference is on.
+ *
+ * `useIgrs` is a REQUIRED argument rather than an optional one: this used to format
+ * lat/long unconditionally, so a route's coordinates were the one place in the app
+ * that ignored the IGRS toggle. Making callers pass it means a new call site cannot
+ * silently reintroduce that.
+ */
 export function getShortestRouteCoordinateSubtitle(
   layer: LayerProps,
+  useIgrs: boolean,
 ): string | null {
   const endpoints = getShortestRouteEndpoints(layer);
   if (!endpoints) return null;
-  const [lng1, lat1] = endpoints.from;
-  const [lng2, lat2] = endpoints.to;
-  return `(${lat1.toFixed(6)}°, ${lng1.toFixed(6)}° to ${lat2.toFixed(6)}°, ${lng2.toFixed(6)}°)`;
+  return `(${formatRouteEndpoint(endpoints.from, useIgrs)} to ${formatRouteEndpoint(endpoints.to, useIgrs)})`;
 }
 
+/**
+ * Heading for a shortest-route layer in the panels: just the layer's own name
+ * (e.g. "Shortest Route 2").
+ *
+ * It used to rebuild the name from the endpoints, so the heading read
+ * "Shortest Route (28.613900°, 77.209000° to 19.076000°, 72.877700°)" — and the
+ * coordinates then appeared TWICE, because the panels also render
+ * `getShortestRouteCoordinateSubtitle` underneath. Returning `layer.name` keeps
+ * the heading short, lets the from/to live only in the subtitle, and means a
+ * renamed route actually shows its new name.
+ */
 export function getShortestRouteDisplayName(layer: LayerProps): string {
-  const endpoints = getShortestRouteEndpoints(layer);
-  if (endpoints) {
-    return formatShortestRouteLayerName(endpoints.from, endpoints.to);
-  }
   return layer.name;
+}
+
+/**
+ * Next free "Shortest Route N" name for a new route.
+ *
+ * Scans the existing route layers for a trailing number and takes max + 1, so
+ * deleting route 2 and adding another gives 4 rather than colliding with route 3
+ * (route geojson is written to disk as `<name>.geojson`, so names must stay unique
+ * within a session).
+ */
+export function nextShortestRouteName(layers: LayerProps[]): string {
+  let highest = 0;
+  for (const l of layers) {
+    if (!isShortestRouteLayer(l)) continue;
+    const m = (l.name || "").match(
+      new RegExp(`^${SHORTEST_ROUTE_LAYER_PREFIX}\\s+(\\d+)\\s*$`),
+    );
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > highest) highest = n;
+    } else {
+      // A legacy coordinate-style name still occupies a slot.
+      highest = Math.max(highest, 1);
+    }
+  }
+  return `${SHORTEST_ROUTE_LAYER_PREFIX} ${highest + 1}`;
 }
 
 export function buildShortestRouteGeoJSON(

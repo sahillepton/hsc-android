@@ -1,6 +1,8 @@
 export default function SketchLayerCardSkeleton() {
   return (
-    <div className="mb-3">
+    // pb-3, not mb-3 — virtuoso item root; a child margin collapses out of the
+    // measured box and shortens the list's scroll range. See LayerCardSkeleton.
+    <div className="pb-3">
       <div className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm">
         {/* Top row - action buttons */}
         <div className="absolute right-3 top-3 flex items-center gap-1">

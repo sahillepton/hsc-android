@@ -785,6 +785,11 @@ const NetworkLayersPanel = ({
                             384,
                           )}px`,
                           width: "100% !important",
+                          // Keep rapid scrolling inside this list — no overscroll
+                          // bounce past the ends, no scroll-chaining to the map/page.
+                          // `none` not `contain`: `contain` only stops chaining and
+                          // still permits the container's own rubber-band.
+                          overscrollBehavior: "none",
                         }}
                         data={networkMembersData}
                         increaseViewportBy={200}
