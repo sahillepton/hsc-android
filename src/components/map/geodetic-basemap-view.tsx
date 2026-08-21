@@ -9,6 +9,7 @@ import {
 import DeckGL from "@deck.gl/react";
 import { OrthographicView } from "@deck.gl/core";
 import { BitmapLayer, PathLayer, PolygonLayer } from "@deck.gl/layers";
+import { TileLayer, _Tileset2D as Tileset2D } from "@deck.gl/geo-layers";
 import {
   fillMinZoom,
   mercatorRasterTilesInView,
@@ -177,14 +178,132 @@ const RASTER_STACK_MIN_OPACITY = 0.99;
  *
  * Depth is bounded so a set with a very high maxZoom cannot stack unboundedly; 12
  * always reaches the coarse global levels (z0–z5) of any real set.
+ *
+ * ── Superseded: RESIDENT is not the same as DRAWN ──────────────────────────────
+ * The contiguous stack conflated two things. Keeping every level from the backstop
+ * up to detailZ RESIDENT is what makes a zoom land sharp — whatever level you
+ * arrive on has already been fetched. But it also DREW all of them, every frame,
+ * and each one covers the whole viewport, so 9 levels meant 9 full screens of
+ * textured fill (~1.13 Gpix/s at 60fps on this pack, at the limit of a tablet GPU)
+ * of which ~85% was overwritten immediately.
+ *
+ * Thinning the level array was tried and reverted: it drops the textures along with
+ * the draws, so a zoom falls back to a heavily magnified coarse tile and the map
+ * visibly BLURS mid-gesture. Cheaper on paper (56% less fill), worse to use. If you
+ * are reading this considering a fixed ladder / gap rule / detailZ-relative window:
+ * that is the same idea again, and it fails the same way.
+ *
+ * What actually separates the two is per-tile LOAD STATE, and deck already has it.
+ * Tileset2D keeps a 5×-viewport cache of tiles (so ancestors stay resident) while
+ * `updateTileStateDefault` marks visible only the NEAREST LOADED ancestor of each
+ * pending tile and stops there (tileset-2d.js `getPlaceholderInAncestors`);
+ * TileLayer.filterSubLayer → isTileVisible then skips drawing everything else. So a
+ * coarse level is drawn only where and while a finer tile has not landed:
+ *   • settled  → detail level only (plus the backstop) = 2 passes, not 9
+ *   • mid-jump → the nearest loaded ancestor covers the gap, exactly as before
+ * Sharpness is unchanged because nothing is evicted; only the redundant draws go.
+ *
+ * `basemapLevels` and BASEMAP_STACK_DEPTH are therefore gone. What remains below is
+ * the world backstop, which stays a plain always-mounted BitmapLayer OUTSIDE the
+ * TileLayer — `_getNearestAncestor` returns null when no ancestor is cached (cold
+ * start, or a commandView jump into a region never visited), and that is the one
+ * case Tileset2D cannot cover by itself.
  */
-const BASEMAP_STACK_DEPTH = 12;
 
-function basemapLevels(minZoom: number, detailZ: number): number[] {
-  const startZ = Math.max(minZoom, detailZ - BASEMAP_STACK_DEPTH);
-  const levels: number[] = [];
-  for (let z = startZ; z <= detailZ; z++) levels.push(z);
-  return levels;
+/** Tile index carrying the file coords + bounds our 4326 grid already computed. */
+type GeoTileIndex = {
+  x: number;
+  y: number;
+  z: number;
+  /** Wrapped column of the tile FILE (differs from x once worlds repeat). */
+  fileX: number;
+  fileY: number;
+  bounds: [number, number, number, number];
+};
+
+/** The subset of deck's Viewport this tileset reads. */
+type OrthoViewportLike = {
+  zoom: number;
+  width: number;
+  height: number;
+  unproject: (xy: number[]) => number[];
+};
+
+/**
+ * Tileset2D driving deck's TileLayer from OUR plate-carrée grid.
+ *
+ * Everything about which tiles exist stays in tileGrid.ts — this only adapts it to
+ * the four methods Tileset2D asks subclasses to supply. Built per-config by a
+ * factory because Tileset2D is constructed by TileLayer with a fixed option set,
+ * so there is no way to pass the config in as an option.
+ */
+function makeGeodeticTilesetClass(cfg: TilesConfig) {
+  return class GeodeticTileset extends Tileset2D {
+    /**
+     * deck calls this with its own viewport every time the camera changes, INSIDE
+     * its render loop — which is why the basemap no longer needs the throttled
+     * `tileView` React state at all.
+     */
+    getTileIndices({ viewport }: { viewport: OrthoViewportLike }) {
+      // Screen corners → world degrees. The ortho view's world coords ARE lng/lat,
+      // and with flipY:false screen y=0 is the NORTH edge.
+      const [west, north] = viewport.unproject([0, 0]);
+      const [east, south] = viewport.unproject([viewport.width, viewport.height]);
+      const z = tileZoomForOrtho(cfg, viewport.zoom);
+      // Extra fields ride along on the index object: deck only reads x/y/z, and it
+      // passes this exact object through to the Tile2DHeader, so getTileMetadata
+      // and getTileData can read them back without recomputing the grid.
+      return tilesInView(cfg, z, west, south, east, north).map(
+        (t): GeoTileIndex => ({
+          x: t.worldX,
+          y: t.worldY,
+          z,
+          fileX: t.x,
+          fileY: t.y,
+          bounds: t.bounds,
+        }),
+      );
+    }
+
+    /** Keyed on the UNWRAPPED world position, so repeated worlds stay distinct. */
+    getTileId(index: GeoTileIndex) {
+      return `${index.z}-${index.x}-${index.y}`;
+    }
+
+    getTileZoom(index: GeoTileIndex) {
+      return index.z;
+    }
+
+    /**
+     * Both 4326 schemes halve in each axis per level (cols 2^(z+1)×rows 2^z for a
+     * 2:1 set, 2^z×2^z for a square one), so the standard halving parent is correct
+     * for both. Only `getTileId` is ever called on the result — it is a cache
+     * lookup for the ancestor walk, never a tile that gets created — so it does not
+     * need the file coords or bounds.
+     */
+    getParentIndex(index: GeoTileIndex) {
+      return {
+        x: Math.floor(index.x / 2),
+        y: Math.floor(index.y / 2),
+        z: index.z - 1,
+      };
+    }
+
+    /**
+     * Non-geospatial bbox. `isTileVisible` branches on `'west' in bbox`, and an
+     * OrthographicView is not geospatial, so it must be the {left,top,right,bottom}
+     * shape — it normalises top/bottom itself, so the north-up order is fine.
+     */
+    getTileMetadata(index: GeoTileIndex) {
+      const b = index.bounds;
+      if (!b) {
+        // Only reachable if deck ever creates a tile from a synthesised index.
+        // A world-sized bbox keeps it visible rather than silently culled.
+        return { bbox: { left: -180, top: 90, right: 180, bottom: -90 } };
+      }
+      return { bbox: { left: b[0], top: b[3], right: b[2], bottom: b[1] } };
+    }
+  };
 }
 
 // Throttle interval for recomputing the tile set during interaction. A THROTTLE
@@ -203,8 +322,11 @@ function basemapLevels(minZoom: number, detailZ: number): number[] {
 // the overlay clones are memoised on `layers` alone, so a tick no longer re-clones
 // every layer; and the tiles come from 127.0.0.1, so the "cap network churn"
 // argument for a long interval barely applies. Per tick the real work is
-// viewBounds + tilesInView over ~9 small levels plus a signature compare, and an
-// unchanged signature returns the cached layer array without allocating.
+// viewBounds + mercatorRasterTilesInView per raster plus a signature compare, and
+// an unchanged signature returns the cached layer array without allocating.
+//
+// Since the basemap moved to a TileLayer this tick drives ONLY the uploaded
+// rasters, and is not scheduled at all when none are loaded.
 const TILE_THROTTLE_MS = 80;
 
 // Cap the render resolution by TOTAL CANVAS PIXELS, not by a device-pixel-ratio
@@ -285,7 +407,13 @@ export function GeodeticBasemapView({
   initialCenter,
   initialZoom,
   minZoom = 0,
-  maxZoom = 20,
+  // ORTHO zoom units, not the mapbox zoom the readout shows. The two differ by
+  // log2(512/360) = 0.508, so a default of 20 here let touch/pinch reach an ortho
+  // 20 that the readout printed as 19.49 — above MAP_MAX_ZOOM (18). The parent now
+  // passes mapboxZoomToOrtho(MAP_MAX_ZOOM); this default is the same value so the
+  // component is correct even if a caller forgets. Every zoom ceiling in this file
+  // (view-state clamp, resize clamp, commandView, rubber band) reads this one prop.
+  maxZoom = 18 + Math.log2(512 / 360),
   onViewStateChange,
   onMapClick,
   onHover,
@@ -382,15 +510,20 @@ export function GeodeticBasemapView({
     [],
   );
 
+  // Only the RASTER layers still ride this throttle — the basemap's TileLayer
+  // selects tiles from deck's own viewport, inside deck's loop. So with no raster
+  // loaded (the common case) a pan or pinch now triggers ZERO React renders from
+  // here, instead of ~12.5 per second.
+  const hasRasterLayers = (rasterLayers?.length ?? 0) > 0;
   const scheduleTileTick = useCallback(() => {
-    if (config.vector) return;
+    if (config.vector || !hasRasterLayers) return;
     if (tileViewTimerRef.current !== null) return; // a tick is already pending
     tileViewTimerRef.current = setTimeout(() => {
       tileViewTimerRef.current = null;
       const v = liveViewRef.current;
       setTileView({ lng: v.lng, lat: v.lat, zoom: v.zoom });
     }, TILE_THROTTLE_MS);
-  }, [config.vector]);
+  }, [config.vector, hasRasterLayers]);
 
   // deck's view-state callback. In uncontrolled mode deck applies the RETURNED
   // (clamped) view state to its own internal camera — no React re-render. We use
@@ -496,32 +629,55 @@ export function GeodeticBasemapView({
       s.width,
       s.height,
     );
-    liveViewRef.current = { lng: c.target[0], lat: c.target[1], zoom: c.zoom };
+    // ── Force deck to actually adopt the jump ─────────────────────────────────
+    //
+    // deck only overwrites its internal camera when the initialViewState PROP
+    // deep-changes (@deck.gl/core lib/deck.js:268-272):
+    //     if (props.initialViewState &&
+    //         !deepEqual(this.props.initialViewState, props.initialViewState, 3))
+    //         this.viewState = props.initialViewState;
+    // It compares the PROP, not the live camera. In uncontrolled mode the user's
+    // pan/zoom moves deck's camera WITHOUT changing this prop, so commanding the
+    // same view twice — focus a layer, pan away, focus it again — produces a
+    // baseView identical to the previous one and deck silently ignores it.
+    //
+    // The camera then stays where the user left it while `liveViewRef` below says
+    // it is at the commanded view. Everything projecting through the live camera —
+    // `window.__geodeticProject`, i.e. the shared Tooltip's anchor — is offset by
+    // exactly that difference, so an open tooltip jumps far from its feature. And
+    // because deck does NOT call onViewStateChange for programmatic changes, the
+    // mismatch persists until the next user interaction fires the callback and
+    // re-syncs the ref, which is why it "comes back" as soon as you touch the map.
+    //
+    // An imperceptible nudge on the repeat case makes the prop always differ. 1e-9
+    // of zoom is a scale factor of 2^1e-9 ≈ 1 + 7e-10 — far below one pixel at any
+    // zoom, and below the precision of everything downstream — but it is enough for
+    // deepEqual to see a change. Comparing against `baseView` is correct here: this
+    // effect runs before the state update lands, so `baseView` is exactly what deck
+    // currently holds as `props.initialViewState`.
+    const sameAsCurrent =
+      baseView.target[0] === c.target[0] &&
+      baseView.target[1] === c.target[1] &&
+      baseView.zoom === c.zoom;
+    const nextZoom = sameAsCurrent ? c.zoom + 1e-9 : c.zoom;
+
+    liveViewRef.current = { lng: c.target[0], lat: c.target[1], zoom: nextZoom };
     setBaseView({
       target: c.target,
-      zoom: c.zoom,
+      zoom: nextZoom,
       minZoom: fillMinZoom(s.width, s.height),
       maxZoom,
     });
-    setTileView({ lng: c.target[0], lat: c.target[1], zoom: c.zoom });
-    onViewStateChange?.([c.target[0], c.target[1]], c.zoom);
+    setTileView({ lng: c.target[0], lat: c.target[1], zoom: nextZoom });
+    onViewStateChange?.([c.target[0], c.target[1]], nextZoom);
     window.dispatchEvent(new Event("geodetic-view-change"));
     // Keyed ONLY on the nonce so an unrelated re-render (e.g. a fresh inline
     // onViewStateChange from the parent) never re-applies a stale command.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commandNonce]);
 
-  // Reuse BitmapLayer instances across renders. When the visible tile set is
-  // unchanged (a small pan within the same tiles, or the camera merely moved) we
-  // hand deck.gl the SAME instances, which it then skips entirely — no per-frame
-  // allocation and no reconciliation of the whole pyramid. Only newly-entered
-  // tiles are constructed; tiles that left view are dropped.
-  const basemapCacheRef = useRef<{
-    sig: string;
-    layers: BitmapLayer[];
-    byId: Map<string, { layer: BitmapLayer; url: string }>;
-  }>({ sig: "", layers: [], byId: new Map() });
-
+  // (The basemap's own BitmapLayer instance cache is gone — Tileset2D owns tile
+  // lifetime now, and the backstop is a single view-independent memo.)
   const vparam = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
 
   // ── Kill the black flash on refresh, without changing the finished map ──
@@ -544,8 +700,8 @@ export function GeodeticBasemapView({
   // "Something real to show" needs BOTH:
   //   • deck has rendered at its real size — it mounts at 1×1 and cannot fetch
   //     anything until its device exists and onResize has propagated; and
-  //   • the coarse world tile has decoded — that is the level `basemapLevels`
-  //     always includes, so once it is in, the whole viewport is covered.
+  //   • the coarse world tile has decoded — that is the permanently-mounted
+  //     backstop level, so once it is in, the whole viewport is covered.
   // Waiting on only the tile would flip the backdrop opaque while deck was still
   // blank, which is the blackout again a few frames later.
   const [worldTileReady, setWorldTileReady] = useState(false);
@@ -593,80 +749,96 @@ export function GeodeticBasemapView({
 
   const backdropOpaque = worldTileReady && deckPainted;
 
-  const basemapLayers = useMemo(() => {
+  // ── World backstop ──────────────────────────────────────────────────────────
+  // The coarsest level over the WHOLE world, mounted for the session and never
+  // rebuilt: view-INDEPENDENT, so its ids never change, so deck keeps the textures
+  // and it is always ready to cover a hole. This is deliberately OUTSIDE the
+  // TileLayer — Tileset2D can only fall back to an ancestor it has already cached,
+  // and on a cold start or a commandView jump into unvisited territory there is
+  // none. It is 1–2 tiles (cols0·2^minZoom × 2^minZoom), so it costs one extra
+  // full-screen pass and buys the entire anti-flash guarantee.
+  const backstopLayers = useMemo(() => {
     if (!baseUrl || config.vector) return [];
-    const b = viewBounds(
-      tileView.lng,
-      tileView.lat,
-      tileView.zoom,
-      size.width,
-      size.height,
-    );
-    const detailZ = tileZoomForOrtho(config, tileView.zoom);
-
-    const specs: {
-      id: string;
-      url: string;
-      bounds: [number, number, number, number];
-    }[] = [];
-    // Signature keyed on source + the exact tile id set, so it changes only when
-    // tiles enter/leave view or the basemap folder switches.
-    let sig = `${baseUrl}|${config.format}|${vparam}`;
-    for (const z of basemapLevels(config.minZoom, detailZ)) {
-      for (const t of tilesInView(config, z, b.west, b.south, b.east, b.north)) {
-        const id = `geo-basemap-${z}-${t.worldX}-${t.worldY}`;
-        specs.push({
-          id,
-          url: `${baseUrl}/${z}/${t.x}/${t.y}.${config.format}${vparam}`,
+    return tilesInView(config, config.minZoom, -180, -90, 180, 90).map(
+      (t) =>
+        new BitmapLayer({
+          id: `geo-basemap-backstop-${config.minZoom}-${t.worldX}-${t.worldY}`,
           bounds: t.bounds,
-        });
-        sig += `;${id}`;
-      }
-    }
+          image: `${baseUrl}/${config.minZoom}/${t.x}/${t.y}.${config.format}${vparam}`,
+          // Basemap tiles are FULLY OPAQUE (a pack has no alpha — the lipcy pngs
+          // are colour-type 2, no tRNS) and drawn coarse-first at opacity 1, so
+          // per-fragment blending buys nothing and costs a read-modify-write of
+          // the framebuffer on a full-screen quad. Off, the sharper tile simply
+          // overwrites this one — which is the result we already wanted.
+          parameters: { blend: false },
+        }),
+    );
+  }, [baseUrl, config, vparam]);
 
-    const cache = basemapCacheRef.current;
-    if (sig === cache.sig) return cache.layers; // identical set → stable reference
+  // Rebuilt only when the basemap source changes; a stable class identity keeps
+  // TileLayer from treating every render as a props change.
+  const TilesetClass = useMemo(() => makeGeodeticTilesetClass(config), [config]);
 
-    const byId = new Map<string, { layer: BitmapLayer; url: string }>();
-    const layers = specs.map(({ id, url, bounds }) => {
-      const prev = cache.byId.get(id);
-      // Reuse only when both the id AND the source URL match (guards a basemap
-      // switch that keeps tile ids but changes the underlying image).
-      const layer =
-        prev && prev.url === url
-          ? prev.layer
-          : new BitmapLayer({
-              id,
-              bounds,
-              image: url,
-              // Basemap tiles are FULLY OPAQUE (a basemap pack has no alpha — the
-              // lipcy pngs are colour-type 2, no tRNS), and these layers are drawn
-              // at opacity 1, coarse level first. So per-fragment alpha blending
-              // buys nothing and just costs a read-modify-write of the framebuffer
-              // on every one of them — and this path is fill-bound, with each level
-              // covering the full screen. Turning blend off lets later (sharper)
-              // tiles simply overwrite the coarser ones underneath, which is the
-              // result we already wanted.
-              //
-              // NOT applied to the uploaded-raster layers below: those honour a
-              // user opacity that can be < 1, so they must keep blending.
-              parameters: { blend: false },
-            });
-      byId.set(id, { layer, url });
-      return layer;
-    });
-    basemapCacheRef.current = { sig, layers, byId };
-    return layers;
-  }, [
-    baseUrl,
-    config,
-    tileView.lng,
-    tileView.lat,
-    tileView.zoom,
-    size.width,
-    size.height,
-    vparam,
-  ]);
+  // ── The detail pyramid, as a TileLayer ──────────────────────────────────────
+  // Tile selection now happens inside deck's own loop (TileLayer reads
+  // `this.context.viewport` on every viewport change), so this does NOT depend on
+  // the throttled `tileView` state and follows the camera with no React render.
+  const basemapTileLayer = useMemo(() => {
+    if (!baseUrl || config.vector) return [];
+    return [
+      new TileLayer({
+        // Source in the id: a basemap switch must build a NEW tileset rather than
+        // re-point the old one, since TileLayer only calls setOptions on an
+        // existing tileset and would otherwise keep the previous pack's tiles.
+        id: `geo-basemap-tiles|${baseUrl}|${vparam}`,
+        TilesetClass,
+        tileSize: config.tileSize,
+        minZoom: config.minZoom,
+        maxZoom: config.maxZoom,
+        // 'best-available' → updateTileStateDefault: for each pending tile show the
+        // nearest LOADED ancestor (else the loaded children), and nothing else.
+        refinementStrategy: "best-available",
+        // Fetch ourselves so the request is CANCELLED when a tile leaves view mid
+        // zoom (tile.signal), instead of completing and decoding an image nobody
+        // will draw. Returns an ImageBitmap, which BitmapLayer takes directly.
+        // Params are typed with deck's base TileIndex (x/y/z only) so the callbacks
+        // stay assignable to its prop types; the extra fields our getTileIndices
+        // attached are read back through a cast.
+        getTileData: async (tile: {
+          index: { x: number; y: number; z: number };
+          signal?: AbortSignal;
+        }) => {
+          const { z, fileX, fileY } = tile.index as GeoTileIndex;
+          const url = `${baseUrl}/${z}/${fileX}/${fileY}.${config.format}${vparam}`;
+          const res = await fetch(url, { signal: tile.signal });
+          if (!res.ok) {
+            throw new Error(`tile ${z}/${fileX}/${fileY}: ${res.status}`);
+          }
+          return createImageBitmap(await res.blob());
+        },
+        // A pack is not obliged to have every tile in its bounding box; a 404 at the
+        // edge is normal and must stay as quiet as it was when these were plain
+        // BitmapLayers, or the console fills up on every pan.
+        onTileError: () => {},
+        renderSubLayers: (props: {
+          id: string;
+          data: unknown;
+          tile: { index: { x: number; y: number; z: number } };
+        }) =>
+          new BitmapLayer({
+            id: props.id,
+            image: props.data as ImageBitmap,
+            bounds: (props.tile.index as GeoTileIndex).bounds,
+            parameters: { blend: false },
+          }),
+      }),
+    ];
+  }, [baseUrl, config, vparam, TilesetClass]);
+
+  const basemapLayers = useMemo(
+    () => [...backstopLayers, ...basemapTileLayer],
+    [backstopLayers, basemapTileLayer],
+  );
 
   // Tiled rasters: their 3857 tiles placed at true lng/lat bounds (above the
   // basemap, below the vector/point overlay).
@@ -756,6 +928,24 @@ export function GeodeticBasemapView({
       // Clamped into the raster's served range, so a source that only publishes
       // coarse levels still works.
       const baseZ = Math.max(minZ, Math.min(maxZ, RASTER_MIN_SAFE_Z));
+
+      // ── Skip rasters that are nowhere near the viewport ──────────────────
+      // Without this, an off-screen raster still fell through to the `detailZ ===
+      // baseZ` branch below and pushed its ENTIRE floor-level set over the whole
+      // extent — 300–600 specs and a 15–31 KB signature rebuilt on every 80 ms
+      // tick, for a layer contributing zero visible pixels. The margin is one
+      // viewport in each direction, so a raster about to be panned into view is
+      // already primed and does not pop in.
+      const mLng = (vb.east - vb.west) / 2;
+      const mLat = (vb.north - vb.south) / 2;
+      if (
+        rb[2] < vb.west - mLng ||
+        rb[0] > vb.east + mLng ||
+        rb[3] < vb.south - mLat ||
+        rb[1] > vb.north + mLat
+      ) {
+        continue;
+      }
 
       // ── DETAIL level: pixel-perfect, but never below the floor ──
       const west = Math.max(rb[0], vb.west);
@@ -886,13 +1076,18 @@ export function GeodeticBasemapView({
   // dirtied instances and render/perform worse. Clones keep the originals pristine.
   //
   // Memoised on `layers` ALONE. This used to be computed inside the `allLayers` memo,
-  // whose deps include `basemapLayers` — and that changes on every throttled tile
-  // tick (~5/s while panning or zooming, as tiles enter and leave view). So every
-  // tick re-cloned EVERY overlay layer: with a loaded session that is ~150 fresh
-  // instances several times a second, and deck then has to run
-  // `_transferLayerState` plus a full prop diff on each one
+  // whose deps included `basemapLayers` — which back then changed on every throttled
+  // tile tick as tiles entered and left view. So every tick re-cloned EVERY overlay
+  // layer: with a loaded session that is ~150 fresh instances several times a second,
+  // and deck then has to run `_transferLayerState` plus a full prop diff on each one
   // (@deck.gl/core layer-manager.js:224-243) instead of matching identical instances
-  // and diffing to nothing. Same trick the basemap tile cache above already uses.
+  // and diffing to nothing.
+  //
+  // `basemapLayers` no longer churns at all — the backstop is view-independent and
+  // the TileLayer instance is stable, with tile churn handled inside it by deck —
+  // so `allLayers` now only changes when the rasters, the overlays or the rubber
+  // band really change. Keeping this memo separate anyway: it is the thing that
+  // guarantees a raster tick cannot re-clone the overlays.
   const overlayClones = useMemo(
     () =>
       (layers as { clone?: (p: object) => unknown }[]).map((l) =>

@@ -95,10 +95,29 @@ export const computeLayerBounds = (layer: LayerProps) => {
   const isSinglePoint =
     Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6;
 
-  const center: [number, number] = [
-    (minLng + maxLng) / 2,
-    (minLat + maxLat) / 2,
-  ];
+  // Centre of the FEATURE, which is not always the centre of its bounding box.
+  //
+  // An azimuth's bounds include `azimuthNorth` — a reference tick placed
+  // max(distance, 1000) m due NORTH of the centre (index.tsx, where the layer is
+  // created). For a due-east azimuth the leg itself has almost no latitude extent,
+  // so the leg becomes the bbox's south edge and the bbox midpoint sits roughly
+  // half the azimuth's own length north of the line.
+  //
+  // That was invisible while focus always finished in fitBounds, which frames the
+  // whole box regardless of where its centre is. It stops being invisible the
+  // moment focus centres on this point directly — which it now does whenever the
+  // layer's Min/Max Zoom clamps the zoom (see the focus effect in index.tsx) — and
+  // the leg lands off screen at the very Min Zoom values that make the clamp fire.
+  //
+  // `bounds` deliberately still includes the tick: it IS drawn, so fitBounds should
+  // keep framing it. Only the centre is corrected.
+  const center: [number, number] =
+    layer.type === "azimuth" && layer.azimuthCenter && layer.azimuthTarget
+      ? [
+          (layer.azimuthCenter[0] + layer.azimuthTarget[0]) / 2,
+          (layer.azimuthCenter[1] + layer.azimuthTarget[1]) / 2,
+        ]
+      : [(minLng + maxLng) / 2, (minLat + maxLat) / 2];
 
   return {
     bounds: [minLng, minLat, maxLng, maxLat] as [

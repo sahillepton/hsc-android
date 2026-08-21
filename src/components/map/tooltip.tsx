@@ -205,7 +205,7 @@ const Tooltip = () => {
   const { hoverInfo } = useHoverInfo();
   const { layers } = useLayers();
   const useIgrs = useIgrsPreference();
-  const { showUserLocation } = useUserLocation();
+  const { showUserLocation, userLocation } = useUserLocation();
   const [coarsePointer, setCoarsePointer] = useState(() =>
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
@@ -352,6 +352,15 @@ const Tooltip = () => {
         // Get object coordinates
         let lng: number | undefined;
         let lat: number | undefined;
+
+        // Live USER LOCATION — anchor to where the marker actually is now. The
+        // marker is rebuilt from the store on every fix (~every 5-10 s), so
+        // anchoring to the pick pixel left the box behind on the ground while the
+        // marker walked away from it.
+        if (deckLayerId === "user-location-layer" && userLocation) {
+          lng = userLocation.lng;
+          lat = userLocation.lat;
+        }
 
         // Live topology node — follow UDP position between taps (pick snapshot is stale).
         if (
@@ -625,7 +634,13 @@ const Tooltip = () => {
       rafId = requestAnimationFrame(tick);
     });
     return () => cancelAnimationFrame(rafId);
-  }, [hoverInfo, mapRef, layers, topologyNodes]);
+    // `userLocation` must be a dependency, not just read inside: the rAF tick
+    // closes over this render's value, so without it the loop would keep
+    // re-projecting the position from the fix that was current when the tooltip
+    // opened. A new fix arrives every 5-10 s, so this restarts the loop that often
+    // — one cancelAnimationFrame + one requestAnimationFrame, which is nothing next
+    // to the per-frame work it already does.
+  }, [hoverInfo, mapRef, layers, topologyNodes, userLocation]);
 
   const object = useMemo(() => {
     if (!hoverInfo?.object) return hoverInfo?.object;
@@ -748,10 +763,26 @@ const Tooltip = () => {
     if (layer?.id === "user-location-layer") {
       if (!showUserLocation) return null;
 
+      // LIVE position, not the pick snapshot.
+      //
+      // This used to read hoverInfo.coordinate (where the finger landed) or
+      // object.position (the data item from the layer instance that existed when
+      // you tapped). Both are frozen at pick time, so as you walked the marker moved
+      // — it is rebuilt from the store every render — while the tooltip kept
+      // reporting the old coordinates AND stayed anchored to the ground point you
+      // tapped, drifting visibly away from the marker.
+      //
+      // The store's `userLocation` is what draws the marker, so reading it here
+      // makes the two the same thing by construction. Same approach the UDP
+      // topology-node branch below uses to follow its feed between taps.
+      // The pick snapshot stays as a fallback for the frame before the first fix.
       let lng: number | undefined;
       let lat: number | undefined;
 
-      if (hoverInfo.coordinate) {
+      if (userLocation) {
+        lng = userLocation.lng;
+        lat = userLocation.lat;
+      } else if (hoverInfo.coordinate) {
         [lng, lat] = hoverInfo.coordinate;
       } else if (
         (object as any)?.position &&
@@ -760,19 +791,23 @@ const Tooltip = () => {
         [lng, lat] = (object as any).position;
       }
 
+      // Nothing to point at — the fix was dropped or tracking was turned off
+      // between the tap and this render.
+      if (lng === undefined || lat === undefined) return null;
+
+      const properties: { label: string; value: string }[] = [
+        {
+          // formatCoordinatePair honours the IGRS toggle (and falls back to
+          // lat/long outside the IGRS window, like every other coordinate row).
+          label: coordinateLabel,
+          value: formatCoordinatePair([lng, lat]),
+        },
+      ];
+
       return (
         <TooltipBox>
           <TooltipHeading title="Your Location" />
-          {lng !== undefined && lat !== undefined && (
-            <TooltipProperties
-              properties={[
-                {
-                  label: coordinateLabel,
-                  value: formatCoordinatePair([lng, lat]),
-                },
-              ]}
-            />
-          )}
+          <TooltipProperties properties={properties} />
         </TooltipBox>
       );
     }
@@ -1496,14 +1531,17 @@ const Tooltip = () => {
         });
       }
 
-      if (geometryType === "Point" && object.geometry.coordinates) {
-        tooltipProperties.push({
-          label: `Coordinates (${coordinateLabel})`,
-          value: formatCoordinatePair(
-            object.geometry.coordinates as [number, number],
-          ),
-        });
-      }
+      // NOTE: no synthetic "Coordinates" row for uploaded features.
+      //
+      // One used to be pushed here for Point geometries (added in c02f5042). It was
+      // removed on request: an uploaded file very often carries its OWN latitude /
+      // longitude attribute columns, and those are rendered verbatim among the
+      // feature attributes below — so the tooltip showed the position twice, once
+      // from us and once from the file. The file's own columns are DATA and are
+      // shown exactly as authored; adding a second, differently-formatted copy on
+      // top was the redundancy. If a coordinate readout is wanted here again, it
+      // belongs behind the layer's "Tooltip Attributes" selection like every other
+      // row, not as an unconditional extra.
 
       // Feature attribute rows. Two modes:
       //  • No selection yet (undefined): show only meaningful values, alphabetically,
@@ -1514,6 +1552,88 @@ const Tooltip = () => {
       //    (e.g. a field that exists on other features but is blank on this one).
       const attrWhitelist = layerInfo?.tooltipAttributes;
       let hiddenAttrCount = 0;
+
+      // An uploaded file very often carries its position as its OWN Latitude and
+      // Longitude COLUMNS ("Airtel Sites" has Latitude 28.4482 / Longitude
+      // 76.99089; "All Highways" the same). Those are attribute rows, so they went
+      // straight through formatTooltipValue and stayed in degrees with IGRS on —
+      // the toggle appeared to do nothing on exactly the layers where the position
+      // is most useful. They are the same quantity our own coordinate rows convert,
+      // so they honour the toggle too, collapsed into ONE grid reference the way
+      // the raster tooltip already does it (see RASTER_TOOLTIP_ATTRIBUTES above).
+      //
+      // Deliberately narrow, because these are the user's data columns: only
+      // recognised coordinate names, only finite numbers, and only when
+      // calculateIgrs actually yields a reference. Anything else — a projected
+      // X/Y, a text field, a point outside the IGRS window — is left exactly as
+      // authored rather than guessed at.
+      // Which columns ARE the coordinate pair. Resolved once, independently of the
+      // IGRS toggle, because it drives two things: the IGRS collapse below, and —
+      // when IGRS is off or unavailable — printing them as DEGREES. Left as bare
+      // numbers they were the only coordinates in the app without a ° on them.
+      const coordAttrKeys = (() => {
+        const norm = (k: string) => k.toLowerCase().replace(/[\s_-]/g, "");
+        let latKey: string | undefined;
+        let lonKey: string | undefined;
+        for (const key of Object.keys(properties)) {
+          const n = norm(key);
+          if (!latKey && (n === "latitude" || n === "lat")) latKey = key;
+          else if (
+            !lonKey &&
+            (n === "longitude" || n === "long" || n === "lon" || n === "lng")
+          ) {
+            lonKey = key;
+          }
+        }
+        if (!latKey || !lonKey) return null;
+        const lat = Number((properties as Record<string, unknown>)[latKey]);
+        const lon = Number((properties as Record<string, unknown>)[lonKey]);
+        // Both must be real numbers before we treat either as a coordinate — a
+        // text "N/A" or a projected easting stays exactly as authored.
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+        return { latKey, lonKey, lat, lon };
+      })();
+
+      const igrsAttrPair = (() => {
+        if (!useIgrs || !coordAttrKeys) return null;
+        const igrs = calculateIgrs(coordAttrKeys.lon, coordAttrKeys.lat);
+        if (!igrs) return null; // outside the IGRS window — keep the raw columns
+        return { latKey: coordAttrKeys.latKey, lonKey: coordAttrKeys.lonKey, igrs };
+      })();
+
+      /**
+       * Emit one attribute row, folding the coordinate pair into a single IGRS row.
+       * The grid reference takes the LATITUDE slot (alphabetically first of the
+       * pair, so ordering is unchanged) and the longitude row is dropped, since
+       * both numbers are already inside the one reference.
+       */
+      const pushAttrRow = (key: string, value: unknown, missingAsDash = false) => {
+        if (igrsAttrPair) {
+          if (key === igrsAttrPair.lonKey) return;
+          if (key === igrsAttrPair.latKey) {
+            tooltipProperties.push({ label: "IGRS", value: igrsAttrPair.igrs });
+            return;
+          }
+        }
+        const missing = missingAsDash && !isMeaningfulPropertyValue(value);
+        // A recognised lat/long COLUMN is a coordinate, so print it like every
+        // other coordinate in the app: with a degree sign. Reached only when the
+        // IGRS collapse above did not apply — toggle off, or a point outside the
+        // IGRS window — so the two can never both format the same row.
+        const isCoordCol =
+          !missing &&
+          coordAttrKeys !== null &&
+          (key === coordAttrKeys.latKey || key === coordAttrKeys.lonKey);
+        tooltipProperties.push({
+          label: formatAttributeLabel(key),
+          value: missing
+            ? "—"
+            : isCoordCol
+              ? `${Number(value).toFixed(6)}°`
+              : formatTooltipValue(key, value),
+        });
+      };
+
       if (attrWhitelist === undefined) {
         const meaningful = Object.entries(properties)
           .filter(
@@ -1524,12 +1644,7 @@ const Tooltip = () => {
           .sort(([a], [b]) => a.localeCompare(b));
         const shown = meaningful.slice(0, TOOLTIP_DEFAULT_ATTR_LIMIT);
         hiddenAttrCount = meaningful.length - shown.length;
-        shown.forEach(([key, value]) => {
-          tooltipProperties.push({
-            label: formatAttributeLabel(key),
-            value: formatTooltipValue(key, value),
-          });
-        });
+        shown.forEach(([key, value]) => pushAttrRow(key, value));
       } else {
         // An explicit selection is AUTHORITATIVE: show EXACTLY the ticked keys.
         // Do NOT apply SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS here — that filter is for
@@ -1541,12 +1656,9 @@ const Tooltip = () => {
           .slice(0, TOOLTIP_DEFAULT_ATTR_LIMIT) // hard cap, mirrors the panel limit
           .forEach((key) => {
             const value = (properties as Record<string, unknown>)[key];
-            tooltipProperties.push({
-              label: formatAttributeLabel(key),
-              value: isMeaningfulPropertyValue(value)
-                ? formatTooltipValue(key, value)
-                : "—",
-            });
+            // `true` keeps the whitelist's "ticked = shown" rule: a ticked field
+            // that is empty on THIS feature still renders, as "—".
+            pushAttrRow(key, value, true);
           });
       }
 

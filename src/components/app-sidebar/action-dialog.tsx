@@ -77,7 +77,7 @@ const ActionDialog = () => {
                     never renders blank. */}
                 {useIgrs && nodeIgrs
                   ? nodeIgrs
-                  : `${selectedNode.latitude.toFixed(6)}, ${selectedNode.longitude.toFixed(6)}`}
+                  : `${selectedNode.latitude.toFixed(6)}°, ${selectedNode.longitude.toFixed(6)}°`}
               </p>
             </div>
 

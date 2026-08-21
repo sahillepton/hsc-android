@@ -165,11 +165,19 @@ const ZoomControls = ({
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
   const autoSaveIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const onSaveSessionRef = useRef(onSaveSession);
+  // Read by the auto-save interval, which must NOT be torn down and rebuilt every
+  // time the upload flag flips — a ref lets the running timer see the current value
+  // without restarting (and restarting would re-fire the immediate save below).
+  const isProcessingFilesRef = useRef(isProcessingFiles);
 
   // Keep ref in sync
   useEffect(() => {
     onSaveSessionRef.current = onSaveSession;
   }, [onSaveSession]);
+
+  useEffect(() => {
+    isProcessingFilesRef.current = isProcessingFiles;
+  }, [isProcessingFiles]);
 
   // Auto-save every 30 seconds (only when enabled)
   // Uses the new session save mechanism
@@ -187,6 +195,13 @@ const ZoomControls = ({
 
     // Immediate save when auto-save is enabled, then start interval
     const performSave = async () => {
+      // Skip this tick while files are still importing. Disabling the toggle only
+      // stops a NEW auto-save being switched on — an interval already running keeps
+      // firing every 30 s regardless, and would write a manifest describing a
+      // half-imported session. Skipping rather than cancelling means auto-save
+      // resumes by itself on the next tick once the upload finishes, with no need
+      // to re-arm the timer.
+      if (isProcessingFilesRef.current) return;
       if (onSaveSessionRef.current) {
         setIsSaving(true);
         try {
@@ -365,7 +380,13 @@ const ZoomControls = ({
                 size="icon"
                 variant="ghost"
                 className="h-10 w-10 text-slate-800 hover:text-foreground rounded-none"
-                title={isExporting ? "Exporting..." : "Save Session"}
+                title={
+                  isProcessingFiles
+                    ? "Uploading files..."
+                    : isExporting
+                      ? "Exporting..."
+                      : "Save Session"
+                }
                 onClick={async () => {
                   setIsSaving(true);
                   try {
@@ -374,7 +395,10 @@ const ZoomControls = ({
                     setIsSaving(false);
                   }
                 }}
-                disabled={isExporting}
+                // Saving mid-upload writes a manifest describing a half-imported
+                // session, so it is gated on the upload flag like the buttons
+                // either side of it.
+                disabled={isExporting || isProcessingFiles}
                 tabIndex={-1}
               >
                 {isSaving ? (
@@ -402,9 +426,14 @@ const ZoomControls = ({
                 size="icon"
                 variant="ghost"
                 className="h-10 w-10  hover:bg-red-50 rounded-none"
-                title="Delete Session"
+                title={
+                  isProcessingFiles ? "Uploading files..." : "Delete Session"
+                }
                 onClick={() => setFlushConfirmOpen(true)}
-                disabled={isFlushing}
+                // Deleting the session while files are still being written is the
+                // most destructive thing on this bar — it removes the manifest and
+                // uploaded files out from under an in-flight import.
+                disabled={isFlushing || isProcessingFiles}
                 tabIndex={-1}
               >
                 <Trash className="h-4 w-4" />
@@ -460,13 +489,19 @@ const ZoomControls = ({
               </div>,
               document.body,
             )}
-          <div className="flex items-center gap-2 px-2 border-l border-slate-200">
+          <div
+            className="flex items-center gap-2 px-2 border-l border-slate-200"
+            title={isProcessingFiles ? "Uploading files..." : undefined}
+          >
             <span className="text-[10px] font-semibold text-slate-800 uppercase">
               Auto Save
             </span>
             <Switch
               checked={autoSaveEnabled}
               onCheckedChange={setAutoSaveEnabled}
+              // Turning auto-save ON fires an IMMEDIATE save (see the effect
+              // above), so during an upload this toggle is a save button.
+              disabled={isProcessingFiles}
               aria-label="Toggle Auto Save"
             />
           </div>

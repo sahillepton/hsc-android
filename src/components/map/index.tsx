@@ -885,6 +885,15 @@ const MapComponent = ({
   // mode the mapbox camera is covered and inert, so "focus layer" (and any camera
   // move) must be routed here instead of to map.fitBounds/flyTo.
   const geodeticCmdNonceRef = useRef(0);
+  /**
+   * A "show my location" press that could not be satisfied yet.
+   *
+   * Set when the one-shot getCurrentPosition gives up on a cold GPS; cleared by
+   * the first fix the watch delivers, which then recentres the map. Without it the
+   * button press is simply lost when the receiver takes longer than the native
+   * fused provider is willing to wait.
+   */
+  const pendingLocationRecenterRef = useRef(false);
   const [geodeticCommand, setGeodeticCommand] = useState<{
     center: [number, number];
     zoom: number;
@@ -1195,7 +1204,16 @@ const MapComponent = ({
         /* noop */
       }
     };
-  }, [layers]);
+    // `tileServerUrl` is a dependency, not just `layers`.
+    //
+    // Returning from the background restarts the tile server and bounces this URL
+    // (null → url, see the app-lifecycle effect). The raster layers' own tilesUrl
+    // does not change — the port is fixed — so nothing in `layers` changes and this
+    // effect never re-ran. Any tile request that failed while the server was down
+    // is not retried by mapbox, so the raster stayed blank until a pan/zoom asked
+    // for different tiles. Re-running on the URL bounce re-adds the sources and
+    // makes mapbox fetch again.
+  }, [layers, tileServerUrl]);
 
   // ── Viewport culling for tiled rasters ───────────────────────────────
   // Hide tiled raster layers whose bounds don't intersect the current
@@ -1293,8 +1311,17 @@ const MapComponent = ({
       cull();
     } else {
       map.once?.("load", cull);
-      map.once?.("style.load", cull);
     }
+    // Re-cull after EVERY style replacement, not just the first.
+    //
+    // This was `once("style.load", cull)` while moveend/zoomend were persistent
+    // `on(...)` — so the very first style load consumed it and no later style
+    // replacement ever re-culled. The tiled-raster ADD effect above already uses a
+    // persistent `on("style.load", ...)` for exactly this reason; the two were
+    // asymmetric, which is how a resume/basemap switch could leave the raster
+    // layers re-added but never re-evaluated against the viewport until the user
+    // happened to pan or zoom.
+    map.on?.("style.load", cull);
 
     map.on?.("moveend", cull);
     map.on?.("zoomend", cull);
@@ -1303,6 +1330,8 @@ const MapComponent = ({
       try {
         map.off?.("moveend", cull);
         map.off?.("zoomend", cull);
+        map.off?.("style.load", cull);
+        map.off?.("load", cull);
       } catch {
         /* noop */
       }
@@ -3421,9 +3450,21 @@ const MapComponent = ({
           return;
         }
 
-        // Get current position
+        // Get current position.
+        //
+        // `maximumAge` matters on a device that has been offline: the plugin
+        // defaults it to 0, which REFUSES any cached fix and demands a brand new
+        // one. Accepting a fix from the last two minutes is what makes this
+        // succeed instantly when the GPS already had a lock — after a data clear
+        // there is nothing cached, so this costs nothing and can only help.
+        //
+        // `timeout` is documented as IGNORED on Android for getCurrentPosition
+        // (@capacitor/geolocation 5.x), so it cannot bound this call; the wait is
+        // bounded by the native fused-provider instead, which resolves with null
+        // and surfaces as "location unavailable" (see the catch below).
         const position = await Geolocation.getCurrentPosition({
           enableHighAccuracy: true,
+          maximumAge: 120000,
         });
 
         if (position?.coords) {
@@ -3452,11 +3493,80 @@ const MapComponent = ({
       }
     } catch (error: any) {
       console.error("Location error:", error);
+      const message = String(error?.message ?? "");
+
+      // ── A cold GPS is NOT a failure — it is a wait ────────────────────────────
+      //
+      // getCurrentPosition is ONE SHOT. Natively it calls
+      // FusedLocationProviderClient.getCurrentLocation(priority, null) and, when
+      // that resolves with null, reports "location unavailable"
+      // (@capacitor/geolocation android/.../Geolocation.java). That is exactly the
+      // reported sequence — network off, app data cleared, location just switched
+      // on — because there is no cached fix, no A-GPS almanac to download, and a
+      // cold GPS lock takes tens of seconds outdoors.
+      //
+      // The old code treated that as fatal and called setShowUserLocation(false),
+      // which ALSO tore down the watch in OfflineLocationTracker (its effect is
+      // keyed on showUserLocation). So the app stopped listening at the precise
+      // moment it should have been waiting, and no later fix could ever arrive —
+      // pressing the button again just repeated the same one-shot failure.
+      //
+      // Keep tracking on instead: watchPosition goes through
+      // requestLocationUpdates, which keeps listening and delivers the fix as soon
+      // as the receiver locks. `pendingLocationRecenterRef` makes that first fix
+      // recentre the map, which is what the user pressed the button for.
+      // TERMINAL first, and checked before the "still acquiring" test, because the
+      // native strings overlap: "Google Play Services not available" would match a
+      // loose /not available/ and leave the app waiting forever for a fix that can
+      // never arrive — the exact case on a de-Googled or rugged offline tablet,
+      // which is the hardware this ships to. The strings come from
+      // @capacitor/geolocation android/.../Geolocation.java: "location disabled",
+      // "Google Play Services not available", "location unavailable".
+      const terminal =
+        /play services|location disabled|denied|permission/i.test(message);
+      const stillAcquiring =
+        !terminal && (!message || /unavailable|timeout|timed out/i.test(message));
+
       if (toastId) toast.dismiss(toastId);
-      toast.error(error.message || "Failed to get location");
+
+      if (stillAcquiring) {
+        pendingLocationRecenterRef.current = true;
+        toast.notification(
+          "Searching for GPS — this can take a minute outdoors on first use",
+        );
+        // Deliberately NOT turning the toggle off: the watch must stay alive.
+        return;
+      }
+
+      // A real, terminal error (location services off, permission revoked,
+      // Play Services missing) — nothing to wait for, so stop tracking.
+      toast.error(message || "Failed to get location");
       setShowUserLocation(false);
     }
   };
+
+  // Recentre on the FIRST fix that arrives after a cold start. The one-shot
+  // getCurrentPosition above may give up before the receiver has locked; when the
+  // watch in OfflineLocationTracker finally produces a position, honour the button
+  // press that is still outstanding.
+  useEffect(() => {
+    if (!pendingLocationRecenterRef.current) return;
+    if (!showUserLocation || !userLocation) return;
+    pendingLocationRecenterRef.current = false;
+    if (geodeticBasemapRef.current) {
+      setGeodeticCommand({
+        center: [userLocation.lng, userLocation.lat],
+        zoom: mapboxZoomToOrtho(GEOLOCATION_ZOOM),
+        nonce: (geodeticCmdNonceRef.current += 1),
+      });
+      return;
+    }
+    mapRef.current?.getMap()?.easeTo({
+      center: [userLocation.lng, userLocation.lat],
+      zoom: GEOLOCATION_ZOOM,
+      duration: 1500,
+    });
+  }, [userLocation, showUserLocation]);
 
   const measurementPreview = useMemo(() => {
     if (!isDrawing) return null;
@@ -4075,6 +4185,17 @@ const MapComponent = ({
           setRouteState((prev) => ({
             ...prev,
             pointA: coord,
+            snappedA: null, // stale until the worker snaps the new A
+            // Placing a NEW start point begins a NEW route, so the old end point
+            // must go with it. This line already sets pickMode "B" — "now waiting
+            // for B" — but it used to leave the previous pointB in place, and the
+            // auto-run effect in route-box.tsx only checks
+            //   pointA && pointB && key !== previous key
+            // so the instant the new A landed it routed straight to the OLD B,
+            // never giving the user a chance to place the new one. Clearing it here
+            // makes the state agree with the pickMode it is already setting.
+            pointB: null,
+            snappedB: null,
             pathResult: null,
             error: null,
             pickMode: "B",
@@ -4088,6 +4209,7 @@ const MapComponent = ({
           setRouteState((prev) => ({
             ...prev,
             pointB: coord,
+            snappedB: null, // stale until the worker snaps the new B
             pathResult: null,
             error: null,
             pickMode: null,
@@ -4251,6 +4373,53 @@ const MapComponent = ({
     let [minLng, minLat, maxLng, maxLat] = focusLayerRequest.bounds;
     const { center, isSinglePoint } = focusLayerRequest;
 
+    // ── Focus must land where the layer is actually VISIBLE ────────────────────
+    //
+    // The zoom below is chosen purely from the bounding-box span (the bucket table
+    // further down), and used to ignore the layer's own Min/Max Zoom entirely. For
+    // anything spanning more than 10° that bucket is 5 — so focusing an azimuth
+    // whose Min Zoom is 6, 7 or 8 flew the camera to zoom 5 and getZoomVisibility
+    // then kept the layer HIDDEN. The map moved, the thing you focused never
+    // appeared, and it read as "focus not working". Measured: a 2542 km azimuth
+    // spans 22.8° → bucket 5 → hidden at Min Zoom 6/7/8; under ~1113 km it buckets
+    // to 8 and happened to work, which is why only long azimuths showed it.
+    //
+    // The same trap exists at the top end: a layer with Max Zoom 10 focused into
+    // bucket 15 would be hidden for being too far IN.
+    //
+    // So clamp the target into the band where the layer draws. This mirrors
+    // getZoomVisibility's own rules: sketches are gated only when the user set a
+    // value explicitly, uploaded layers fall back to their auto-computed range.
+    const focusTargetLayer = layers.find(
+      (l) => l.id === focusLayerRequest.layerId,
+    );
+    const visibleZoomBand = (() => {
+      const layer = focusTargetLayer;
+      if (!layer) return null;
+      if (isSketchLayer(layer)) {
+        if (layer.minzoom === undefined && layer.maxzoom === undefined) {
+          return null; // never zoom-gated
+        }
+        return {
+          min: layer.minzoom ?? 0,
+          max: layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM,
+        };
+      }
+      if (layer.minzoom !== undefined) {
+        return {
+          min: layer.minzoom,
+          max: layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM,
+        };
+      }
+      const auto = calculateLayerZoomRange(layer);
+      return auto ? { min: auto.minZoom, max: auto.maxZoom } : null;
+    })();
+    /** Pull a candidate zoom into the layer's visible band (mapbox zoom units). */
+    const clampToVisible = (zoom: number) =>
+      visibleZoomBand
+        ? Math.min(Math.max(zoom, visibleZoomBand.min), visibleZoomBand.max)
+        : zoom;
+
     // Validate and clamp bounds to valid ranges
     const clampLng = (lng: number) => {
       if (!Number.isFinite(lng)) return 0;
@@ -4277,14 +4446,20 @@ const MapComponent = ({
       if (isSinglePoint) {
         cLng = clampLng(center[0]);
         cLat = clampLat(center[1]);
-        orthoZoom = mapboxZoomToOrtho(12);
+        // clampToVisible works in MAPBOX zoom units (what Min/Max Zoom and the
+        // on-screen readout use), so convert on the way out.
+        orthoZoom = mapboxZoomToOrtho(clampToVisible(12));
       } else {
         const bMinLng = clampLng(minLng);
         const bMaxLng = clampLng(maxLng);
         const bMinLat = clampLat(minLat);
         const bMaxLat = clampLat(maxLat);
-        cLng = (bMinLng + bMaxLng) / 2;
-        cLat = (bMinLat + bMaxLat) / 2;
+        // Use the FEATURE centre the store published, not the bbox midpoint. For
+        // every other layer type computeLayerBounds returns exactly this midpoint,
+        // so this is an identity for them; for an azimuth it avoids the northward
+        // bias its reference tick puts on the bbox (see computeLayerBounds).
+        cLng = clampLng(center[0]);
+        cLat = clampLat(center[1]);
         // Fit the bounds into the geodetic viewport (deck canvas ≈ map container).
         const el = map.getContainer?.();
         const W = Math.max(1, el?.clientWidth ?? 1);
@@ -4295,8 +4470,14 @@ const MapComponent = ({
         orthoZoom = Math.min(
           Math.log2(W / (lngSpan * pad)),
           Math.log2(H / (latSpan * pad)),
-          mapboxZoomToOrtho(20),
+          // MAP_MAX_ZOOM, not a bare 20: this is the same ceiling the mapbox
+          // camera and the +/- buttons use, so focus and rubber band cannot
+          // overshoot the configured maximum.
+          mapboxZoomToOrtho(MAP_MAX_ZOOM),
         );
+        // Same clamp as the mapbox branch, converted through mapbox zoom units so
+        // the layer's Min/Max Zoom means the same thing on both renderers.
+        orthoZoom = mapboxZoomToOrtho(clampToVisible(orthoZoomToMapbox(orthoZoom)));
       }
       setGeodeticCommand({
         center: [cLng, cLat],
@@ -4352,7 +4533,7 @@ const MapComponent = ({
 
       if (isSinglePoint) {
         // For single point, check if already focused
-        const targetZoom = Math.min(Math.max(currentZoom, 12), 12);
+        const targetZoom = clampToVisible(Math.min(Math.max(currentZoom, 12), 12));
         const zoomDiff = Math.abs(currentZoom - targetZoom);
         const isAlreadyFocused = centerDistance < 0.001 && zoomDiff < 0.5;
 
@@ -4408,7 +4589,12 @@ const MapComponent = ({
           calculatedMaxZoom = 5;
         }
 
-        const zoomDiff = Math.abs(currentZoom - calculatedMaxZoom);
+        // Compare against the zoom this focus will ACTUALLY settle at, not the raw
+        // bucket. Otherwise a layer whose Min Zoom pulls the target up to 8 would be
+        // judged "already focused" at zoom 5 (|5-5| < 1) and the click would be
+        // swallowed — the same do-nothing symptom, one level up.
+        const settleZoom = clampToVisible(calculatedMaxZoom);
+        const zoomDiff = Math.abs(currentZoom - settleZoom);
         const isAlreadyFocused = boundsContained && zoomDiff < 1;
 
         if (isAlreadyFocused) {
@@ -4419,18 +4605,72 @@ const MapComponent = ({
         // Use fitBounds with smooth animation to show the entire bounding box
         // Stop any ongoing animations first to prevent jitter
         map.stop();
-        map.fitBounds(
-          [
-            [minLng, minLat],
-            [maxLng, maxLat],
-          ],
-          {
-            padding: { top: 120, bottom: 120, left: 160, right: 160 },
+        // Padding proportional to the canvas, capped at the original fixed budget.
+        // A flat 160/120 is fine on a desktop window but is 58% of the HEIGHT of a
+        // 915×412 phone canvas, which costs ~1.7-2.2 zoom levels of framing on
+        // exactly the devices this ships to — and at the extreme leaves mapbox no
+        // room at all, the failure handled just below. Identical to the old values
+        // on any canvas at or above 1067×800.
+        const containerEl = map.getContainer?.();
+        const padX = Math.min(
+          160,
+          Math.floor((containerEl?.clientWidth ?? 0) * 0.15),
+        );
+        const padY = Math.min(
+          120,
+          Math.floor((containerEl?.clientHeight ?? 0) * 0.15),
+        );
+        const padding = { top: padY, bottom: padY, left: padX, right: padX };
+        const bbox: [[number, number], [number, number]] = [
+          [minLng, minLat],
+          [maxLng, maxLat],
+        ];
+
+        // `maxZoom` on fitBounds is only a CAP — it can lower the zoom, never raise
+        // it — so it cannot pull the camera UP to the layer's Min Zoom. Ask mapbox
+        // what it would have chosen, clamp that into the visible band, and drive the
+        // camera directly only when the clamp actually changes something. When it
+        // does not (the common case) this falls through to the original fitBounds,
+        // so ordinary focus behaviour is untouched.
+        const fitCam = map.cameraForBounds(bbox, {
+          padding,
+          maxZoom: calculatedMaxZoom,
+        });
+        const fitZoom = fitCam?.zoom;
+        const wantedZoom =
+          typeof fitZoom === "number" ? clampToVisible(fitZoom) : undefined;
+
+        if (typeof fitZoom !== "number" || typeof wantedZoom !== "number") {
+          // mapbox declined the fit — when padding leaves no room it logs
+          // "Map cannot fit within canvas with the given bounds, padding, and/or
+          // offset" and returns undefined (mapbox-gl _cameraForBounds). fitBounds
+          // would then no-op for exactly the same reason, so the click would vanish
+          // with nothing but a console warning. Drive the camera directly instead.
+          map.easeTo({
+            center: [clampLng(center[0]), clampLat(center[1])],
+            zoom: clampToVisible(calculatedMaxZoom),
+            duration: 2000,
+            essential: true,
+          });
+        } else if (Math.abs(wantedZoom - fitZoom) > 0.01) {
+          // Zooming to the layer's own limit means the whole feature may no longer
+          // fit on screen — but the user set that limit, and a focus that leaves the
+          // target invisible is worse than one that shows part of it. Centre on the
+          // feature so what IS on screen is the middle of it.
+          map.easeTo({
+            center: [clampLng(center[0]), clampLat(center[1])],
+            zoom: wantedZoom,
+            duration: 2000,
+            essential: true,
+          });
+        } else {
+          map.fitBounds(bbox, {
+            padding,
             duration: 2000, // Smooth, slower duration
             maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
             linear: false, // Use default easing (smooth)
-          },
-        );
+          });
+        }
       }
     } catch (error) {
       console.error("Failed to focus layer:", error);
@@ -4448,7 +4688,10 @@ const MapComponent = ({
     } finally {
       setFocusLayerRequest(null);
     }
-  }, [focusLayerRequest]);
+    // `layers` is read to look up the focused layer's Min/Max Zoom. Including it is
+    // safe: the effect no-ops immediately unless there is a pending request, and the
+    // request is cleared at the end of every run.
+  }, [focusLayerRequest, layers, setFocusLayerRequest]);
 
   // Close a UDP tooltip as soon as its subject stops arriving from the feed.
   //
@@ -4943,8 +5186,27 @@ const MapComponent = ({
       return;
     }
 
-    // Check if hovered layer is a UDP layer (by checking layer ID)
     const hoveredLayerId = hoverInfo.layer?.id;
+
+    // The user-location marker has no entry in `layers`, so the store-layer
+    // resolution further down (and with it the shared zoom/visibility gate) can
+    // never reach it — its tooltip outlived the thing it described. Close it on
+    // exactly the condition that builds the marker: the deck layer list creates it
+    // only while `userLocation && showUserLocation`, so switching the location
+    // button off, or losing the fix, now takes the tooltip with it.
+    //
+    // NOTE: there is deliberately no Min/Max Zoom test here, because this layer has
+    // no such setting — it is synthesised from live GPS rather than being a store
+    // layer with a settings panel. If one is ever added, gate it through
+    // `getZoomVisibility` like every other layer rather than hardcoding a level.
+    if (hoveredLayerId === "user-location-layer") {
+      if (!showUserLocation || !userLocation) {
+        setHoverInfo(undefined);
+        return;
+      }
+    }
+
+    // Check if hovered layer is a UDP layer (by checking layer ID)
     if (
       hoveredLayerId &&
       (hoveredLayerId.includes("udp-") ||
@@ -5011,6 +5273,10 @@ const MapComponent = ({
     setHoverInfo,
     networkLayersVisible,
     getZoomVisibility,
+    // Toggling the location button off must close its tooltip in the same pass
+    // that stops drawing the marker.
+    showUserLocation,
+    userLocation,
   ]);
 
   const deckGlLayers = useMemo(() => {
@@ -5404,6 +5670,15 @@ const MapComponent = ({
           return Math.max(0, outer.length - (closed ? 1 : 0));
         })();
         return rings.map((ring) => ({
+          // `layerId` is what the close-on-zoom-hidden effect resolves a pick back
+          // to a store layer with. Without it a polygon pick resolved to nothing:
+          // the object carries no string `id` (so isStoreLayerPickObject is false)
+          // and hoverInfo.layer.id is the COMBINED "polygon-layer", which matches
+          // no store layer — so `layerId` stayed undefined, the whole zoom check
+          // was skipped, and the tooltip survived after Min Zoom had hidden the
+          // polygon. Every other combined builder (line, azimuth, vertices)
+          // already carries it; polygon was the one that did not.
+          layerId: layer.id,
           layer,
           ring,
           areaMeters,
@@ -6181,8 +6456,8 @@ const MapComponent = ({
   // The user-location marker for the geodetic view. The mapbox overlay builds its
   // own (below), but deckGlLayers deliberately excludes it — so the OrthographicView
   // never got the "Your location" pin. The IconLayer is pixel-sized, so it renders
-  // identically here. (The mapbox accuracy ring uses radiusUnits:"meters", which is
-  // meaningless on the non-geospatial ortho view, so it is omitted here.)
+  // identically here. Both paths now draw the marker ALONE: the accuracy ring the
+  // mapbox path used to add was removed on request.
   const geodeticUserLocationLayers = useMemo(() => {
     if (!userLocation || !showUserLocation) return [];
     return [
@@ -6726,33 +7001,13 @@ const MapComponent = ({
                   // Add user location layers LAST so they render on top of everything
                   ...(userLocation && showUserLocation
                     ? [
-                        // Add accuracy circle (in meters)
-                        ...(userLocation.accuracy > 0
-                          ? [
-                              new ScatterplotLayer({
-                                id: "user-location-accuracy",
-                                data: [
-                                  {
-                                    position: [
-                                      userLocation.lng,
-                                      userLocation.lat,
-                                    ],
-                                  },
-                                ],
-                                getPosition: (d: any) => d.position,
-                                getRadius: userLocation.accuracy,
-                                radiusUnits: "meters",
-                                getFillColor: [59, 130, 246, 20], // Light blue with transparency
-                                getLineColor: [59, 130, 246, 100], // Blue border
-                                getLineWidth: 1,
-                                stroked: true,
-                                filled: true,
-                                pickable: false,
-                                radiusMinPixels: 0,
-                                radiusMaxPixels: 1000,
-                              }),
-                            ]
-                          : []),
+                        // NOTE: no accuracy ring. It was a ScatterplotLayer with
+                        // radiusUnits "meters" and getRadius = userLocation.accuracy
+                        // — the receiver's own confidence estimate, which changes
+                        // with every fix (~every 5-10 s), so the circle visibly
+                        // breathed and read as the map glitching rather than as
+                        // information. Removed on request, along with the Accuracy
+                        // row in the tooltip. The geodetic view never drew one.
                         // Add user location marker using IconLayer with proper location icon
                         new IconLayer({
                           id: "user-location-layer",
@@ -6799,6 +7054,16 @@ const MapComponent = ({
             rasterLayers={geodeticRasterLayers}
             initialCenter={geodeticInitRef.current.center}
             initialZoom={geodeticInitRef.current.zoom}
+            // ORTHO units. Without these the view fell back to its own defaults
+            // and pinch/touch could reach an ortho 20, which the readout showed as
+            // 19.49 — past MAP_MAX_ZOOM (18). The +/- buttons already clamped to
+            // MAP_MAX_ZOOM, which is why only touch and rubber band overshot.
+            // Only maxZoom: the lower bound is governed by fillMinZoom (the zoom at
+            // which the world still covers the viewport), which handleViewStateChange
+            // recomputes and returns on every change, so a minZoom prop would be
+            // overridden anyway — and on a small canvas fillMinZoom can be BELOW
+            // mapboxZoomToOrtho(0), so passing it could wrongly raise the floor.
+            maxZoom={mapboxZoomToOrtho(MAP_MAX_ZOOM)}
             commandView={geodeticCommand}
             onViewStateChange={(center, zoom) => {
               geodeticViewRef.current = { center, zoom };

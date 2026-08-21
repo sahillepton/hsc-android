@@ -367,12 +367,25 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     motherNodeSymbol,
     snrLineWidths,
   } = useUdpSymbolsStore();
-  const effectiveSnrLineWidths: [number, number, number, number] = [
-    snrLineWidths[0] ?? 1,
-    snrLineWidths[1] ?? 3,
-    snrLineWidths[2] ?? 5,
-    snrLineWidths[3] ?? 7,
-  ];
+  // Memoised on the store value. This was a bare array literal, so it got a NEW
+  // identity on every render — and it is a dependency of the `udpLayers` useMemo
+  // below, so EVERY topology/member/target deck layer was rebuilt on every render
+  // of this hook's host component. Fresh instances each time mean deck cannot match
+  // them to the previous ones: it re-runs a full prop diff and re-uploads
+  // attributes instead of skipping unchanged layers. With a live UDP feed driving
+  // frequent renders, the topology layers were being re-created faster than they
+  // settled, which is what made them appear only intermittently.
+  const effectiveSnrLineWidths = useMemo<
+    [number, number, number, number]
+  >(
+    () => [
+      snrLineWidths[0] ?? 1,
+      snrLineWidths[1] ?? 3,
+      snrLineWidths[2] ?? 5,
+      snrLineWidths[3] ?? 7,
+    ],
+    [snrLineWidths],
+  );
   const groupSymbols = useUdpSymbolsStore((state) => state.groupSymbols);
 
   useEffect(() => {

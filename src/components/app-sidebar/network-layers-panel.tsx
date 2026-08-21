@@ -12,6 +12,7 @@ import { Label } from "../ui/label";
 import {
   useNetworkLayersVisible,
   useIgrsPreference,
+  useFocusLayerRequest,
 } from "@/store/layers-store";
 import { useUdpLayers } from "@/components/map/udp-layers";
 import { useUdpDataStore } from "@/store/udp-data-store";
@@ -62,6 +63,9 @@ const NetworkLayersPanel = ({
     useNetworkLayersVisible();
   const { udpLayers } = useUdpLayers();
   const useIgrs = useIgrsPreference();
+  // Focus goes through the shared request so it works on BOTH renderers — the
+  // mapbox camera and the geodetic OrthographicView. See handleFocusLayer.
+  const { setFocusLayerRequest } = useFocusLayerRequest();
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const topologyData = useUdpDataStore((state) => state.udpData.topology);
@@ -177,10 +181,6 @@ const NetworkLayersPanel = ({
       return;
     }
 
-    const mapRef = (window as any).mapRef;
-    if (!mapRef?.current) return;
-
-    const map = mapRef.current.getMap();
     const data = networkMembersData;
 
     // Calculate bounds from data
@@ -204,59 +204,27 @@ const NetworkLayersPanel = ({
       minLat !== Infinity &&
       maxLat !== -Infinity
     ) {
-      const currentZoom = map.getZoom();
-      const currentBounds = map.getBounds();
-
-      // Check if current view already contains the bounds
-      const boundsContained =
-        currentBounds.getWest() <= minLng &&
-        currentBounds.getEast() >= maxLng &&
-        currentBounds.getSouth() <= minLat &&
-        currentBounds.getNorth() >= maxLat;
-      const zoomDiff = Math.abs(currentZoom - 12); // Rough check
-      const isAlreadyFocused = boundsContained && zoomDiff < 1;
-
-      if (isAlreadyFocused) {
-        // Already focused, don't animate
-        return;
-      }
-
-      // Calculate zoom based on bounding box size
-      const lngSpan = maxLng - minLng;
-      const latSpan = maxLat - minLat;
-      const maxSpan = Math.max(lngSpan, latSpan);
-
-      // Calculate appropriate maxZoom based on bounding box size
-      let calculatedMaxZoom: number;
-      if (maxSpan < 0.001) {
-        calculatedMaxZoom = 20;
-      } else if (maxSpan < 0.01) {
-        calculatedMaxZoom = 18;
-      } else if (maxSpan < 0.1) {
-        calculatedMaxZoom = 15;
-      } else if (maxSpan < 1) {
-        calculatedMaxZoom = 12;
-      } else if (maxSpan < 10) {
-        calculatedMaxZoom = 8;
-      } else {
-        calculatedMaxZoom = 5;
-      }
-
-      // Use fitBounds with smooth animation to show the entire bounding box
-      // Stop any ongoing animations first to prevent jitter
-      map.stop();
-      map.fitBounds(
-        [
-          [minLng, minLat],
-          [maxLng, maxLat],
-        ],
-        {
-          padding: { top: 50, bottom: 50, left: 50, right: 50 },
-          duration: 2000, // Smooth, slower duration
-          maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
-          linear: false, // Use default easing (smooth)
-        },
-      );
+      // Publish a focus REQUEST instead of driving mapbox directly.
+      //
+      // This used to duplicate the main focus logic and call map.fitBounds() on the
+      // mapbox instance. In geodetic (EPSG:4326) mode that map is covered and
+      // INERT — the visible surface is the deck OrthographicView — so fitBounds
+      // moved a camera nobody can see and the Focus button appeared dead. It only
+      // ever worked on a Mercator base map.
+      //
+      // The shared effect in components/map/index.tsx already handles both
+      // renderers (mapbox fitBounds vs setGeodeticCommand), the bbox-span zoom
+      // buckets, and the Min/Max-Zoom clamp. Routing through it fixes geodetic and
+      // removes a second copy of the same maths that had already drifted (it used
+      // 50px padding and a rough `zoomDiff` against a hardcoded 12).
+      setFocusLayerRequest({
+        layerId: "udp-network-members-layer",
+        bounds: [minLng, minLat, maxLng, maxLat],
+        center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2],
+        isSinglePoint:
+          Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6,
+        timestamp: Date.now(),
+      });
     }
   };
 
@@ -267,10 +235,6 @@ const NetworkLayersPanel = ({
       return;
     }
 
-    const mapRef = (window as any).mapRef;
-    if (!mapRef?.current) return;
-
-    const map = mapRef.current.getMap();
     const nodes = Array.from(group.nodeIds)
       .map((nodeId) => topologyData.nodes.get(nodeId))
       .filter((node) => node !== undefined);
@@ -296,40 +260,16 @@ const NetworkLayersPanel = ({
       minLat !== Infinity &&
       maxLat !== -Infinity
     ) {
-      // Calculate zoom based on bounding box size
-      const lngSpan = maxLng - minLng;
-      const latSpan = maxLat - minLat;
-      const maxSpan = Math.max(lngSpan, latSpan);
-
-      // Calculate appropriate maxZoom based on bounding box size
-      let calculatedMaxZoom: number;
-      if (maxSpan < 0.001) {
-        calculatedMaxZoom = 20;
-      } else if (maxSpan < 0.01) {
-        calculatedMaxZoom = 18;
-      } else if (maxSpan < 0.1) {
-        calculatedMaxZoom = 15;
-      } else if (maxSpan < 1) {
-        calculatedMaxZoom = 12;
-      } else if (maxSpan < 10) {
-        calculatedMaxZoom = 8;
-      } else {
-        calculatedMaxZoom = 5;
-      }
-
-      map.stop();
-      map.fitBounds(
-        [
-          [minLng, minLat],
-          [maxLng, maxLat],
-        ],
-        {
-          padding: { top: 50, bottom: 50, left: 50, right: 50 },
-          duration: 2000,
-          maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
-          linear: false,
-        },
-      );
+      // Same shared focus request as the network-members button above, so a
+      // topology group focuses on BOTH renderers instead of only mapbox.
+      setFocusLayerRequest({
+        layerId: `topology-group-${group.id}`,
+        bounds: [minLng, minLat, maxLng, maxLat],
+        center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2],
+        isSinglePoint:
+          Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6,
+        timestamp: Date.now(),
+      });
     }
   };
 
