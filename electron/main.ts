@@ -1090,6 +1090,84 @@ function startTileServer(
       // ── /basemap/... — custom base map tiles + config.txt ──
       // Served from `basemapFolder` (swappable via basemap:setFolder) so the
       // default tiles served from `folder` and the stable port are untouched.
+      // ── /basemap/__levels — the zoom levels this pack actually has ──
+      // Mirrors the Android tile server (OfflineTileServerPlugin.kt). Replaces the
+      // minZoom/maxZoom that config.txt used to declare: the server owns the
+      // folder, so it lists the numeric z subdirectories rather than the app being
+      // told or probing tiles (which misreads a pack whose 0/0 tile is absent
+      // deeper). The deepest level returned is the pack's MAX NATIVE ZOOM - the
+      // last level with real tiles, past which the renderer upscales instead of
+      // requesting 404s. It is not a limit on how far the user may zoom.
+      //
+      // Answered BEFORE the generic file route below, so a folder containing a
+      // "__levels" entry cannot shadow it.
+      if (urlPath.split("?")[0] === "/basemap/__levels") {
+        if (!basemapFolder) {
+          res.writeHead(404);
+          res.end("No base map folder set");
+          return;
+        }
+        let levels: number[] = [];
+        // Extras used to CHECK the projection/format the user picked in the Map
+        // Tiles dialog, so a wrong pick can be reported instead of silently
+        // rendering a blank map:
+        //   sampleExt - the extension really used on disk (vs. the picked format)
+        //   probeZ/maxX - widest column index at the shallowest level. A Mercator
+        //     grid has at most 2^z columns; more than that only fits EPSG:4326.
+        let probeZ: number | null = null;
+        let maxX: number | null = null;
+        let sampleExt: string | null = null;
+        try {
+          // Sync deliberately: this request handler is not async, and the rest
+          // of it already uses fsSync. One shallow directory listing of ~20
+          // entries off local storage is microseconds.
+          const entries = fsSync.readdirSync(basemapFolder, {
+            withFileTypes: true,
+          });
+          levels = entries
+            .filter((e) => e.isDirectory() && /^\d+$/.test(e.name))
+            .map((e) => Number(e.name))
+            .sort((a, b) => a - b);
+
+          if (levels.length > 0) {
+            probeZ = levels[0];
+            const zDir = path.join(basemapFolder, String(probeZ));
+            const xs = fsSync
+              .readdirSync(zDir, { withFileTypes: true })
+              .filter((e) => e.isDirectory() && /^\d+$/.test(e.name))
+              .map((e) => Number(e.name))
+              .sort((a, b) => a - b);
+            if (xs.length > 0) {
+              maxX = xs[xs.length - 1];
+              const names = fsSync
+                .readdirSync(path.join(zDir, String(xs[0])), {
+                  withFileTypes: true,
+                })
+                .filter((e) => e.isFile())
+                .map((e) => e.name);
+              for (const n of names) {
+                // Constrained charset so the value is always JSON-safe.
+                const m = /\.([a-z0-9]{1,5})$/i.exec(n);
+                if (m) {
+                  sampleExt = m[1].toLowerCase();
+                  break;
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("[basemap] __levels listing failed:", err);
+        }
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          // Not cached: the folder can be swapped at runtime.
+          "Cache-Control": "no-store",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({ levels, probeZ, maxX, sampleExt }));
+        return;
+      }
+
       if (urlPath === "/basemap" || urlPath.startsWith("/basemap/")) {
         if (!basemapFolder) {
           res.writeHead(404);

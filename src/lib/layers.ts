@@ -232,16 +232,22 @@ export const calculateBearingDegrees = (
   // spans (antenna sectors) the two are indistinguishable.
   const lat1 = toRadians(a[1]);
   const lat2 = toRadians(b[1]);
-  let dLon = toRadians(b[0] - a[0]);
+  // The FULL east-west run, deliberately NOT folded onto the shorter arc.
+  //
+  // The shorter arc is the right answer for navigation, but not for a measurement
+  // label sitting on a drawn line. Nothing in this app draws a wrapped line — no
+  // layer sets deck's `wrapLongitude` — so a segment spanning more than 180° of
+  // longitude is drawn the long way round, and folding the run onto the short arc
+  // described a line that is not on screen. An azimuth from (75°W, 50°S) to
+  // (118°E, 37°N) spans 193° east and clearly rises to the north-east, yet read
+  // −59.6° (north-WEST); as drawn it is +63.1°. Spans under 180° are identical
+  // either way, which is why only very wide azimuths showed it.
+  const dLon = toRadians(b[0] - a[0]);
   // Difference of "stretched" (Mercator) latitudes; 0 for an east-west line, which
   // is what makes a due-east segment come out as exactly 90°.
   const dPhi = Math.log(
     Math.tan(Math.PI / 4 + lat2 / 2) / Math.tan(Math.PI / 4 + lat1 / 2)
   );
-  // Cross the antimeridian by the shorter east/west arc.
-  if (Math.abs(dLon) > Math.PI) {
-    dLon = dLon > 0 ? dLon - 2 * Math.PI : dLon + 2 * Math.PI;
-  }
   const brng = Math.atan2(dLon, dPhi);
   return (toDegrees(brng) + 360) % 360; // Normalize 0-360
 };
@@ -283,6 +289,16 @@ export const makeSectorPolygon = (
   return points;
 };
 
+/**
+ * Great-circle destination: `distanceMeters` from `center` along `bearingDeg`.
+ *
+ * NOTE: a path that walks over a pole comes back down the opposite meridian, so
+ * the returned longitude flips by 180°. That is correct great-circle behaviour,
+ * but it is not what a "point due north" wants — use `northReferencePoint` for
+ * that. Its two former callers were both that mistake, so nothing calls this at
+ * present; it is kept as the general bearing/distance projection, and is only
+ * safe where the distance cannot reach a pole.
+ */
 export const destinationPoint = (
   center: [number, number],
   distanceMeters: number,
@@ -311,9 +327,79 @@ export const destinationPoint = (
   return [toDegrees(λ2), toDegrees(φ2)];
 };
 
+/**
+ * The north reference tick for an azimuth: `distanceMeters` due north of `center`.
+ *
+ * Must NOT be built with `destinationPoint(center, d, 0)`. That is the great-circle
+ * destination, and its longitude term is
+ *
+ *     λ2 = λ1 + atan2(sinθ·sinδ·cosφ1, cosδ − sinφ1·sinφ2)
+ *
+ * With θ = 0 the numerator is 0, so λ2 = λ1 — until the path walks over the pole.
+ * Past that point `cosδ − sinφ1·sinφ2` turns negative, `atan2(0, negative)` is π,
+ * and the "north" point jumps to the OPPOSITE meridian while asin folds the
+ * latitude back down. From (20°E, 35°S) that happens at ~13 900 km: a 15 125 km
+ * azimuth put the tick at 160°W / 79°N, drawing a long diagonal across the Pacific
+ * instead of a vertical line. Short legs were unaffected, which is why this only
+ * showed up on very long azimuths.
+ *
+ * A north reference only has to be due north, so it is built directly: same
+ * longitude, latitude walked north and stopped at the pole. Same longitude is what
+ * makes it render vertical in both projections — a meridian is a straight vertical
+ * line in plate carrée and in Mercator alike.
+ *
+ * The arc uses EARTH_RADIUS_M, matching `calculateDistanceMeters`, so the tick is
+ * exactly as long as the leg it is measuring against.
+ */
+export const northReferencePoint = (
+  center: [number, number],
+  distanceMeters: number
+): [number, number] => {
+  if (!center || !Number.isFinite(distanceMeters)) return center;
+
+  // Just short of 90: the pole itself is unprojectable in Mercator (y → ∞), and
+  // the layer data is shared by both renderers. At this latitude the tick already
+  // runs off the top of the view, which is all a north reference needs to do.
+  const POLE_LIMIT = 89.9999;
+
+  const arcDeg = toDegrees(Math.abs(distanceMeters) / EARTH_RADIUS_M);
+  // `max` keeps the tick from ever pointing SOUTH for a centre that is already
+  // north of the limit; there it collapses to nothing, which is honest — every
+  // direction from the pole is south.
+  const lat = Math.max(center[1], Math.min(center[1] + arcDeg, POLE_LIMIT));
+  return [center[0], lat];
+};
+
 export const normalizeAngleSigned = (angleDeg: number) => {
   if (!Number.isFinite(angleDeg)) return angleDeg;
-  return ((angleDeg + 540) % 360) - 180;
+  // Floor-based modulo. JS `%` keeps the sign of the DIVIDEND, so the shorter
+  // ((angleDeg + 540) % 360) - 180 returned -360 for -720 rather than 0: any
+  // input below -540 fell straight out of the range this function exists to
+  // enforce. Unreachable from calculateBearingDegrees, which returns 0-360, but
+  // not something to leave sitting in a shared helper.
+  const wrapped = (((angleDeg + 180) % 360) + 360) % 360;
+  return wrapped - 180;
+};
+
+/**
+ * An azimuth as it is shown to the user: measured from the north reference line,
+ * CLOCKWISE POSITIVE 0…+180, anticlockwise 0…−179.
+ *
+ * `normalizeAngleSigned` alone lands on [−180, +180), which puts due south at
+ * −180 — the wrong end of that range, since 180° of clockwise turn is what a
+ * south-pointing line has. Hence the +180 correction.
+ *
+ * Every place that displays an azimuth goes through here: the on-map label, the
+ * drawing preview, the tooltip, the sketch list and `formatLayerMeasurements`.
+ * The correction used to be copy-pasted at three of those and missing at the
+ * fourth, so a due-south azimuth read 180.0° on the map and −180.0° in the panel.
+ *
+ * Idempotent, so it is safe on a value that has already been through it.
+ */
+export const azimuthDisplayAngle = (angleDeg: number) => {
+  if (!Number.isFinite(angleDeg)) return angleDeg;
+  const signed = normalizeAngleSigned(angleDeg);
+  return signed === -180 ? 180 : signed;
 };
 
 export type LayerMeasurement = {
@@ -516,7 +602,12 @@ export const formatLayerMeasurements = (
 
   if (layer.type === "azimuth") {
     if (typeof layer.azimuthAngleDeg === "number") {
-      pushMeasurement("Angle", `${layer.azimuthAngleDeg.toFixed(1)}°`);
+      // Callers pass either the raw 0-360 bearing or an already-signed value;
+      // azimuthDisplayAngle is idempotent, so both come out in the shown range.
+      pushMeasurement(
+        "Angle",
+        `${azimuthDisplayAngle(layer.azimuthAngleDeg).toFixed(1)}°`
+      );
     }
     if (typeof layer.distanceMeters === "number") {
       pushMeasurement("Distance", formatDistance(layer.distanceMeters / 1000));

@@ -4,7 +4,9 @@
  * `activeId === null` means "use the built-in default" (Documents/tiles, the
  * current vector basemap) — so a fresh install behaves exactly as before and
  * there is no regression. Selecting a registered source switches the basemap to
- * that folder (its `config.txt` decides how it is rendered).
+ * that folder; how it is rendered comes from the projection/format the user
+ * picks in the settings dialog (stored on the source) plus what the tile server
+ * reports about the folder — config.txt is no longer read.
  *
  * Persisted with zustand `persist` backed by Capacitor Preferences (durable on
  * Android across app restarts — plain localStorage is not; on Electron the
@@ -16,11 +18,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { Preferences } from "@capacitor/preferences";
-import {
-  parseTilesConfig,
-  type TilesConfig,
-} from "@/lib/basemap/tileConfig";
-import type { ElectronAPI } from "@/electron";
+import type { Projection } from "@/lib/basemap/tileConfig";
 
 export interface BasemapSource {
   id: string;
@@ -28,6 +26,17 @@ export interface BasemapSource {
   label: string;
   /** Absolute folder path (Electron) or SAF URI (Android). */
   path: string;
+  /**
+   * The user's choice from the settings dialog, replacing config.txt.
+   *
+   * Optional on purpose: sources saved before this existed have neither, and
+   * `undefined` is what the UI reads as "not configured yet" so it can prompt
+   * once instead of guessing silently. Everything else a tile set needs is
+   * derived — the zoom range from the server's /basemap/__levels listing, the
+   * grid by probing, tileSize/scheme from defaults.
+   */
+  projection?: Projection;
+  format?: string;
 }
 
 interface BasemapState {
@@ -42,6 +51,20 @@ interface BasemapState {
   selectFolder: (label: string, path: string) => BasemapSource;
   /** Clear the custom base map → back to the built-in default. */
   resetToDefault: () => void;
+  /**
+   * Whether the Map Tiles setup has been shown once already.
+   *
+   * Persisted so the first-launch prompt is exactly that — a first launch. The
+   * built-in default basemap stays perfectly usable, so dismissing the prompt
+   * must not bring it back on every start.
+   */
+  promptedForFolder: boolean;
+  markPromptedForFolder: () => void;
+  /** Store the projection/format the user picked in step 2 of the dialog. */
+  setSourceConfig: (
+    id: string,
+    cfg: { projection: Projection; format: string },
+  ) => void;
 }
 
 function makeId(): string {
@@ -65,6 +88,8 @@ export const useBasemapStore = create<BasemapState>()(
     (set, get) => ({
       sources: [],
       activeId: null,
+      promptedForFolder: false,
+      markPromptedForFolder: () => set({ promptedForFolder: true }),
       addSource: (label, path) => {
         const existing = get().sources.find((s) => s.path === path);
         if (existing) {
@@ -95,6 +120,14 @@ export const useBasemapStore = create<BasemapState>()(
         return src;
       },
       resetToDefault: () => set({ sources: [], activeId: null }),
+      setSourceConfig: (id, cfg) =>
+        set((st) => ({
+          sources: st.sources.map((s) =>
+            s.id === id
+              ? { ...s, projection: cfg.projection, format: cfg.format }
+              : s,
+          ),
+        })),
     }),
     {
       name: "basemap-sources-v1",
@@ -115,33 +148,4 @@ export function useActiveBasemapSource(): BasemapSource | null {
   return useBasemapStore(
     (s) => s.sources.find((x) => x.id === s.activeId) ?? null,
   );
-}
-
-// ---------------------------------------------------------------------------
-// Reading a source's config.txt (Electron: direct file read; no serving needed)
-// ---------------------------------------------------------------------------
-function electronAPI(): ElectronAPI | undefined {
-  return (window as Window & { electronAPI?: ElectronAPI }).electronAPI;
-}
-
-/** Read `<folder>/config.txt` for a source. Electron only; null elsewhere/absent. */
-export async function readSourceConfigText(
-  path: string,
-): Promise<string | null> {
-  const api = electronAPI();
-  if (!api?.readFile) return null;
-  const clean = path.replace(/[\\/]+$/, "");
-  try {
-    return await api.readFile(`${clean}/config.txt`);
-  } catch {
-    return null;
-  }
-}
-
-/** Resolve a source's TilesConfig from its config.txt (Electron). */
-export async function readSourceConfig(
-  path: string,
-): Promise<TilesConfig | null> {
-  const text = await readSourceConfigText(path);
-  return text ? parseTilesConfig(text) : null;
 }

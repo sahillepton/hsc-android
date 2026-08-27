@@ -333,6 +333,71 @@ class TileServer(
             // Served from `basemapDir` (swappable via basemapSetFolder) with the
             // same immutable-cache policy as the raster route. The default tiles
             // (served from baseDir) and the stable port stay untouched.
+            // ── /basemap/__levels — the zoom levels this pack actually has ──
+            // Replaces the minZoom/maxZoom that config.txt used to declare: the
+            // SERVER owns the folder, so it can list the numeric z subdirectories
+            // directly instead of the app being told, or guessing by probing tiles
+            // (which misreads a pack whose 0/0 tile is absent at deeper levels).
+            // The deepest level is the pack's MAX NATIVE ZOOM - the last level with
+            // real tiles, past which the renderer upscales rather than requesting
+            // tiles that would 404. Not a cap on how far the user may zoom.
+            //
+            // Answered BEFORE the generic file route below, so a folder that
+            // happens to contain a "__levels" entry cannot shadow it.
+            if (uri == "/basemap/__levels") {
+                val dir = basemapDir ?: return corsNotFound("No base map folder set")
+                val levels = (dir.listFiles() ?: emptyArray())
+                    .filter { it.isDirectory }
+                    .mapNotNull { it.name.toIntOrNull() }
+                    .sorted()
+
+                // Extras used to CHECK the projection/format picked in the Map
+                // Tiles dialog, so a wrong pick is reported instead of silently
+                // rendering a blank map:
+                //   sampleExt   - the extension really used on disk
+                //   probeZ/maxX - widest column index at the shallowest level. A
+                //     Mercator grid has at most 2^z columns, so more than that
+                //     only fits EPSG:4326.
+                // All locals are `val` so they stay smart-castable below.
+                val probeZ = levels.firstOrNull()
+                val zDir = probeZ?.let { File(dir, it.toString()) }
+                val xs = (zDir?.listFiles() ?: emptyArray())
+                    .filter { it.isDirectory }
+                    .mapNotNull { it.name.toIntOrNull() }
+                    .sorted()
+                val maxX = xs.lastOrNull()
+                val sampleExt = if (zDir != null && xs.isNotEmpty()) {
+                    (File(zDir, xs.first().toString()).listFiles() ?: emptyArray())
+                        .firstOrNull { it.isFile && it.extension.isNotEmpty() }
+                        ?.extension
+                        ?.lowercase()
+                        // Constrained charset so the value is always JSON-safe.
+                        ?.takeIf { it.matches(Regex("^[a-z0-9]{1,5}$")) }
+                } else null
+
+                val body = StringBuilder("{\"levels\":[")
+                    .append(levels.joinToString(","))
+                    .append("]")
+                    .apply {
+                        if (probeZ != null) append(",\"probeZ\":").append(probeZ)
+                        if (maxX != null) append(",\"maxX\":").append(maxX)
+                        if (sampleExt != null) {
+                            append(",\"sampleExt\":\"").append(sampleExt).append("\"")
+                        }
+                    }
+                    .append("}")
+                    .toString()
+                val res = NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    "application/json",
+                    body
+                )
+                // Deliberately NOT cached: the folder can be swapped at runtime.
+                res.addHeader("Cache-Control", "no-store")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
+            }
+
             if (uri == "/basemap" || uri.startsWith("/basemap/")) {
                 val dir = basemapDir ?: return corsNotFound("No base map folder set")
                 val rel = uri.removePrefix("/basemap").removePrefix("/")

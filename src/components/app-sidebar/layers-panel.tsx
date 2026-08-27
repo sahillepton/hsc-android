@@ -13,6 +13,7 @@ import {
 import { isSketchLayer } from "@/lib/sketch-layers";
 import { isStoreLayerPickObject } from "@/lib/layers";
 import LayersList from "./layers-list";
+import ConfirmDialog from "../ui/confirm-dialog";
 
 type LayersPanelProps = {
   isOpen: boolean;
@@ -37,6 +38,7 @@ const LayersPanel = ({
   const layerIdSet = new Set(layerIds);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   useEffect(() => {
     setSelectedIds((prev) => {
@@ -65,18 +67,18 @@ const LayersPanel = ({
     }
   };
 
+  // In-app dialog rather than window.confirm() — see ui/confirm-dialog.tsx for why
+  // the native one is unusable here (uncontrollable 'page at localhost says'
+  // heading, and a host WebView can suppress it entirely).
   const handleBulkDelete = () => {
     if (!selectedIds.length) return;
-    if (
-      confirm(
-        `Delete ${selectedIds.length} selected layer${
-          selectedIds.length > 1 ? "s" : ""
-        }?`
-      )
-    ) {
-      selectedIds.forEach((id) => deleteLayer(id));
-      setSelectedIds([]);
-    }
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmBulkDelete = () => {
+    setDeleteConfirmOpen(false);
+    selectedIds.forEach((id) => deleteLayer(id));
+    setSelectedIds([]);
   };
 
   const handleToggleVisibility = (layerId: string, visible: boolean) => {
@@ -117,19 +119,32 @@ const LayersPanel = ({
   };
 
   if (variant === "plain") {
+    // Fragment, not a bare LayersList: the dialog has to render in THIS path too.
+    // `plain` is what the Layers / Measurement consoles use (map/layers-box.tsx),
+    // and it returns before the SidebarGroup branch below — so a dialog placed
+    // only there never mounted here and Delete silently did nothing.
     return (
-      <LayersList
-        layers={nonSketchLayers}
-        enableSelection={enableSelection}
-        selectedIds={selectedIds}
-        onToggleSelect={toggleSelect}
-        onToggleSelectAll={toggleSelectAll}
-        onBulkDelete={handleBulkDelete}
-        onToggleVisibility={handleToggleVisibility}
-        onFocusLayer={focusLayer}
-        onBringToTop={bringLayerToTop}
-        onUpdateLayer={updateLayer}
-      />
+      <>
+        <LayersList
+          layers={nonSketchLayers}
+          enableSelection={enableSelection}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
+          onBulkDelete={handleBulkDelete}
+          onToggleVisibility={handleToggleVisibility}
+          onFocusLayer={focusLayer}
+          onBringToTop={bringLayerToTop}
+          onUpdateLayer={updateLayer}
+        />
+        <ConfirmDialog
+          open={deleteConfirmOpen}
+          title="Are you sure you want to delete selected layer/s?"
+          destructive
+          onConfirm={confirmBulkDelete}
+          onCancel={() => setDeleteConfirmOpen(false)}
+        />
+      </>
     );
   }
 
@@ -172,6 +187,14 @@ const LayersPanel = ({
         {/* Bottom fade gradient */}
         <div className="sticky bottom-0 h-6 bg-gradient-to-t from-background to-transparent pointer-events-none z-20 -mb-1" />
       </SidebarGroupContent>
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        title="Are you sure you want to delete selected layer/s?"
+        destructive
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setDeleteConfirmOpen(false)}
+      />
     </SidebarGroup>
   );
 };

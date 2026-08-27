@@ -793,6 +793,15 @@ export function GeodeticBasemapView({
         id: `geo-basemap-tiles|${baseUrl}|${vparam}`,
         TilesetClass,
         tileSize: config.tileSize,
+        // The pack's own zoom range, discovered from the served folder. maxZoom is
+        // the MAX NATIVE ZOOM, not a camera limit: zooming past it keeps drawing
+        // the deepest real level, upscaled, because getTileMetadata hands the
+        // BitmapLayer that tile's true geographic bounds.
+        //
+        // These two props are belt-and-braces. The clamp that actually decides the
+        // level is inside `tileZoomForOrtho` (lib/basemap/tileGrid.ts), which the
+        // getTileIndices override above calls — deck passes minZoom/maxZoom into
+        // getTileIndices, and that override does not read them.
         minZoom: config.minZoom,
         maxZoom: config.maxZoom,
         // 'best-available' → updateTileStateDefault: for each pending tile show the

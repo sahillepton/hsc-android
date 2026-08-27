@@ -69,11 +69,11 @@ import {
 import {
   calculateBearingDegrees,
   calculateDistanceMeters,
-  destinationPoint,
+  northReferencePoint,
   generateLayerId,
   isPointNearFirstPoint,
   getPolygonCloseThreshold,
-  normalizeAngleSigned,
+  azimuthDisplayAngle,
   computePolygonAreaMeters,
   computePolygonPerimeterMeters,
   calculateLayerZoomRange,
@@ -151,7 +151,15 @@ import {
 import {
   classifyTiles,
   resolveTilesConfig,
+  fetchPackInfo,
+  validateTileChoice,
+  projectionLabel,
+  PROJECTION_OPTIONS,
+  TILE_FORMAT_OPTIONS,
   type TilesConfig,
+  type Projection,
+  type PackInfo,
+  type TileChoiceProblem,
 } from "@/lib/basemap/tileConfig";
 import { mapboxZoomToOrtho, orthoZoomToMapbox } from "@/lib/basemap/tileGrid";
 import GeodeticBasemapView from "./geodetic-basemap-view";
@@ -163,6 +171,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import ConfirmDialog from "@/components/ui/confirm-dialog";
 
 /** Last path segment, lowercased (handles Windows `\\` and nested zip paths). */
 function fileBasenameLower(fileName: string): string {
@@ -328,7 +344,14 @@ async function applyVectorBasemap(
 }
 
 // Settings Button Component
-function SettingsButton() {
+//
+// Also hosts the two-step Map Tiles setup: step 1 picks the tiles folder, step 2
+// asks for the projection and tile format. Those two cannot be worked out from a
+// folder of `{z}/{x}/{y}` images (projection is not observable at all), which is
+// why they are asked once instead of being read from a config.txt the user would
+// otherwise have to author by hand. The zoom range IS observable, so it is read
+// off the served folder and only shown back as confirmation.
+function SettingsButton({ tileServerUrl }: { tileServerUrl: string | null }) {
   const [isOpen, setIsOpen] = useState(false);
   const isElectronBuild = !!(window as any).electronAPI;
 
@@ -352,8 +375,110 @@ function SettingsButton() {
 
   // Single custom base map folder (or the built-in default when none is set).
   const selectFolder = useBasemapStore((s) => s.selectFolder);
+  const setSourceConfig = useBasemapStore((s) => s.setSourceConfig);
+  const promptedForFolder = useBasemapStore((s) => s.promptedForFolder);
+  const markPromptedForFolder = useBasemapStore(
+    (s) => s.markPromptedForFolder,
+  );
   const activeSource = useActiveBasemapSource();
   const [pickingFolder, setPickingFolder] = useState(false);
+
+  // Which step of the Map Tiles setup is showing; null = just display the paths.
+  const [tileStep, setTileStep] = useState<null | "folder" | "config">(null);
+  // Step 2's pending selections (committed to the store on Apply, so a dismissed
+  // dialog changes nothing).
+  const [draftProjection, setDraftProjection] = useState<Projection | "">("");
+  const [draftFormat, setDraftFormat] = useState<string>("");
+  const [packInfo, setPackInfo] = useState<PackInfo | null>(null);
+  // A pick the folder contradicts, held until the user decides what to do.
+  const [mismatch, setMismatch] = useState<TileChoiceProblem | null>(null);
+
+  // The persisted store starts at its defaults and only becomes truthful once
+  // Preferences has been read back (async on both platforms). Without waiting,
+  // `promptedForFolder` reads false on every launch and the first-run prompt
+  // would reappear forever.
+  const [hydrated, setHydrated] = useState(
+    () => useBasemapStore.persist?.hasHydrated?.() ?? true,
+  );
+  useEffect(() => {
+    if (hydrated) return;
+    return useBasemapStore.persist.onFinishHydration(() => setHydrated(true));
+  }, [hydrated]);
+
+  // First launch: open the panel once, then never again. Dismissing it is fine —
+  // the built-in default basemap keeps working. An install that already has a
+  // folder from before this dialog existed starts at step 2 instead: it only
+  // needs the projection/format, not a re-pick of a path it already has.
+  useEffect(() => {
+    if (!hydrated || promptedForFolder) return;
+    markPromptedForFolder();
+    setIsOpen(true);
+    setTileStep(activeSource ? "config" : "folder");
+    // activeSource is read once, at the moment of the one-time prompt — it must
+    // not re-open the panel later when the source changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, promptedForFolder, markPromptedForFolder]);
+
+  // A source saved before this dialog existed (or one whose setup was dismissed)
+  // has no projection/format. Surface step 2 when the panel is opened so it can
+  // be completed, instead of leaving it silently guessing.
+  useEffect(() => {
+    if (!isOpen || tileStep !== null) return;
+    if (activeSource && !activeSource.projection) setTileStep("config");
+  }, [isOpen, tileStep, activeSource]);
+
+  // Prefill step 2 from whatever the source already has.
+  useEffect(() => {
+    if (tileStep !== "config") return;
+    setDraftProjection(activeSource?.projection ?? "");
+    setDraftFormat(activeSource?.format ?? "");
+  }, [tileStep, activeSource?.projection, activeSource?.format]);
+
+  // Read what the folder actually holds, for two purposes: showing the zoom range
+  // back to the user, and checking their picks against it on Apply. The deepest
+  // level is the pack's MAX NATIVE ZOOM — the last level with real tiles, past
+  // which the renderer upscales rather than requesting tiles that would 404. How
+  // far the user can zoom is not affected.
+  useEffect(() => {
+    if (tileStep !== "config" || !tileServerUrl || !activeSource) {
+      setPackInfo(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      // Same helper the renderer uses, so the dialog and the map can never
+      // disagree about what is on disk.
+      const info = await fetchPackInfo(`${tileServerUrl}/basemap`);
+      if (!cancelled) setPackInfo(info);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tileStep, tileServerUrl, activeSource]);
+
+  // Commit step 2. Split out so both the Apply button and the "use it anyway"
+  // branch of the mismatch warning go through exactly one code path.
+  const commitTileConfig = (projection: Projection, format: string) => {
+    if (!activeSource) return;
+    setSourceConfig(activeSource.id, { projection, format });
+    setMismatch(null);
+    setTileStep(null);
+  };
+
+  const applyTileConfig = () => {
+    if (!activeSource || !draftProjection || !draftFormat) return;
+    const problem = validateTileChoice(packInfo, {
+      projection: draftProjection,
+      format: draftFormat,
+    });
+    // Only a PROVABLE contradiction stops here; anything unverifiable applies
+    // straight away rather than nagging.
+    if (problem) {
+      setMismatch(problem);
+      return;
+    }
+    commitTileConfig(draftProjection, draftFormat);
+  };
 
   // Resolve actual Windows paths from Electron main process
   useEffect(() => {
@@ -395,6 +520,8 @@ function SettingsButton() {
       }
       if (picked) {
         selectFolder(basemapLabelFromPath(picked), picked);
+        // Step 1 done → ask for projection/format for the folder just picked.
+        setTileStep("config");
       }
     } catch (err) {
       console.error("[SettingsButton] Folder pick failed:", err);
@@ -459,6 +586,142 @@ function SettingsButton() {
                 <p className="text-xs text-slate-600 pl-4 font-mono break-all">
                   {displayTilesPath}
                 </p>
+
+                {/* Step 1 - choose the folder. Shown on first launch; after that
+                    the pencil above is the way in and goes straight to the native
+                    folder picker.
+
+                    No step heading and no dismiss button. The panel sits directly
+                    under the MAP TILES label and its copy says what to do, and
+                    closing the popover already means "not now" — a ✕ that only
+                    hid a panel with nothing to lose was pure height. */}
+                {tileStep === "folder" && (
+                  <div className="ml-4 mt-2 space-y-2 rounded border border-blue-200 bg-blue-50/60 p-2.5">
+                    <p className="text-xs text-slate-600">
+                      Pick the folder holding your{" "}
+                      <span className="font-mono">{"{z}/{x}/{y}"}</span> tiles, or
+                      close this panel to keep the built-in map.
+                    </p>
+                    <Button
+                      size="sm"
+                      className="h-7 w-full text-xs"
+                      onClick={handlePickFolder}
+                      disabled={pickingFolder}
+                    >
+                      {pickingFolder ? (
+                        <>
+                          <Loader2Icon className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          Opening...
+                        </>
+                      ) : (
+                        "Browse..."
+                      )}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Step 2 - projection + format. Asked because neither can be
+                    detected from a folder of tiles; the zoom range below IS
+                    detected, and is shown read-only. */}
+                {tileStep === "config" && (
+                  <div className="ml-4 mt-2 space-y-2 rounded border border-blue-200 bg-blue-50/60 p-2.5">
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Projection
+                      </span>
+                      <Select
+                        value={draftProjection}
+                        onValueChange={(v) =>
+                          setDraftProjection(v as Projection)
+                        }
+                      >
+                        <SelectTrigger
+                          size="sm"
+                          className="w-full bg-white px-2 py-0 text-xs data-[size=sm]:h-7"
+                        >
+                          <SelectValue placeholder="Select projection" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PROJECTION_OPTIONS.map((o) => (
+                            <SelectItem
+                              key={o.value}
+                              value={o.value}
+                              className="py-1 text-xs"
+                            >
+                              {o.label} ({o.code})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Tile format
+                      </span>
+                      <Select value={draftFormat} onValueChange={setDraftFormat}>
+                        <SelectTrigger
+                          size="sm"
+                          className="w-full bg-white px-2 py-0 text-xs data-[size=sm]:h-7"
+                        >
+                          <SelectValue placeholder="Select format" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {TILE_FORMAT_OPTIONS.map((o) => (
+                            <SelectItem
+                              key={o.value}
+                              value={o.value}
+                              className="py-1 text-xs"
+                            >
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <p className="text-[11px] text-slate-500">
+                      {packInfo
+                        ? `Zoom levels found: ${packInfo.minZoom}-${packInfo.maxZoom} (max native zoom ${packInfo.maxZoom})`
+                        : "Zoom levels are detected from the folder."}
+                    </p>
+
+                    {/* Apply only. "Back" duplicated the ✎ beside the path above,
+                        which is how the folder is changed everywhere else in this
+                        panel. */}
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        className="h-7 text-xs"
+                        disabled={
+                          !activeSource || !draftProjection || !draftFormat
+                        }
+                        onClick={applyTileConfig}
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Settled state: how the folder is being read, with a way back
+                    into step 2 that skips re-picking the folder. */}
+                {tileStep === null && activeSource?.projection && (
+                  <button
+                    type="button"
+                    className="ml-4 mt-0.5 flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-700"
+                    title="Change projection or tile format"
+                    onClick={() => setTileStep("config")}
+                  >
+                    <span className="uppercase">
+                      {projectionLabel(activeSource.projection)}
+                      {" / "}
+                      {/* the option label would read "PNG (.png)" - extension only */}
+                      {activeSource.format?.toUpperCase()}
+                    </span>
+                    <Pencil className="h-2.5 w-2.5" />
+                  </button>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -488,6 +751,53 @@ function SettingsButton() {
           </div>
         </PopoverContent>
       </Popover>
+
+      {/* A pick the folder contradicts. Reuses the app's ConfirmDialog rather
+          than a native alert(), which in a WebView shows a "localhost says"
+          heading and cannot be styled. The confirm action is the FIX, since that
+          is what the user almost always wants; keeping the original pick stays
+          possible because the check can only see the shallowest level and a hand
+          built pack may legitimately be mixed. */}
+      <ConfirmDialog
+        open={mismatch !== null}
+        title={
+          mismatch?.kind === "format"
+            ? "These tiles are not " + mismatch.chosen.toUpperCase()
+            : "These tiles are not " + projectionLabel("epsg3857")
+        }
+        description={
+          mismatch?.kind === "format"
+            ? `The folder holds .${mismatch.actual} tiles, but ${mismatch.chosen.toUpperCase()} is selected. Keeping ${mismatch.chosen.toUpperCase()} will show a blank map. Switch to ${mismatch.actual.toUpperCase()}?`
+            : mismatch
+              ? `This folder has more columns than a ${projectionLabel("epsg3857")} grid can have, so it must be ${projectionLabel("epsg4326")}. Keeping ${projectionLabel("epsg3857")} will show a blank or distorted map. Switch to ${projectionLabel("epsg4326")}?`
+              : undefined
+        }
+        confirmLabel={
+          mismatch?.kind === "format"
+            ? `Use ${mismatch.actual.toUpperCase()}`
+            : `Use ${projectionLabel("epsg4326")}`
+        }
+        cancelLabel="Keep my choice"
+        onConfirm={() => {
+          if (!mismatch) return;
+          // Apply the correction, and reflect it in the dropdowns so the panel
+          // does not keep showing the value that was just rejected.
+          if (mismatch.kind === "format") {
+            setDraftFormat(mismatch.actual);
+            commitTileConfig(draftProjection as Projection, mismatch.actual);
+          } else {
+            setDraftProjection(mismatch.actual);
+            commitTileConfig(mismatch.actual, draftFormat);
+          }
+        }}
+        // "Keep my choice" (and a backdrop click) applies exactly what was
+        // picked. The check only samples the shallowest level, so a hand-built
+        // pack could legitimately contradict it - the user stays in charge.
+        onCancel={() => {
+          if (!mismatch) return;
+          commitTileConfig(draftProjection as Projection, draftFormat);
+        }}
+      />
     </div>
   );
 }
@@ -718,8 +1028,9 @@ const MapComponent = ({
   const { mousePosition, setMousePosition } = useMousePosition();
   const { layers, addLayer, setLayers, bringLayerToTop } = useLayers();
   // const { setNodeIconMappings } = useNodeIconMappings();
-  const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
-  const { drawingMode } = useDrawingMode();
+  const { focusLayerRequest, setFocusLayerRequest, focusLayer } =
+    useFocusLayerRequest();
+  const { drawingMode, setDrawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
@@ -763,6 +1074,106 @@ const MapComponent = ({
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
   const [isNetworkBoxOpen, setIsNetworkBoxOpen] = useState(false);
   const [isRoutePanelOpen, setIsRoutePanelOpen] = useState(false);
+
+  // ── Android hardware / system BACK button ─────────────────────────────────
+  //
+  // Nothing listened for it at all, so on the GIS screen the button did nothing:
+  // Capacitor does not wire a default, and because this app never pushes History
+  // entries the WebView had nothing to pop either. That is why it was dead in both
+  // the standalone APK and the integrated host app.
+  //
+  // Back now dismisses ONE layer of UI per press, innermost first, which is the
+  // Android convention. Only the last case is delegated to the host: with nothing
+  // open we do NOT call App.exitApp() ourselves — in an integrated build the GIS
+  // screen is one screen inside someone else's activity stack, and killing the
+  // process would be hostile. Returning without calling preventDefault lets the
+  // host decide (pop its own back stack, or exit if it is the root).
+  const backHandlerStateRef = useRef({
+    hoverInfo: false,
+    drawingMode: false,
+    rubberBandMode: false,
+    isRoutePanelOpen: false,
+    isMeasurementBoxOpen: false,
+    isNetworkBoxOpen: false,
+    isLayersBoxOpen: false,
+  });
+  backHandlerStateRef.current = {
+    hoverInfo: !!hoverInfo,
+    drawingMode: !!drawingMode,
+    rubberBandMode,
+    isRoutePanelOpen,
+    isMeasurementBoxOpen,
+    isNetworkBoxOpen,
+    isLayersBoxOpen: !!isLayersBoxOpen,
+  };
+  // Latest closers, read through a ref so the listener is registered ONCE and
+  // never re-attached (a re-attach races with the native listener list and can
+  // drop presses).
+  const backHandlerActionsRef = useRef<() => boolean>(() => false);
+  backHandlerActionsRef.current = () => {
+    const st = backHandlerStateRef.current;
+    // 1. A tooltip is the lightest thing on screen — dismiss it first.
+    if (st.hoverInfo) {
+      setHoverInfo(undefined);
+      return true;
+    }
+    // 2. An in-progress sketch: cancel the mode and drop the partial geometry,
+    //    so back behaves like "abandon this drawing" rather than leaving a
+    //    half-drawn path armed.
+    if (st.drawingMode) {
+      setDrawingMode(null);
+      setIsDrawing(false);
+      setCurrentPath([]);
+      setPendingPolygonPoints([]);
+      return true;
+    }
+    if (st.rubberBandMode) {
+      setRubberBandMode(false);
+      return true;
+    }
+    if (st.isRoutePanelOpen) {
+      setIsRoutePanelOpen(false);
+      return true;
+    }
+    // 3. Panels, outermost UI last.
+    if (st.isMeasurementBoxOpen) {
+      setIsMeasurementBoxOpen(false);
+      return true;
+    }
+    if (st.isNetworkBoxOpen) {
+      setIsNetworkBoxOpen(false);
+      return true;
+    }
+    if (st.isLayersBoxOpen) {
+      onToggleLayersBox?.();
+      return true;
+    }
+    return false; // nothing of ours to close — let the host handle it
+  };
+
+  useEffect(() => {
+    let listener: { remove: () => void } | undefined;
+    let removed = false;
+
+    (async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        const l = await App.addListener("backButton", () => {
+          backHandlerActionsRef.current();
+        });
+        if (removed) l.remove();
+        else listener = l;
+      } catch {
+        // Not running under Capacitor (browser / Electron) — nothing to bind.
+      }
+    })();
+
+    return () => {
+      removed = true;
+      listener?.remove();
+    };
+  }, []);
+
   const [routeState, setRouteState] = useState<RouteToolState>(
     initialRouteToolState,
   );
@@ -1756,7 +2167,7 @@ const MapComponent = ({
 
   // Apply the active custom base map (Storage Paths → Map Tiles → ✎). Inert while
   // activeId === null (built-in default vector) so the current basemap is untouched
-  // until a folder is picked; then the folder's config.txt decides the render path.
+  // until a folder is picked; then the picked projection/format decide the path.
   useEffect(() => {
     const wrap = mapRef.current;
     if (!wrap) return;
@@ -1818,7 +2229,12 @@ const MapComponent = ({
       }
       if (cancelled) return;
 
-      const cfg = await resolveTilesConfig(`${tileServerUrl}/basemap`);
+      // Projection/format come from what the user picked for THIS source; the zoom
+      // range is read off the served folder. Nothing is read from config.txt.
+      const cfg = await resolveTilesConfig(`${tileServerUrl}/basemap`, {
+        projection: active.projection,
+        format: active.format,
+      });
       if (cancelled) return;
 
       const kind = classifyTiles(cfg);
@@ -3688,6 +4104,7 @@ const MapComponent = ({
   //   loadNodeData();
   // }, []);
 
+  /** Returns the new layer's id so a caller can focus it (existing callers ignore it). */
   const createPointLayer = (position: [number, number]) => {
     const newLayer: LayerProps = {
       type: "point",
@@ -3701,7 +4118,51 @@ const MapComponent = ({
     addLayer(newLayer);
     lastLayerCreationTimeRef.current = Date.now();
     setHoverInfo(undefined); // Clear tooltip when creating a layer
+    return newLayer.id;
   };
+
+  /**
+   * Plot a sketch point from typed coordinates, then focus it.
+   *
+   * Exists because the poles are effectively untappable: at 90°N there is nothing
+   * to aim at, and on a Web-Mercator base map latitudes past ±85.0511° cannot be
+   * displayed at all. Typing the numbers is the only way to place a point there.
+   *
+   * The latitude limit is PROJECTION-DEPENDENT and mirrors the map-click guard
+   * exactly (see handleMapClick): ±90° while a 4326 / plate-carrée base map is
+   * active, ±85.0511° on Mercator. Returning a message instead of a boolean lets
+   * the dialog explain WHY a value was refused rather than just rejecting it.
+   */
+  const plotPointFromCoordinates = useCallback(
+    (latitude: number, longitude: number): string | null => {
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return "Enter a valid latitude and longitude.";
+      }
+      const isGeodetic = !!geodeticBasemapRef.current;
+      const maxLat = isGeodetic ? 90 : MAX_MERCATOR_LATITUDE;
+      if (Math.abs(latitude) > maxLat) {
+        return isGeodetic
+          ? "Latitude must be between -90° and 90°."
+          : `This base map is Web Mercator, which cannot show beyond ±${MAX_MERCATOR_LATITUDE.toFixed(
+              4,
+            )}°. Switch to an EPSG:4326 base map to plot nearer the poles.`;
+      }
+      if (Math.abs(longitude) > 180) {
+        return "Longitude must be between -180° and 180°.";
+      }
+      const id = createPointLayer([longitude, latitude]);
+      // Focus through the shared request so it works on BOTH renderers — mapbox
+      // flyTo and the geodetic OrthographicView — and honours the layer's zoom band.
+      try {
+        focusLayer(id);
+      } catch {
+        /* a point always has bounds; ignore a focus failure rather than lose the point */
+      }
+      return null;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layers, addLayer, focusLayer],
+  );
 
   const closeRing = (path: [number, number][]) => {
     if (!path.length) return path;
@@ -3885,7 +4346,7 @@ const MapComponent = ({
     const distanceMeters = calculateDistanceMeters(center, target);
     const azimuthAngle = calculateBearingDegrees(center, target);
     const referenceDistance = Math.max(distanceMeters, 1000);
-    const northPoint = destinationPoint(center, referenceDistance, 0);
+    const northPoint = northReferencePoint(center, referenceDistance);
 
     const azimuthCount = layers.filter((l) => l.type === "azimuth").length;
     const newLayer: LayerProps = {
@@ -5955,8 +6416,7 @@ const MapComponent = ({
           const [tLng, tLat] = layer.azimuthTarget;
           const labelLng = cLng + (tLng - cLng) * 0.4;
           const labelLat = cLat + (tLat - cLat) * 0.4;
-          let signedAngle = normalizeAngleSigned(layer.azimuthAngleDeg);
-          if (signedAngle === -180) signedAngle = 180;
+          const signedAngle = azimuthDisplayAngle(layer.azimuthAngleDeg);
           return {
             position: [labelLng, labelLat] as [number, number],
             text: `${signedAngle.toFixed(1)}°`,
@@ -6269,7 +6729,7 @@ const MapComponent = ({
       const center = currentPath[0];
       const distanceMeters = calculateDistanceMeters(center, mousePosition);
       const referenceDistance = Math.max(distanceMeters, 1000);
-      const northPoint = destinationPoint(center, referenceDistance, 0);
+      const northPoint = northReferencePoint(center, referenceDistance);
       const angleDeg = calculateBearingDegrees(center, mousePosition);
       const labelLng = center[0] + (mousePosition[0] - center[0]) * 0.4;
       const labelLat = center[1] + (mousePosition[1] - center[1]) * 0.4;
@@ -6302,8 +6762,7 @@ const MapComponent = ({
         }),
       );
       if (distanceMeters > 5) {
-        let signedPreviewAngle = normalizeAngleSigned(angleDeg);
-        if (signedPreviewAngle === -180) signedPreviewAngle = 180;
+        const signedPreviewAngle = azimuthDisplayAngle(angleDeg);
         previewLayers.push(
           new TextLayer({
             id: "preview-azimuth-angle-label",
@@ -7122,7 +7581,7 @@ const MapComponent = ({
 
       <Tooltip />
       {/* Settings Button with Paths Info */}
-      <SettingsButton />
+      <SettingsButton tileServerUrl={tileServerUrl} />
       {/* COMMENTED OUT: HTML file input - using NativeUploader directly to avoid double picker */}
       <ZoomControls
         mapRef={mapRef}
@@ -7167,6 +7626,12 @@ const MapComponent = ({
         onResetHome={handleResetHome}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
+        onPlotCoordinate={plotPointFromCoordinates}
+        // The displayable latitude depends on the ACTIVE projection: a 4326 /
+        // plate-carrée base map reaches the poles, Web Mercator stops at
+        // ±85.0511°. Passing it lets the dialog state the limit up front and
+        // validate against the right one.
+        maxLatitude={geodeticBasemap ? 90 : MAX_MERCATOR_LATITUDE}
         onCaptureScreenshot={handleCaptureScreenshot}
         showUserLocation={showUserLocation}
         isProcessingFiles={isProcessingFiles}

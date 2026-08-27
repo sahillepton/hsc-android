@@ -3,7 +3,8 @@ import { registerPlugin } from "@capacitor/core";
 /** Tooltip → native: only these two fields are sent. */
 export interface MemberActionData {
   globalId: string;
-  action: "video" | "ftp" | "call" | "message";
+  /** "stream" added for BugID 285; native passes the string through verbatim. */
+  action: "video" | "ftp" | "call" | "message" | "stream";
 }
 
 export interface MemberActionPlugin {

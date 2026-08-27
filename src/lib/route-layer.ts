@@ -8,14 +8,44 @@ import { calculateIgrs } from "./utils";
 
 export const SHORTEST_ROUTE_LAYER_PREFIX = "Shortest Route";
 
+/**
+ * Feature properties that are the route's own bookkeeping, not user data.
+ *
+ * They are written by buildShortestRouteGeoJSON and are already surfaced as the
+ * proper From / To / Distance rows, so showing them again as raw attributes is
+ * duplication — and it is what pushed the route tooltip past its height cap and
+ * gave it a scrollbar. Shared so the tooltip's default filter and the settings
+ * panel's default SELECTION cannot drift apart.
+ */
+export const SHORTEST_ROUTE_INTERNAL_PROPS = [
+  "shortestRoute",
+  "lineColor",
+  "distanceMeters",
+] as const;
+
 export const SHORTEST_ROUTE_LINE_COLOR: [number, number, number] = [
   245, 158, 11,
 ];
 
 export function isShortestRouteLayer(layer: LayerProps): boolean {
-  return (
-    layer.type === "geojson" &&
-    (layer.name || "").startsWith(SHORTEST_ROUTE_LAYER_PREFIX)
+  if (layer.type !== "geojson") return false;
+  // Name is the fast path for routes created in this session.
+  if ((layer.name || "").startsWith(SHORTEST_ROUTE_LAYER_PREFIX)) return true;
+  // Otherwise trust the DATA. Identity used to be the name prefix alone, which
+  // does not survive a round trip: exporting sanitises the name for the filename
+  // ("Shortest Route 1" -> "Shortest_Route_1", see file-section.tsx) and the
+  // re-imported layer takes that filename as its name. The underscore form failed
+  // the prefix test, so a re-imported route stopped being a route — which is why
+  //   • its tooltip/panel row lost the "(lat, lng to lat, lng)" subtitle, and
+  //   • nextShortestRouteName() no longer counted it, handing the next route the
+  //     number 1 again; both then sanitised to the same filename and the export
+  //     failed with a duplicate-name error.
+  // `properties.shortestRoute` is written by buildShortestRouteGeoJSON and IS
+  // carried through the .geojson file, so it survives the round trip.
+  const features = layer.geojson?.features;
+  if (!Array.isArray(features) || features.length === 0) return false;
+  return features.some(
+    (f) => (f?.properties as { shortestRoute?: unknown } | null)?.shortestRoute === true,
   );
 }
 
@@ -123,7 +153,21 @@ export function nextShortestRouteName(layers: LayerProps[]): string {
   for (const l of layers) {
     if (!isShortestRouteLayer(l)) continue;
     const m = (l.name || "").match(
-      new RegExp(`^${SHORTEST_ROUTE_LAYER_PREFIX}\\s+(\\d+)\\s*$`),
+      // Accept the sanitised form too: exporting rewrites the name for the
+      // filename ("Shortest Route 1" -> "Shortest_Route_1", file-section.tsx) and
+      // a re-imported layer carries that name. Matching only the spaced form sent
+      // every underscored route to the `else` branch below, which caps `highest`
+      // at 1 — so two imported routes still produced number 2 and collided on
+      // export again.
+      //
+      // Deliberately backslash-free ([ _] not [\s_], [0-9] not \d): the separator
+      // can only ever be a space or the underscore the sanitiser writes, and an
+      // escaped class here is easy to get silently wrong in a nested string.
+      new RegExp(
+        "^" +
+          SHORTEST_ROUTE_LAYER_PREFIX.replace(/ +/g, "[ _]+") +
+          "[ _]+([0-9]+)[ _]*$",
+      ),
     );
     if (m) {
       const n = parseInt(m[1], 10);

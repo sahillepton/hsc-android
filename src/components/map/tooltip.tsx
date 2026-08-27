@@ -7,9 +7,10 @@ import {
 } from "@/lib/utils";
 import {
   TOOLTIP_DEFAULT_ATTR_LIMIT,
+  TOPOLOGY_ALTITUDE_RESOLUTION_M,
 } from "@/lib/constants";
 import {
-  normalizeAngleSigned,
+  azimuthDisplayAngle,
   computePolygonPerimeterMeters,
   computePolygonAreaMeters,
   isStoreLayerPickObject,
@@ -21,7 +22,13 @@ import {
   useUserLocation,
 } from "@/store/layers-store";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Video, Upload, MessageSquare, PhoneCall } from "lucide-react";
+import {
+  Video,
+  Upload,
+  MessageSquare,
+  PhoneCall,
+  MonitorPlay,
+} from "lucide-react";
 import {
   TooltipBox,
   TooltipHeading,
@@ -40,18 +47,16 @@ import {
 import { useUdpDataStore } from "@/store/udp-data-store";
 import {
   isShortestRouteLayer,
-  getShortestRouteCoordinateSubtitle,
+  SHORTEST_ROUTE_INTERNAL_PROPS,
 } from "@/lib/route-layer";
 import {
   RASTER_TOOLTIP_ATTRIBUTES,
   isRasterTooltipAttrShown,
 } from "@/lib/raster-tooltip-attributes";
 
-const SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS = new Set([
-  "shortestRoute",
-  "lineColor",
-  "distanceMeters",
-]);
+const SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS = new Set<string>(
+  SHORTEST_ROUTE_INTERNAL_PROPS,
+);
 
 /**
  * Topology → native `globalId`: IPv4 from `object.ip`, or `"Unknown"` if missing/invalid.
@@ -206,13 +211,17 @@ const Tooltip = () => {
   const { layers } = useLayers();
   const useIgrs = useIgrsPreference();
   const { showUserLocation, userLocation } = useUserLocation();
-  const [coarsePointer, setCoarsePointer] = useState(() =>
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(pointer: coarse)").matches,
+  const [coarsePointer, setCoarsePointer] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: coarse)").matches,
   );
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function")
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    )
       return;
     const mq = window.matchMedia("(pointer: coarse)");
     const apply = () => setCoarsePointer(mq.matches);
@@ -245,6 +254,11 @@ const Tooltip = () => {
   const topologyConnections = useUdpDataStore(
     (s) => s.udpData.topology.connections,
   );
+  // Live mother-node id (topoForMcsa.node_id). Read from the store rather than
+  // relying only on the `isMotherNode` flag baked into the picked data item, so a
+  // change of mother between taps is reflected — the same reason the node and
+  // connection tooltips above follow live data.
+  const motherNodeId = useUdpDataStore((s) => s.udpData.topology.motherNodeId);
 
   // Lazy-load native feature map when user opens the topology tooltip (Android integrated / GIS APK).
   useEffect(() => {
@@ -363,10 +377,7 @@ const Tooltip = () => {
         }
 
         // Live topology node — follow UDP position between taps (pick snapshot is stale).
-        if (
-          deckLayerId === "udp-topology-nodes-layer" &&
-          hoverInfo.object
-        ) {
+        if (deckLayerId === "udp-topology-nodes-layer" && hoverInfo.object) {
           const globalId = (hoverInfo.object as { globalId?: number }).globalId;
           const live =
             globalId !== undefined ? topologyNodes.get(globalId) : undefined;
@@ -391,8 +402,10 @@ const Tooltip = () => {
             from?: { longitude: number; latitude: number };
             to?: { longitude: number; latitude: number };
           };
-          const f = o.fromId !== undefined ? topologyNodes.get(o.fromId) : undefined;
-          const t = o.toId !== undefined ? topologyNodes.get(o.toId) : undefined;
+          const f =
+            o.fromId !== undefined ? topologyNodes.get(o.fromId) : undefined;
+          const t =
+            o.toId !== undefined ? topologyNodes.get(o.toId) : undefined;
           if (f && t) {
             lng = (f.long + t.long) / 2;
             lat = (f.lat + t.lat) / 2;
@@ -431,7 +444,8 @@ const Tooltip = () => {
         const gCoords = geom?.coordinates;
 
         const setAnchor = (c: LngLat | null | undefined): boolean => {
-          if (!c || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) return false;
+          if (!c || !Number.isFinite(c[0]) || !Number.isFinite(c[1]))
+            return false;
           lng = c[0];
           lat = c[1];
           return true;
@@ -446,10 +460,7 @@ const Tooltip = () => {
             !Array.isArray(gCoords[0])
           ) {
             setAnchor([gCoords[0], gCoords[1]]);
-          } else if (
-            Array.isArray(obj?.position) &&
-            obj.position.length >= 2
-          ) {
+          } else if (Array.isArray(obj?.position) && obj.position.length >= 2) {
             // Sketch point layers: the deck data item IS the store layer.
             setAnchor([obj.position[0], obj.position[1]]);
           } else if (
@@ -571,8 +582,7 @@ const Tooltip = () => {
             for (const path of linePathsForSnap) {
               let prev: { x: number; y: number } | null = null;
               for (const v of path) {
-                const cur =
-                  v.length >= 2 ? projectLngLat(v[0], v[1]) : null;
+                const cur = v.length >= 2 ? projectLngLat(v[0], v[1]) : null;
                 if (prev && cur) {
                   const c = closestPointOnSegment(
                     [pickedPx.x, pickedPx.y],
@@ -839,8 +849,7 @@ const Tooltip = () => {
 
       // Row selection from the layer's "Tooltip Attributes" panel. Unconfigured
       // (undefined) shows every row.
-      const showRow = (key: string) =>
-        isRasterTooltipAttrShown(layerInfo, key);
+      const showRow = (key: string) => isRasterTooltipAttrShown(layerInfo, key);
 
       const properties: { label: string; value: string }[] = [];
       if (useIgrs) {
@@ -1044,8 +1053,10 @@ const Tooltip = () => {
       const o = object as any;
       // Re-read the endpoints from the LIVE node map (fall back to the click-time
       // snapshot), so coordinates + distance update as the aircraft move.
-      const liveFrom = o.fromId !== undefined ? topologyNodes.get(o.fromId) : undefined;
-      const liveTo = o.toId !== undefined ? topologyNodes.get(o.toId) : undefined;
+      const liveFrom =
+        o.fromId !== undefined ? topologyNodes.get(o.fromId) : undefined;
+      const liveTo =
+        o.toId !== undefined ? topologyNodes.get(o.toId) : undefined;
       const from: [number, number] = liveFrom
         ? [liveFrom.long, liveFrom.lat]
         : [o.from.longitude, o.from.latitude];
@@ -1067,7 +1078,10 @@ const Tooltip = () => {
           label: "Distance",
           value: `${parseFloat(getDistance(from, to)).toFixed(2)} km`,
         },
-        { label: `From (${coordinateLabel})`, value: formatCoordinatePair(from) },
+        {
+          label: `From (${coordinateLabel})`,
+          value: formatCoordinatePair(from),
+        },
         { label: `To (${coordinateLabel})`, value: formatCoordinatePair(to) },
       );
       return (
@@ -1117,17 +1131,34 @@ const Tooltip = () => {
       ) {
         properties.push({
           label: "Altitude",
-          value: `${Number(object.altitude).toFixed(0)} m`,
+          // Wire value is in units of 4 feet, so scale to metres before showing
+          // it, at 2 dp (HSC, 17 Aug). It used to print the raw UINT16 with
+          // `toFixed(0)` and an "m" suffix, which was wrong by a factor of 1.2192.
+          value: `${(
+            Number(object.altitude) * TOPOLOGY_ALTITUDE_RESOLUTION_M
+          ).toFixed(2)} m`,
         });
       }
+
+      // Is this the mother node? The live id from the store WINS when we have one;
+      // the `isMotherNode` flag that udp-layers.tsx bakes into the data item is only
+      // a fallback for when we do not.
+      //
+      // The two must not be OR-ed: the flag is a snapshot from when the node was
+      // tapped, so if the mother moves to another node afterwards the old node still
+      // carries `isMotherNode: true` and an OR would keep labelling it "Mother Node"
+      // when it no longer is. Live data overriding the snapshot is the whole point.
+      const pickedGlobalId = (object as { globalId?: unknown }).globalId;
+      const isMotherNode =
+        motherNodeId !== null && typeof pickedGlobalId === "number"
+          ? pickedGlobalId === motherNodeId
+          : (object as { isMotherNode?: unknown }).isMotherNode === true;
 
       const displayProperties = Object.entries(object)
         .filter(
           ([key, value]) =>
             importantKeys.includes(key) &&
-            !(
-              layer.id === "udp-topology-nodes-layer" && key === "altitude"
-            ) &&
+            !(layer.id === "udp-topology-nodes-layer" && key === "altitude") &&
             value !== undefined &&
             value !== null &&
             typeof value !== "object",
@@ -1143,7 +1174,7 @@ const Tooltip = () => {
       const useGridLayout = displayProperties.length > 8;
 
       const notifyUdpMemberAction = async (
-        action: "video" | "ftp" | "call" | "message",
+        action: "video" | "ftp" | "call" | "message" | "stream",
         fallbackAlert: string,
       ) => {
         if (layer.id !== "udp-topology-nodes-layer") {
@@ -1194,7 +1225,9 @@ const Tooltip = () => {
               layer.id === "udp-network-members-layer"
                 ? "Network Member"
                 : layer.id === "udp-topology-nodes-layer"
-                  ? "Topology Node"
+                  ? isMotherNode
+                    ? "Mother Node"
+                    : "Topology Node"
                   : "Target"
             }
           />
@@ -1215,7 +1248,7 @@ const Tooltip = () => {
                 aria-busy="true"
                 aria-label="Loading actions"
               >
-                {[0, 1, 2, 3].map((i) => (
+                {[0, 1, 2, 3, 4].map((i) => (
                   <div
                     key={i}
                     className="h-8 rounded-md bg-neutral-700/40 animate-pulse"
@@ -1293,6 +1326,26 @@ const Tooltip = () => {
                     <span>Message</span>
                   </button>
                 )}
+                {/* Streaming — BugID 285. Same availability rule as the others
+                    (a feature id present in this IP's list), and the callback sends
+                    the literal action "stream", which native forwards verbatim. */}
+                {topologyActions.stream && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void notifyUdpMemberAction(
+                        "stream",
+                        "Streaming initiated",
+                      );
+                    }}
+                    className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-white rounded-md transition-all hover:opacity-90"
+                    style={{ backgroundColor: "#5B21B6" }}
+                    title="Streaming"
+                  >
+                    <MonitorPlay size={12} />
+                    <span>Stream</span>
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -1308,10 +1361,9 @@ const Tooltip = () => {
 
     if (layerInfo?.type === "azimuth") {
       const isNorthSegment = (object as any)?.segmentType === "north";
-      let angleDeg = isNorthSegment
+      const angleDeg = isNorthSegment
         ? 0
-        : normalizeAngleSigned(layerInfo.azimuthAngleDeg ?? 0);
-      if (angleDeg === -180) angleDeg = 180;
+        : azimuthDisplayAngle(layerInfo.azimuthAngleDeg ?? 0);
       const distanceMeters = isNorthSegment
         ? undefined
         : layerInfo.distanceMeters;
@@ -1500,8 +1552,7 @@ const Tooltip = () => {
         });
       }
 
-      const isShortestRoute =
-        !!layerInfo && isShortestRouteLayer(layerInfo);
+      const isShortestRoute = !!layerInfo && isShortestRouteLayer(layerInfo);
 
       if (
         isShortestRoute &&
@@ -1598,7 +1649,11 @@ const Tooltip = () => {
         if (!useIgrs || !coordAttrKeys) return null;
         const igrs = calculateIgrs(coordAttrKeys.lon, coordAttrKeys.lat);
         if (!igrs) return null; // outside the IGRS window — keep the raw columns
-        return { latKey: coordAttrKeys.latKey, lonKey: coordAttrKeys.lonKey, igrs };
+        return {
+          latKey: coordAttrKeys.latKey,
+          lonKey: coordAttrKeys.lonKey,
+          igrs,
+        };
       })();
 
       /**
@@ -1607,7 +1662,11 @@ const Tooltip = () => {
        * pair, so ordering is unchanged) and the longitude row is dropped, since
        * both numbers are already inside the one reference.
        */
-      const pushAttrRow = (key: string, value: unknown, missingAsDash = false) => {
+      const pushAttrRow = (
+        key: string,
+        value: unknown,
+        missingAsDash = false,
+      ) => {
         if (igrsAttrPair) {
           if (key === igrsAttrPair.lonKey) return;
           if (key === igrsAttrPair.latKey) {
@@ -1639,7 +1698,9 @@ const Tooltip = () => {
           .filter(
             ([key, value]) =>
               isMeaningfulPropertyValue(value) &&
-              !(isShortestRoute && SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS.has(key)),
+              !(
+                isShortestRoute && SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS.has(key)
+              ),
           )
           .sort(([a], [b]) => a.localeCompare(b));
         const shown = meaningful.slice(0, TOOLTIP_DEFAULT_ATTR_LIMIT);
@@ -1662,7 +1723,17 @@ const Tooltip = () => {
           });
       }
 
-      const useGridLayout = tooltipProperties.length > 10;
+      // Threshold 8, matching the raster branch above (which already used 8).
+      //
+      // It was 10, and that one-row cliff caused a real regression: removing the
+      // synthetic "Coordinates" row took a typical feature from 11 rows to 10,
+      // flipping this false. The box then switched from the 2-column 380px grid to
+      // the 1-column 200px layout, roughly doubling its height, overflowing the
+      // 60vh cap below and growing a scrollbar — for a feature that had fitted
+      // fine a moment earlier. 8 also means 9- and 10-row features now use the
+      // grid, which they should have all along: at ~46px per row they exceeded
+      // 60vh in a single column on any normal screen.
+      const useGridLayout = tooltipProperties.length > 8;
 
       return (
         <TooltipBox
@@ -1685,12 +1756,13 @@ const Tooltip = () => {
               // Use the layer's actual (renamable) name, not the hardcoded
               // "Shortest Route" prefix — otherwise a rename never shows here.
               title={layerInfo.name}
-              subtitle={
-                isShortestRoute
-                  ? (getShortestRouteCoordinateSubtitle(layerInfo, useIgrs) ??
-                    `${geometryType} Feature`)
-                  : `${geometryType} Feature`
-              }
+              // No subheading for a shortest route. It used to print the
+              // coordinate pair "(lat, lng to lat, lng)", which repeated the
+              // From / To rows sitting immediately below it — and cost two lines
+              // of height in a box already capped at 60vh. The layer card in the
+              // console still shows that subtitle, where there are no From / To
+              // rows to duplicate.
+              subtitle={isShortestRoute ? undefined : `${geometryType} Feature`}
             />
           )}
           <TooltipProperties

@@ -1,11 +1,16 @@
 /**
- * Basemap tile-set descriptor: the `config.txt` a tiles folder carries, plus the
- * projection/grid model derived from it.
+ * Basemap tile-set descriptor: how to read a `{z}/{x}/{y}.{ext}` tiles folder.
  *
- * A tiles folder holds a `{z}/{x}/{y}.{ext}` pyramid and an optional `config.txt`
- * describing how to read it. This mirrors the descriptor produced by the
- * `generate_wgs84_tiles.py` tool and consumed by the reference COP viewer, so the
- * same tile sets are portable between the two apps.
+ * The two things that cannot be worked out from the tiles themselves — the
+ * PROJECTION and the FORMAT — are asked of the user in the Map Tiles dialog and
+ * stored on the source; everything else is discovered from the served folder (see
+ * `resolveTilesConfig` below). A `config.txt` descriptor is no longer read: it
+ * carried only these same fields, and a second source of truth meant the same pack
+ * could render differently depending on whether someone had dropped a descriptor
+ * beside the tiles.
+ *
+ * For reference, the descriptor the `generate_wgs84_tiles.py` tool emits looks
+ * like this — the first two lines are what the dialog now asks for:
  *
  *     projection = EPSG:4326     # EPSG:4326 (geodetic) | EPSG:3857 (web mercator)
  *     format     = png           # png | jpg | jpeg | webp | pbf
@@ -35,13 +40,65 @@ export interface TilesConfig {
   /** Row order: xyz = y0 at north (default), tms = y0 at south. */
   scheme: "xyz" | "tms";
   tileSize: number;
+  /** Shallowest zoom level present in the pack. */
   minZoom: number;
+  /**
+   * MAX NATIVE ZOOM: the deepest level that actually has tiles.
+   *
+   * NOT a camera limit — how far the user may zoom stays MAP_MAX_ZOOM. This is the
+   * level past which no deeper tile is requested and the renderer upscales the last
+   * real one instead (deck: `TileLayer.maxZoom`; mapbox: a source's `maxzoom`).
+   * Overstating it means 404s and a blank map; understating it means blur.
+   */
   maxZoom: number;
   /** Columns at zoom 0. 4326: 1 (square) or 2 (2:1). 3857: always 1. */
   cols0: number;
   /** True when format is a vector format (pbf) — needs the vector renderer. */
   vector: boolean;
 }
+
+/**
+ * The choices offered in the Map Tiles setup dialog.
+ *
+ * Kept here, beside the model they feed, so the dialog can never offer a value the
+ * renderer does not understand. `value` is stored verbatim on the basemap source:
+ * a Projection for the grid, and for the format the literal FILE EXTENSION the
+ * tiles use — which is why jpg and jpeg are separate entries rather than aliases.
+ *
+ * `label` is the plain name, used in prose (see `projectionLabel`). `code` is the
+ * EPSG identifier, shown alongside it in the dropdown so someone who knows the
+ * tiles by their code can still recognise the entry.
+ */
+export const PROJECTION_OPTIONS: ReadonlyArray<{
+  value: Projection;
+  label: string;
+  code: string;
+}> = [
+  { value: "epsg4326", label: "WGS 84", code: "EPSG:4326" },
+  { value: "epsg3857", label: "Web Mercator", code: "EPSG:3857" },
+];
+
+/**
+ * Display name for a projection.
+ *
+ * Everything user-facing goes through this, so a warning about a wrong pick uses
+ * the same words as the dropdown that offered it.
+ */
+export function projectionLabel(p: Projection): string {
+  return PROJECTION_OPTIONS.find((o) => o.value === p)?.label ?? p;
+}
+
+export const TILE_FORMAT_OPTIONS: ReadonlyArray<{
+  value: string;
+  label: string;
+}> = [
+  { value: "png", label: "PNG (.png)" },
+  { value: "jpg", label: "JPG (.jpg)" },
+  { value: "jpeg", label: "JPEG (.jpeg)" },
+  { value: "webp", label: "WEBP (.webp)" },
+  // The one format that changes which renderer runs, so it says so.
+  { value: "pbf", label: "PBF (.pbf) — vector" },
+];
 
 /** Mercator's exact valid-latitude edge — a 3857 set has no data beyond this. */
 export const MERCATOR_MAX_LAT = 85.0511287798066;
@@ -56,97 +113,6 @@ export const DEFAULT_TILES_CONFIG: TilesConfig = {
   cols0: 1,
   vector: false,
 };
-
-// ---------------------------------------------------------------------------
-// config.txt parsing
-// ---------------------------------------------------------------------------
-function normProjection(v: string): Projection | null {
-  const s = v.toLowerCase().replace(/[\s_:-]/g, "");
-  if (
-    ["epsg4326", "4326", "wgs84", "geodetic", "platecarree", "platecarrée"].includes(
-      s,
-    )
-  )
-    return "epsg4326";
-  if (
-    [
-      "epsg3857",
-      "3857",
-      "epsg900913",
-      "900913",
-      "webmercator",
-      "mercator",
-      "pseudomercator",
-      "wgs84pseudomercator",
-    ].includes(s)
-  )
-    return "epsg3857";
-  return null;
-}
-
-function normFormat(v: string): string | null {
-  const s = v.toLowerCase().replace(/^\./, "").trim();
-  if (["png", "jpg", "jpeg", "webp", "pbf", "mvt"].includes(s)) {
-    return s === "mvt" ? "pbf" : s;
-  }
-  return null;
-}
-
-/**
- * Parse a tiles `config.txt`. Unknown/missing keys fall back to `base` (the
- * auto-detected defaults). Returns a fully-resolved config. Keys are
- * case-insensitive; `=` or `:` both separate key/value; `#` starts a comment.
- */
-export function parseTilesConfig(
-  text: string,
-  base: TilesConfig = DEFAULT_TILES_CONFIG,
-): TilesConfig {
-  const cfg: TilesConfig = { ...base };
-  const kv: Record<string, string> = {};
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.replace(/#.*$/, "").trim();
-    if (!line) continue;
-    const eq = line.indexOf("=");
-    const sep = eq >= 0 ? eq : line.indexOf(":");
-    if (sep < 0) continue;
-    const key = line.slice(0, sep).trim().toLowerCase();
-    const val = line.slice(sep + 1).trim();
-    if (key) kv[key] = val;
-  }
-
-  if (kv.projection || kv.proj || kv.crs || kv.srs) {
-    const p = normProjection(kv.projection ?? kv.proj ?? kv.crs ?? kv.srs);
-    if (p) cfg.projection = p;
-  }
-  if (kv.format || kv.ext || kv.extension) {
-    const f = normFormat(kv.format ?? kv.ext ?? kv.extension);
-    if (f) cfg.format = f;
-  }
-  if (kv.scheme || kv.tiling || kv.origin) {
-    const s = (kv.scheme ?? kv.tiling ?? kv.origin).toLowerCase();
-    if (s.includes("tms")) cfg.scheme = "tms";
-    else if (s.includes("xyz") || s.includes("google") || s.includes("slippy"))
-      cfg.scheme = "xyz";
-  }
-  const num = (v: string | undefined) => {
-    if (v == null) return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
-  const ts = num(kv.tilesize ?? kv.tile_size);
-  if (ts && ts > 0) cfg.tileSize = ts;
-  const mn = num(kv.minzoom ?? kv.min_zoom ?? kv.minz);
-  if (mn != null) cfg.minZoom = mn;
-  const mx = num(kv.maxzoom ?? kv.max_zoom ?? kv.maxz);
-  if (mx != null) cfg.maxZoom = mx;
-  const c0 = num(kv.tilesatz0 ?? kv.cols0 ?? kv.tilesacross ?? kv.gridwidth);
-  if (c0 === 1 || c0 === 2) cfg.cols0 = c0;
-
-  // Mercator is inherently a single square grid at z0.
-  if (cfg.projection === "epsg3857") cfg.cols0 = 1;
-  cfg.vector = cfg.format === "pbf";
-  return cfg;
-}
 
 // ---------------------------------------------------------------------------
 // Classification helpers — which render path a set needs
@@ -206,7 +172,10 @@ async function urlExists(url: string): Promise<boolean> {
   }
 }
 
-/** Best-effort format probe when config.txt omits it: try 0/0/0.<ext>. */
+/**
+ * Best-effort format probe, for a source stored before the Map Tiles dialog asked
+ * for the format: try 0/0/0.<ext>. Inconclusive for a pack that has no 0/0 tile.
+ */
 async function detectFormat(baseUrl: string): Promise<string | null> {
   for (const ext of [...RASTER_EXTS, "pbf"]) {
     if (await urlExists(`${baseUrl}/0/0/0.${ext}`)) return ext;
@@ -220,31 +189,195 @@ async function probeCols0(baseUrl: string, ext: string): Promise<1 | 2> {
 }
 
 /**
- * Resolve a tiles folder's config from its HTTP base URL (served by the local
- * tile server). Precedence: hard defaults → probe-detected format/grid → the
- * folder's own `config.txt` (authoritative). Always resolves — falls back to
- * defaults if nothing is reachable.
+ * A single zoom level from the __levels payload, or null if it is not one.
+ *
+ * Strict on purpose. `Number(null)` is 0 and `Number([])` is 0, so a lenient
+ * `map(Number).filter(isFinite)` turns a malformed payload into the level list
+ * `[0]` — min 0, max 0 — which reads as a one-level pack and renders the entire
+ * map as the single upscaled z0 tile. Rejecting the entry instead falls back to
+ * the defaults, which is the honest outcome.
  */
-export async function resolveTilesConfig(baseUrl: string): Promise<TilesConfig> {
+function parseZoomLevel(v: unknown): number | null {
+  const n =
+    typeof v === "number"
+      ? v
+      : typeof v === "string" && /^\d{1,2}$/.test(v.trim())
+        ? Number(v)
+        : NaN;
+  // 30 is far past any real pyramid (z30 is ~centimetre tiles) — a value above
+  // it is corruption, not a deep pack.
+  return Number.isInteger(n) && n >= 0 && n <= 30 ? n : null;
+}
+
+/** What the tile server can tell us about the folder it is serving. */
+export interface PackInfo {
+  minZoom: number;
+  /** Deepest level with real tiles — the pack's max native zoom. */
+  maxZoom: number;
+  /** Extension of a tile actually on disk, when the server reported one. */
+  sampleExt?: string;
+  /** Level the column count below was measured at. */
+  probeZ?: number;
+  /** Widest column index present at `probeZ`. */
+  maxX?: number;
+}
+
+/**
+ * Ask the tile server what the active pack actually contains.
+ *
+ * The deepest level found becomes the pack's MAX NATIVE ZOOM (see TilesConfig) and
+ * the shallowest its minZoom. The server owns the folder, so it lists the numeric
+ * z subdirectories directly (see the /basemap/__levels route in
+ * OfflineTileServerPlugin.kt and electron/main.ts) — no descriptor file to keep in
+ * sync, and no guessing by probing tiles, which misreads a pack whose 0/0 tile is
+ * absent at deeper levels. The same listing carries the sample extension and
+ * column count that `validateTileChoice` checks the user's picks against.
+ *
+ * Returns null when the endpoint is unavailable (older native build), so the
+ * caller can fall back rather than render nothing.
+ */
+export async function fetchPackInfo(baseUrl: string): Promise<PackInfo | null> {
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/__levels`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      levels?: unknown;
+      sampleExt?: unknown;
+      probeZ?: unknown;
+      maxX?: unknown;
+    };
+    const levels = Array.isArray(body.levels)
+      ? body.levels.map(parseZoomLevel).filter((n): n is number => n !== null)
+      : [];
+    if (levels.length === 0) return null;
+
+    const ext =
+      typeof body.sampleExt === "string" &&
+      /^[a-z0-9]{1,5}$/.test(body.sampleExt)
+        ? body.sampleExt
+        : undefined;
+    const maxX =
+      typeof body.maxX === "number" &&
+      Number.isInteger(body.maxX) &&
+      body.maxX >= 0
+        ? body.maxX
+        : undefined;
+
+    return {
+      minZoom: Math.min(...levels),
+      maxZoom: Math.max(...levels),
+      sampleExt: ext,
+      probeZ: parseZoomLevel(body.probeZ) ?? undefined,
+      maxX,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A pick from the Map Tiles dialog that the folder itself contradicts.
+ *
+ * `actual` is what the folder says it should be, so the warning can offer the fix
+ * instead of only complaining.
+ */
+export type TileChoiceProblem =
+  | { kind: "format"; chosen: string; actual: string }
+  | { kind: "projection"; chosen: Projection; actual: Projection };
+
+/**
+ * Check the user's picks against what the folder actually holds.
+ *
+ * Pure, so the rules are testable without a server. Deliberately silent unless a
+ * mismatch is PROVABLE — a false alarm on a perfectly good pack would teach people
+ * to click straight through the warning:
+ *
+ *   format     — provable whenever the server reported a sample extension: the
+ *                tiles either carry that extension or they do not.
+ *   projection — provable in one direction only. A Mercator pyramid has at most
+ *                2^z columns at level z, so a column index past that cannot be
+ *                Mercator and must be the 2:1 EPSG:4326 grid. The reverse does not
+ *                follow: a regional 4326 crop also fits inside 2^z columns, so
+ *                picking 4326 is never flagged.
+ */
+export function validateTileChoice(
+  info: PackInfo | null,
+  chosen: { projection: Projection; format: string },
+): TileChoiceProblem | null {
+  if (!info) return null;
+
+  // .jpg and .jpeg hold the same picture; only the filename differs, and that is
+  // precisely what is being chosen. Flagging one for the other would be noise.
+  const norm = (x: string) => (x === "jpeg" ? "jpg" : x);
+
+  if (info.sampleExt && norm(info.sampleExt) !== norm(chosen.format)) {
+    return { kind: "format", chosen: chosen.format, actual: info.sampleExt };
+  }
+
+  if (
+    chosen.projection === "epsg3857" &&
+    info.probeZ != null &&
+    info.maxX != null &&
+    info.maxX > Math.pow(2, info.probeZ) - 1
+  ) {
+    return { kind: "projection", chosen: chosen.projection, actual: "epsg4326" };
+  }
+
+  return null;
+}
+
+/**
+ * Resolve the config for a served tiles folder.
+ *
+ * `chosen` is the projection/format the user picked in the settings dialog and is
+ * AUTHORITATIVE — projection in particular cannot be detected from the tiles at
+ * all, which is why it is asked for. Everything else is derived:
+ *   • minZoom/maxZoom — from the server's folder listing (fetchPackInfo)
+ *   • cols0           — probed (a 2:1 4326 set has column x=2 at z1)
+ *   • tileSize/scheme — defaults; no pack in use sets them
+ *
+ * config.txt is deliberately NOT read any more. It only ever carried these same
+ * fields, and keeping a second source of truth meant a pack could render one way
+ * on one device and another way elsewhere depending on whether someone had
+ * dropped a descriptor next to the tiles.
+ */
+export async function resolveTilesConfig(
+  baseUrl: string,
+  chosen?: { projection?: Projection; format?: string },
+): Promise<TilesConfig> {
   const url = baseUrl.replace(/\/+$/, "");
   const base: TilesConfig = { ...DEFAULT_TILES_CONFIG };
 
-  const fmt = await detectFormat(url);
+  // Format: the user's choice wins; probe only as a fallback for a source saved
+  // before the dialog existed.
+  const fmt = chosen?.format ?? (await detectFormat(url));
   if (fmt) {
     base.format = fmt;
     base.vector = fmt === "pbf";
-    if (!base.vector) {
-      // Assume geodetic-square until config.txt says otherwise; refine cols0.
-      base.cols0 = await probeCols0(url, fmt);
-    }
   }
 
-  let text: string | null = null;
-  try {
-    const res = await fetch(`${url}/config.txt`, { cache: "no-store" });
-    if (res.ok) text = await res.text();
-  } catch {
-    text = null;
+  if (chosen?.projection) base.projection = chosen.projection;
+
+  // Mercator is inherently a single square grid at z0; only 4326 has the 1-vs-2
+  // column question, and only a raster set is laid out on our own grid.
+  if (base.projection === "epsg4326" && !base.vector) {
+    base.cols0 = await probeCols0(url, base.format);
+  } else {
+    base.cols0 = 1;
   }
-  return text ? parseTilesConfig(text, base) : base;
+
+  // Zoom range = the levels on disk. maxZoom here is the NATIVE ceiling only: the
+  // camera still goes to MAP_MAX_ZOOM, and both renderers upscale the deepest real
+  // level past it. Keeps DEFAULT_TILES_CONFIG's range if the endpoint is missing
+  // (native build older than the __levels route).
+  const info = await fetchPackInfo(url);
+  if (info) {
+    base.minZoom = info.minZoom;
+    base.maxZoom = info.maxZoom;
+  }
+
+  return base;
 }
+

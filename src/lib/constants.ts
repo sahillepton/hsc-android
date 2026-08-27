@@ -73,6 +73,29 @@ export const STORAGE_PERMISSION_TIMEOUT_MS = 5000;
 // ── Zoom visibility ──────────────────────────────────────────────────────────
 export const DEFAULT_LAYER_MAX_ZOOM = 20;
 
+/**
+ * Character cap for a user-entered layer name.
+ *
+ * Sized to the UI rather than picked arbitrarily: the layer cards render the name
+ * at 16px inside `max-w-[200px]` with `truncate`, which shows roughly 25-28
+ * characters. 50 leaves comfortable headroom for a descriptive name (nothing
+ * legitimate gets blocked) while stopping the field from accepting unbounded
+ * input that is then persisted to the session manifest and re-read on every load.
+ */
+export const MAX_LAYER_NAME_LENGTH = 50;
+
+/**
+ * Resolution factor for the altitude in a topology info message (HSC, 17 Aug).
+ *
+ * The wire value is a UINT16 in units of 4 feet, so metres = raw x 1.2192
+ * (4 x 0.3048). Displayed to 2 decimal places per the same spec.
+ *
+ * Applied at DISPLAY time, not in the parser: the parser stays a faithful decoder
+ * of the wire format, so the stored value keeps the protocol's own units and
+ * cannot end up double-converted by a second consumer.
+ */
+export const TOPOLOGY_ALTITUDE_RESOLUTION_M = 1.2192;
+
 // ── Tooltip ──────────────────────────────────────────────────────────────────
 /** How many feature attributes a tooltip shows by DEFAULT (before the user picks
  *  fields in the layer settings). Keeps big-schema features compact and reliably

@@ -14,6 +14,7 @@ import {
   Info,
 } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
+import ConfirmDialog from "../ui/confirm-dialog";
 import { Button } from "../ui/button";
 import {
   useFocusLayerRequest,
@@ -26,7 +27,7 @@ import SketchLayerCardSkeleton from "./sketch-layer-card-skeleton";
 import {
   calculateBearingDegrees,
   formatLayerMeasurements,
-  normalizeAngleSigned,
+  azimuthDisplayAngle,
   isStoreLayerPickObject,
   type LayerMeasurement,
 } from "@/lib/layers";
@@ -237,6 +238,7 @@ const SketchLayersPanel = ({
   const layerIdSet = useMemo(() => new Set(layerIds), [layerIds]);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
   const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
   const [renderedItems, setRenderedItems] = useState<Set<string>>(new Set());
@@ -296,22 +298,22 @@ const SketchLayersPanel = ({
     }
   };
 
+  // Opens the in-app dialog instead of window.confirm(), whose heading is browser
+  // chrome we cannot control — it reads 'The page at "https://localhost" says',
+  // which is meaningless here and wrong once this code is embedded in a host app.
   const handleBulkDelete = () => {
     if (!selectedIds.length) return;
-    if (
-      confirm(
-        `Delete ${selectedIds.length} selected layer${
-          selectedIds.length > 1 ? "s" : ""
-        }?`,
-      )
-    ) {
-      // Clear any active tooltip; selection implies intent to remove hovered layer
-      setHoverInfo(undefined);
-      selectedIds.forEach((id) => {
-        deleteLayer(id);
-      });
-      setSelectedIds([]);
-    }
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmBulkDelete = () => {
+    setDeleteConfirmOpen(false);
+    // Clear any active tooltip; selection implies intent to remove hovered layer
+    setHoverInfo(undefined);
+    selectedIds.forEach((id) => {
+      deleteLayer(id);
+    });
+    setSelectedIds([]);
   };
 
   const handleBulkToggleVisibility = () => {
@@ -397,13 +399,13 @@ const SketchLayersPanel = ({
             layer.type === "azimuth" &&
             layer.azimuthCenter &&
             layer.azimuthTarget
-              ? normalizeAngleSigned(
+              ? azimuthDisplayAngle(
                   calculateBearingDegrees(
                     layer.azimuthCenter,
                     layer.azimuthTarget,
                   ),
                 )
-              : normalizeAngleSigned(layer.azimuthAngleDeg ?? 0);
+              : azimuthDisplayAngle(layer.azimuthAngleDeg ?? 0);
 
           const measurements = formatLayerMeasurements(
             layer.type === "azimuth"
@@ -490,6 +492,19 @@ const SketchLayersPanel = ({
         <div style={{ height: `${listHeight}px` }}>
           {renderList()}
         </div>
+
+        {/* The dialog must be rendered in BOTH return paths. This `plain` variant
+            is the one the measurement / layers / network consoles use
+            (map/measurement-box.tsx et al) and it returns before the SidebarGroup
+            branch below — so a dialog placed only there never mounted here, and
+            Delete set state that nothing was listening to: a silent no-op. */}
+        <ConfirmDialog
+          open={deleteConfirmOpen}
+          title="Are you sure you want to delete selected layer/s?"
+          destructive
+          onConfirm={confirmBulkDelete}
+          onCancel={() => setDeleteConfirmOpen(false)}
+        />
       </div>
     );
   }
@@ -552,6 +567,14 @@ const SketchLayersPanel = ({
           {renderList()}
         </div>
       </SidebarGroupContent>
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        title="Are you sure you want to delete selected layer/s?"
+        destructive
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setDeleteConfirmOpen(false)}
+      />
     </SidebarGroup>
   );
 };
