@@ -1871,6 +1871,41 @@ const Tooltip = () => {
       );
     }
 
+    // A hovered vertex of a drawn polygon reports ITS OWN coordinates, not the
+    // parent polygon's area/perimeter. Deliberately above the generic
+    // `object.position` branch, which matches any datum carrying a position and
+    // would otherwise claim this one.
+    const polygonVertex = object as {
+      polygonVertex?: boolean;
+      vertexIndex?: number;
+      vertexTotal?: number;
+      position?: [number, number];
+    };
+    if (polygonVertex.polygonVertex && polygonVertex.position) {
+      return (
+        <TooltipBox>
+          <TooltipHeading
+            title={layerInfo?.name ?? "Polygon"}
+            subtitle="Polygon Vertex"
+          />
+          <TooltipProperties
+            properties={[
+              {
+                label: "Vertex",
+                value: `${polygonVertex.vertexIndex} of ${polygonVertex.vertexTotal}`,
+              },
+              // formatCoordinatePair honours the IGRS toggle, so a vertex reads the
+              // same way as every other coordinate in this tooltip.
+              {
+                label: coordinateLabel,
+                value: formatCoordinatePair(object.position),
+              },
+            ]}
+          />
+        </TooltipBox>
+      );
+    }
+
     if (object.position) {
       const properties = [];
 

@@ -343,6 +343,24 @@ async function applyVectorBasemap(
   }
 }
 
+/**
+ * One hoverable vertex handle of a drawn polygon.
+ *
+ * `layerId` is the field the tooltip resolves the owning layer through, which is
+ * also what makes a hidden layer suppress the tooltip; `polygonVertex` is what
+ * tells the tooltip to report this vertex's own coordinates instead of treating it
+ * as a generic point.
+ */
+type PolygonVertexDatum = {
+  position: [number, number];
+  color: [number, number, number, number];
+  radius: number;
+  layerId: string;
+  polygonVertex: true;
+  vertexIndex: number;
+  vertexTotal: number;
+};
+
 // Settings Button Component
 //
 // Also hosts the two-step Map Tiles setup: step 1 picks the tiles folder, step 2
@@ -6219,6 +6237,109 @@ const MapComponent = ({
                 roundedZoom,
                 polygonLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
               ], // Update visibility on zoom (at 0.5 intervals)
+            },
+          }),
+        );
+      }
+
+      // Vertex handles for drawn polygons, hoverable for their coordinates.
+      //
+      // Sketch layers only: `polygonLayers` is filtered to `type === "polygon"`,
+      // which is the drawn-sketch type — an uploaded layer is geojson/dem/etc. and
+      // never appears here. It is also already filtered by `visibleLayers` and
+      // `passesZoom`, so a hidden polygon contributes no vertices at all and there
+      // is nothing left to hover (the tooltip's own `layerInfo.visible === false`
+      // guard is the second line of defence).
+      //
+      // Built from `layer.polygon` — the rings AS DRAWN — not the unkinked rings
+      // the fill uses. Unkinking a self-intersecting polygon splits it and invents
+      // crossing points, which are not vertices anybody placed.
+      const polygonVertexData: PolygonVertexDatum[] = polygonLayers.flatMap((layer) => {
+        const outer = layer.polygon?.[0] ?? [];
+        // Drop the closing repeat, or the first vertex gets two handles stacked on
+        // it and reports "1 of 5" twice. Same test as `vertexCount` above.
+        let count = outer.length;
+        if (
+          count > 1 &&
+          outer[0] &&
+          outer[count - 1] &&
+          Math.abs(outer[0][0] - outer[count - 1][0]) < 1e-10 &&
+          Math.abs(outer[0][1] - outer[count - 1][1]) < 1e-10
+        ) {
+          count -= 1;
+        }
+        return outer
+          .slice(0, count)
+          // Annotated so the colour literals below are contextually typed as
+          // tuples rather than widening to number[], which is what lets the deck
+          // accessors stay typed instead of falling back to `any`.
+          .map((point, index): PolygonVertexDatum | null => {
+            if (
+              !Array.isArray(point) ||
+              point.length < 2 ||
+              typeof point[0] !== "number" ||
+              typeof point[1] !== "number" ||
+              isNaN(point[0]) ||
+              isNaN(point[1])
+            ) {
+              return null;
+            }
+            return {
+              position: point,
+              // Same palette as the line vertex handles below, so a sketch vertex
+              // looks like a sketch vertex whatever it belongs to.
+              color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
+              radius: index === 0 ? 8 : 6,
+              // How the tooltip finds the layer (and so how a hidden layer
+              // suppresses the tooltip) — see the layerId lookup in tooltip.tsx.
+              layerId: layer.id,
+              polygonVertex: true,
+              vertexIndex: index + 1,
+              vertexTotal: count,
+            };
+          })
+          .filter((item): item is PolygonVertexDatum => item !== null);
+      });
+
+      if (polygonVertexData.length > 0) {
+        deckLayers.push(
+          // Accessors are `(d: any)` to match every other deck layer in this file,
+          // including `line-vertex-layer` below. Naming the datum type here instead
+          // makes TS strict-check the whole props object, and it then rejects
+          // `parameters: { depthTest: false }` — which deck 9.2 omits from its
+          // Parameters type but still honours at runtime through its legacy
+          // GL-parameter table. The data itself is typed at the builder above,
+          // which is where the shape actually needs guarding.
+          new ScatterplotLayer({
+            id: "polygon-vertex-layer",
+            data: polygonVertexData,
+            visible: polygonLayers.length > 0,
+            getPosition: (d: any) => d.position,
+            getRadius: (d: any) => d.radius,
+            // Pixel units for the same reason as `line-vertex-layer` below: the
+            // geodetic (EPSG:4326) base map renders through a cartesian
+            // OrthographicView where deck.gl has no projection to convert meters
+            // against, so meter radii blow up into huge pale rings.
+            radiusUnits: "pixels",
+            getFillColor: (d: any) => d.color,
+            getLineColor: [255, 255, 255, 200],
+            getLineWidth: 2,
+            lineWidthUnits: "pixels",
+            stroked: true,
+            // The one difference from the line handles: these are pickable, which
+            // is the whole feature. Pushed after the fill and outline so it sits on
+            // top and wins the pick, giving the vertex tooltip rather than the
+            // polygon one.
+            pickable: true,
+            onHover: handleLayerHover,
+            radiusMinPixels: 4,
+            radiusMaxPixels: 10,
+            parameters: { depthTest: false },
+            updateTriggers: {
+              visible: [
+                roundedZoom,
+                polygonLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ],
             },
           }),
         );
