@@ -44,16 +44,6 @@ export const useRubberBandRectangle = ({
       return null;
     }
 
-    // Debug: Log when creating rectangle
-    if (isDrawing) {
-      console.log("[RubberBand] Creating rectangle layer:", {
-        start,
-        end,
-        isDrawing,
-        isZooming,
-      });
-    }
-
     // Create rectangle coordinates
     // Ensure we have valid coordinates even if start and end are the same
     let minLng = Math.min(start[0], end[0]);

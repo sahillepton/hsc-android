@@ -5,7 +5,7 @@ import { SidebarGroup, SidebarGroupContent } from "../ui/sidebar";
 import { showMessage } from "@/lib/capacitor-utils";
 import { toast } from "@/lib/toast";
 import { useLayers, useNodeIconMappings } from "@/store/layers-store";
-import { generateLayerId } from "@/lib/layers";
+import { generateLayerId, startHiddenOnImport } from "@/lib/layers";
 import {
   fileToDEMRaster,
   fileToGeoJSON,
@@ -47,17 +47,27 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
         ],
         bitmap: dem.canvas,
         texture: dem.canvas,
-        elevationData: {
+        uploadedAt: Date.now(),
+      } as LayerProps & { uploadedAt: number };
+
+      // Elevation data only exists for single-band DEM rasters. Color TIFFs
+      // (RGB/RGBA/Palette) leave elevation fields undefined by design.
+      if (
+        dem.kind === "dem" &&
+        dem.data &&
+        typeof dem.min === "number" &&
+        typeof dem.max === "number"
+      ) {
+        newLayer.elevationData = {
           data: dem.data,
           width: dem.width,
           height: dem.height,
           min: dem.min,
           max: dem.max,
-        },
-        uploadedAt: Date.now(),
-      } as LayerProps & { uploadedAt: number };
+        };
+      }
       // Use addLayer to ensure proper state updates and prevent overwriting
-      addLayer(newLayer);
+      addLayer(startHiddenOnImport(newLayer));
 
       if (isDefaultBounds) {
         showMessage(
@@ -640,7 +650,7 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
       } as LayerProps & { uploadedAt: number };
 
       // Use addLayer to ensure proper state updates and prevent overwriting
-      addLayer(newLayer);
+      addLayer(startHiddenOnImport(newLayer));
       showMessage(
         `Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`
       );
@@ -855,7 +865,7 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
       } as LayerProps & { uploadedAt: number };
       // Use addLayer to ensure proper state updates and prevent overwriting
       // This prevents overwriting when importing multiple files from ZIP
-      addLayer(newLayer);
+      addLayer(startHiddenOnImport(newLayer));
       showMessage(
         `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`
       );

@@ -22,7 +22,15 @@ export default defineConfig({
       ignored: [
         "**/public/tiles/**", // ✅ ignore offline tile folder
         "**/*.pbf", // ✅ ignore all vector tile files (optional but recommended)
+        "**/.git/**",
+        "**/node_modules/**",
+        "**/.idea/**",
+        "**/.vscode/**",
       ],
+      awaitWriteFinish: {
+        stabilityThreshold: 300,
+        pollInterval: 100,
+      },
     },
   },
 });

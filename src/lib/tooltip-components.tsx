@@ -18,15 +18,25 @@ export const TooltipHeading = ({
   return (
     <div className={cn("mb-1.5 pb-1 border-b border-gray-200", className)}>
       <div
-        className="font-semibold text-blue-600 tracking-tight"
-        style={{ fontSize: "1.1em" }}
+        className="font-semibold text-blue-600 tracking-tight whitespace-normal wrap-break-word"
+        style={{
+          fontSize: "1.1em",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
+        }}
+        title={title}
       >
         {title}
       </div>
       {subtitle && (
         <div
-          className="text-gray-500 mt-0.5"
-          style={{ fontSize: "0.9em" }}
+          className="text-gray-500 mt-0.5 whitespace-normal wrap-break-word"
+          style={{
+            fontSize: "0.9em",
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+          }}
+          title={subtitle}
         >
           {subtitle}
         </div>
@@ -48,18 +58,30 @@ export const TooltipProperty = ({
   value: React.ReactNode;
   className?: string;
 }) => {
+  const { tooltipHeadingColor, tooltipValueColor } = useTooltipConfigStore();
   return (
     <div
-      className={cn(
-        "flex justify-between items-center gap-2 py-0.5",
-        className
-      )}
+      className={cn("flex flex-col items-start gap-1 py-1", className)}
       style={{ fontSize: "inherit", fontFamily: "inherit" }}
     >
-      <span className="text-gray-700 font-medium min-w-[80px]">
+      <span
+        className="font-medium leading-tight"
+        style={{ color: tooltipHeadingColor }}
+      >
         {label}:
       </span>
-      <span className="text-gray-900 text-right font-mono">
+      <span
+        className="leading-snug whitespace-pre-wrap"
+        style={{
+          fontFamily: "inherit",
+          fontSize: "inherit",
+          color: tooltipValueColor,
+          // Wrap onto as many lines as needed instead of truncating with an
+          // ellipsis — break even long unbroken tokens so nothing is clipped.
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
+        }}
+      >
         {value}
       </span>
     </div>
@@ -84,13 +106,13 @@ export const TooltipProperties = ({
   if (useGridLayout && properties.length > 6) {
     const midPoint = Math.ceil(properties.length / 2);
     return (
-      <div className={cn("flex gap-2 overflow-hidden", className)}>
-        <div className="flex-1 space-y-0.5 pr-2 border-r border-gray-200 overflow-hidden">
+      <div className={cn("flex gap-2", className)}>
+        <div className="flex-1 min-w-0 space-y-0.5 pr-2 border-r border-gray-200">
           {properties.slice(0, midPoint).map((prop, idx) => (
             <TooltipProperty key={idx} label={prop.label} value={prop.value} />
           ))}
         </div>
-        <div className="flex-1 space-y-0.5 pl-2 overflow-hidden">
+        <div className="flex-1 min-w-0 space-y-0.5 pl-2">
           {properties.slice(midPoint).map((prop, idx) => (
             <TooltipProperty key={idx} label={prop.label} value={prop.value} />
           ))}
@@ -100,7 +122,7 @@ export const TooltipProperties = ({
   }
 
   return (
-    <div className={cn("space-y-0.5 overflow-hidden", className)}>
+    <div className={cn("space-y-1", className)}>
       {properties.map((prop, idx) => (
         <TooltipProperty key={idx} label={prop.label} value={prop.value} />
       ))}
@@ -127,9 +149,9 @@ export const TooltipBox = ({
   return (
     <div
       className={cn(
-        "bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl p-2 overflow-hidden",
+        "bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl p-2 min-w-[180px]",
         maxWidth,
-        className
+        className,
       )}
       style={{
         fontFamily: tooltipFontFamily,

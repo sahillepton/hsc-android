@@ -147,14 +147,15 @@ export async function findAllValidFilesInZip(
       return (
         lowerName.endsWith(".shp") ||
         lowerName.endsWith(".shx") ||
-        lowerName.endsWith(".dbf")
+        lowerName.endsWith(".dbf") ||
+        lowerName.endsWith(".cpg")
       );
     });
 
     if (shapefileComponents.length > 0) {
       const shapefileGroups = new Map<string, string[]>();
       for (const fileName of shapefileComponents) {
-        const baseName = fileName.toLowerCase().replace(/\.(shp|shx|dbf)$/, "");
+        const baseName = fileName.toLowerCase().replace(/\.(shp|shx|dbf|cpg)$/, "");
         if (!shapefileGroups.has(baseName)) {
           shapefileGroups.set(baseName, []);
         }

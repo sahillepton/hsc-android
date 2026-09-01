@@ -26,7 +26,6 @@ export const waitForStoragePermission = async (
   while (Date.now() - startTime < maxWaitMs) {
     const hasPermission = await checkStoragePermission();
     if (hasPermission) {
-      console.log("[TileServer] Storage permission granted");
       return true;
     }
     // Wait before next check
@@ -51,9 +50,6 @@ export const initializeTileServer = async (
 
     // If no permission and we should wait, wait for it
     if (!hasPermission && waitForPermission) {
-      console.log(
-        "[TileServer] Storage permission not granted, waiting for user to grant..."
-      );
       hasPermission = await waitForStoragePermission(30000); // Wait up to 30 seconds
     }
 
@@ -67,10 +63,6 @@ export const initializeTileServer = async (
     // Server is always running with default path (Documents/tiles)
     // Just get the URL - server already initialized with default path
     const result = await OfflineTileServer.getServerUrl();
-    console.log("[TileServer] Server URL:", result.baseUrl);
-    console.log(
-      "[TileServer] Using default path: Internal storage/Documents/tiles"
-    );
     return result.baseUrl;
   } catch (error) {
     console.error("Error getting tile server URL:", error);

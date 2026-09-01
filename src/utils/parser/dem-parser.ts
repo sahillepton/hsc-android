@@ -2,13 +2,16 @@ import { fileToDEMRaster } from "@/lib/utils";
 import type { LayerProps } from "@/lib/definitions";
 
 export interface DemParseResult {
+  kind: "dem" | "color";
   bounds: [number, number, number, number];
   width: number;
   height: number;
-  data: Float32Array;
-  min: number;
-  max: number;
   canvas: HTMLCanvasElement;
+  // Elevation fields are only populated for single-band numeric DEM rasters.
+  // Colored TIFFs (RGB/RGBA/Palette) skip elevation entirely for performance.
+  data?: Float32Array;
+  min?: number;
+  max?: number;
 }
 
 export interface DemParseOptions {
@@ -22,7 +25,7 @@ export interface DemParseOptions {
  */
 export async function parseDemFile(
   file: File,
-  options: DemParseOptions
+  options: DemParseOptions,
 ): Promise<DemParseResult> {
   const { onProgress } = options;
 
@@ -33,7 +36,7 @@ export async function parseDemFile(
     const runWorker = async (): Promise<DemParseResult> => {
       const worker = new Worker(
         new URL("../../workers/dem-worker.ts", import.meta.url),
-        { type: "module" }
+        { type: "module" },
       );
       const ab = await file.arrayBuffer();
       onProgress?.(30);
@@ -65,9 +68,6 @@ export async function parseDemFile(
 
       onProgress?.(70);
 
-      // Rebuild canvas from grayscale on main thread
-      const elevation = new Float32Array(result.elevationBuffer);
-      const grayscale = new Uint8ClampedArray(result.grayscaleBuffer);
       const canvas = document.createElement("canvas");
       canvas.width = result.width;
       canvas.height = result.height;
@@ -75,12 +75,38 @@ export async function parseDemFile(
       if (!ctx) {
         throw new Error("Failed to create canvas for DEM");
       }
-      const cloned = new Uint8ClampedArray(grayscale.length);
-      cloned.set(grayscale);
-      const img = new ImageData(cloned, result.width, result.height);
+
+      const kind: "dem" | "color" = result.kind === "color" ? "color" : "dem";
+
+      if (kind === "color") {
+        // Color TIFF path: true-color RGBA bitmap. Elevation buffer carries
+        // sample-0 values so the hover tooltip matches the DEM tooltip layout.
+        const rgba = new Uint8ClampedArray(result.rgbaBuffer);
+        const img = new ImageData(rgba, result.width, result.height);
+        ctx.putImageData(img, 0, 0);
+        const elevation = result.elevationBuffer
+          ? new Float32Array(result.elevationBuffer)
+          : undefined;
+        return {
+          kind,
+          bounds: result.bounds,
+          width: result.width,
+          height: result.height,
+          canvas,
+          data: elevation,
+          min: typeof result.min === "number" ? result.min : undefined,
+          max: typeof result.max === "number" ? result.max : undefined,
+        };
+      }
+
+      // DEM path: rebuild hillshade canvas and keep Float32 elevation for tooltips/3D.
+      const elevation = new Float32Array(result.elevationBuffer);
+      const grayscale = new Uint8ClampedArray(result.grayscaleBuffer);
+      const img = new ImageData(grayscale, result.width, result.height);
       ctx.putImageData(img, 0, 0);
 
       return {
+        kind,
         bounds: result.bounds,
         width: result.width,
         height: result.height,
@@ -98,20 +124,24 @@ export async function parseDemFile(
         new Promise<never>((_, reject) =>
           setTimeout(
             () => reject(new Error("Processing timeout after 5 minutes")),
-            300000
-          )
+            300000,
+          ),
         ),
       ]);
     } catch (workerErr) {
       // Worker failed; fallback to main-thread parsing
+      console.warn(
+        "⚠️ DEM Worker FAILED, falling back to main thread:",
+        workerErr,
+      );
       onProgress?.(50);
       dem = await Promise.race([
         fileToDEMRaster(file),
         new Promise<never>((_, reject) =>
           setTimeout(
             () => reject(new Error("Processing timeout after 5 minutes")),
-            300000
-          )
+            300000,
+          ),
         ),
       ]);
     }
@@ -130,11 +160,11 @@ export async function parseDemFile(
  */
 export function createDemLayer(
   dem: DemParseResult,
-  options: DemParseOptions
+  options: DemParseOptions,
 ): LayerProps {
   const { layerId, layerName } = options;
 
-  return {
+  const base: LayerProps = {
     type: "dem",
     id: layerId,
     name: layerName,
@@ -146,13 +176,22 @@ export function createDemLayer(
     ],
     bitmap: dem.canvas,
     texture: dem.canvas,
-    elevationData: {
+  };
+
+  // Attach elevation data whenever the parser produced sample-0 values —
+  // true DEMs carry real elevations, color TIFFs carry the underlying
+  // numeric sample so the tooltip renders identical fields for both.
+  if (dem.data && typeof dem.min === "number" && typeof dem.max === "number") {
+    base.elevationData = {
       data: dem.data,
       width: dem.width,
       height: dem.height,
       min: dem.min,
       max: dem.max,
-    },
-    uploadedAt: Date.now(),
-  } as LayerProps & { uploadedAt: number };
+    };
+  }
+
+  return { ...base, uploadedAt: Date.now() } as LayerProps & {
+    uploadedAt: number;
+  };
 }

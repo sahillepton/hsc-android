@@ -13,8 +13,12 @@ const TooltipConfigStrip = () => {
   const {
     tooltipFontFamily,
     tooltipFontSize,
+    tooltipHeadingColor,
+    tooltipValueColor,
     setTooltipFontFamily,
     setTooltipFontSize,
+    setTooltipHeadingColor,
+    setTooltipValueColor,
   } = useTooltipConfigStore();
 
   const [fontDropdownOpen, setFontDropdownOpen] = useState(false);
@@ -40,13 +44,14 @@ const TooltipConfigStrip = () => {
     "System Default";
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40 bg-zinc-50/60">
-      <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider shrink-0">
-        Tooltip
-      </span>
+    <div className="flex flex-col gap-2 px-3 py-2 border-b border-border/40 bg-zinc-50/60">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider shrink-0">
+          Tooltip
+        </span>
 
-      {/* Font family dropdown */}
-      <div ref={dropdownRef} className="relative flex-1 min-w-0">
+        {/* Font family dropdown */}
+        <div ref={dropdownRef} className="relative flex-1 min-w-0">
         <button
           onClick={() => setFontDropdownOpen(!fontDropdownOpen)}
           className="w-full flex items-center justify-between gap-1 px-2 py-1 rounded-md border border-border/60 bg-white hover:bg-zinc-50 transition-colors text-[11px] text-zinc-700"
@@ -86,10 +91,10 @@ const TooltipConfigStrip = () => {
             })}
           </div>
         )}
-      </div>
+        </div>
 
-      {/* Font size stepper */}
-      <div className="flex items-center gap-0.5 shrink-0">
+        {/* Font size stepper */}
+        <div className="flex items-center gap-0.5 shrink-0">
         <button
           onClick={() => setTooltipFontSize(tooltipFontSize - 1)}
           disabled={tooltipFontSize <= 10}
@@ -109,7 +114,32 @@ const TooltipConfigStrip = () => {
         >
           +
         </button>
-        <span className="text-[9px] text-zinc-400 ml-0.5">px</span>
+          <span className="text-[9px] text-zinc-400 ml-0.5">px</span>
+        </div>
+      </div>
+
+      {/* Heading/value color controls (single row) */}
+      <div className="flex items-center gap-4">
+        <label className="flex items-center gap-2 text-[10px] text-zinc-600">
+          <span className="font-medium">Heading</span>
+          <input
+            type="color"
+            value={tooltipHeadingColor}
+            onChange={(e) => setTooltipHeadingColor(e.target.value)}
+            title="Tooltip attribute heading color"
+            className="w-6 h-6 p-0 border border-zinc-300 rounded cursor-pointer bg-transparent"
+          />
+        </label>
+        <label className="flex items-center gap-2 text-[10px] text-zinc-600">
+          <span className="font-medium">Values</span>
+          <input
+            type="color"
+            value={tooltipValueColor}
+            onChange={(e) => setTooltipValueColor(e.target.value)}
+            title="Tooltip value color"
+            className="w-6 h-6 p-0 border border-zinc-300 rounded cursor-pointer bg-transparent"
+          />
+        </label>
       </div>
     </div>
   );

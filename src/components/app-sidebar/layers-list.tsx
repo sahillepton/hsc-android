@@ -11,8 +11,13 @@ import { Button } from "../ui/button";
 import LayerPopover from "./layer-popover";
 import LayerCardSkeleton from "./layer-card-skeleton";
 import type { LayerProps } from "@/lib/definitions";
+import {
+  isShortestRouteLayer,
+  getShortestRouteCoordinateSubtitle,
+  getShortestRouteDisplayName,
+} from "@/lib/route-layer";
+import { useIgrsPreference } from "@/store/layers-store";
 
-// Component to handle skeleton transition for individual layer items
 type LayerCardItemProps = {
   layer: LayerProps;
   isSelected: boolean;
@@ -27,6 +32,8 @@ type LayerCardItemProps = {
   setFocusedLayerId: (layerId: string | null) => void;
   onItemRendered: (layerId: string) => void;
   isRendered: boolean;
+  /** IGRS display preference, subscribed once by the parent list. */
+  useIgrs: boolean;
 };
 
 const LayerCardItem = ({
@@ -43,6 +50,7 @@ const LayerCardItem = ({
   setFocusedLayerId,
   onItemRendered,
   isRendered,
+  useIgrs,
 }: LayerCardItemProps) => {
   useEffect(() => {
     if (!isRendered) {
@@ -57,8 +65,18 @@ const LayerCardItem = ({
     return <LayerCardSkeleton />;
   }
 
+  const displayName = isShortestRouteLayer(layer)
+    ? getShortestRouteDisplayName(layer)
+    : layer.name;
+  const routeCoordSubtitle = isShortestRouteLayer(layer)
+    ? getShortestRouteCoordinateSubtitle(layer, useIgrs)
+    : null;
+
   return (
-    <div className="mb-3">
+    // pb-3, not mb-3 — virtuoso measures this item wrapper with
+    // getBoundingClientRect().height, which excludes a child's collapsing margin.
+    // See LayerCardSkeleton for the full explanation; the two must stay in sync.
+    <div className="pb-3">
       <div
         key={layer.id}
         className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
@@ -72,7 +90,7 @@ const LayerCardItem = ({
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              title={`Bring to top: ${layer.name}`}
+              title={`Bring to top: ${displayName}`}
               onClick={() => onBringToTop(layer.id)}
             >
               <ArrowUp size={10} />
@@ -82,7 +100,7 @@ const LayerCardItem = ({
             variant="ghost"
             size="icon"
             className="h-7 w-7"
-            title={`Focus layer: ${layer.name}`}
+            title={`Focus layer: ${displayName}`}
             onClick={() => {
               setFocusedLayerId(layer.id);
               onFocusLayer(layer.id);
@@ -99,8 +117,8 @@ const LayerCardItem = ({
             }
             title={
               layer.visible === false
-                ? `Show layer: ${layer.name}`
-                : `Hide layer: ${layer.name}`
+                ? `Show layer: ${displayName}`
+                : `Hide layer: ${displayName}`
             }
           >
             {layer.visible === true ? (
@@ -114,7 +132,7 @@ const LayerCardItem = ({
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              title={`Layer settings: ${layer.name}`}
+              title={`Layer settings: ${displayName}`}
             >
               <Settings2 size={10} />
             </Button>
@@ -131,10 +149,21 @@ const LayerCardItem = ({
                 onChange={() => onToggleSelect(layer.id)}
               />
             )}
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-semibold text-ellipsis max-w-[200px] overflow-hidden text-foreground">
-                {layer.name}
-              </div>
+            <div className="flex flex-col gap-0.5 min-w-0">
+              {routeCoordSubtitle ? (
+                <>
+                  <div className="text-sm font-semibold text-foreground truncate max-w-[200px]">
+                    {layer.name}
+                  </div>
+                  <div className="text-xs text-muted-foreground break-words">
+                    {routeCoordSubtitle}
+                  </div>
+                </>
+              ) : (
+                <div className="text-sm font-semibold text-ellipsis max-w-[200px] overflow-hidden text-foreground">
+                  {displayName}
+                </div>
+              )}
             </div>
           </div>
           {uploadedDate && (
@@ -174,6 +203,10 @@ const LayersList = ({
   onUpdateLayer,
 }: LayersListProps) => {
   const [searchQuery] = useState("");
+  // Subscribed ONCE here and passed down, rather than per row: the list is
+  // virtualised, so a hook inside the row component would add a store subscription
+  // for every visible card.
+  const useIgrs = useIgrsPreference();
   const containerRef = useRef<HTMLDivElement>(null);
   const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
@@ -194,7 +227,6 @@ const LayersList = ({
     }
   }, [focusedLayerId, layers]);
 
-  // Reset rendered items when layers change significantly
   useEffect(() => {
     const layerIds = new Set(layers.map((l) => l.id));
     setRenderedItems((prev) => {
@@ -321,23 +353,26 @@ const LayersList = ({
         )}
         {filteredLayers.length > 0 && (
           <div
-            className="overflow-y-auto"
             style={{
               height: `${Math.min(
-                filteredLayers.length * 120 + 24,
-                windowHeight * 0.9
+                filteredLayers.length * 120 + 20,
+                windowHeight * 0.55
               )}px`,
             }}
           >
             <Virtuoso
-              style={{ height: "100%" }}
+              // `none`, not `contain`. Both stop scroll-chaining to the map/page,
+              // but only `none` also suppresses the LOCAL overscroll affordance —
+              // `contain` still lets the container rubber-band past its own ends,
+              // which is the bounce seen when scrolling rapidly to the bottom on
+              // Android. (Per spec `contain` = no chaining, affordance kept.)
+              style={{ height: "100%", overscrollBehavior: "none" }}
               data={filteredLayers.sort((a, b) => {
-                // Sort by uploadedAt/createdAt timestamp (newest first)
                 const aTime =
                   (a as any).uploadedAt || (a as any).createdAt || 0;
                 const bTime =
                   (b as any).uploadedAt || (b as any).createdAt || 0;
-                return bTime - aTime; // Descending order (newest first)
+                return bTime - aTime;
               })}
               increaseViewportBy={280}
               itemContent={(_, layer) => {
@@ -363,6 +398,7 @@ const LayersList = ({
                     setFocusedLayerId={setFocusedLayerId}
                     onItemRendered={handleItemRendered}
                     isRendered={isRendered}
+                    useIgrs={useIgrs}
                   />
                 );
               }}

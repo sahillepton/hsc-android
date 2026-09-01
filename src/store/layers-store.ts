@@ -1,11 +1,17 @@
 import type { LayerProps, Node, DrawingMode } from "@/lib/definitions";
 import { create } from "zustand";
 import type { PickingInfo } from "@deck.gl/core";
-import { computeLayerBounds, calculateLayerZoomRange } from "@/lib/layers";
+import {
+  computeLayerBounds,
+  calculateLayerZoomRange,
+  isStoreLayerPickObject,
+} from "@/lib/layers";
+import { isSketchLayer } from "@/lib/sketch-layers";
 import {
   markLayerStagedDelete,
   updateManifestColor,
 } from "@/sessions/manifestStore";
+import { RasterTiling } from "@/plugins/raster-tiling";
 
 interface LayerState {
   layers: LayerProps[];
@@ -85,9 +91,12 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   },
   addLayer: (layer) => {
     set((state) => {
-      // Calculate zoom range before saving if not already set (skip point layers)
-      let layerWithZoomRange = { ...layer };
-      if (layer.type !== "point") {
+      // Calculate zoom range before saving if not already set. Skip hand-drawn
+      // sketches (point/line/polygon/azimuth): they are shown on demand via the
+      // Sketch panel and must never be zoom-gated, so we never stamp an
+      // auto-computed minzoom on them (which would hide them at low zoom).
+      const layerWithZoomRange = { ...layer };
+      if (!isSketchLayer(layer)) {
         // If minzoom is not set, calculate both minzoom and maxzoom
         if (layer.minzoom === undefined) {
           const zoomRange = calculateLayerZoomRange(layer);
@@ -110,9 +119,6 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   },
   deleteLayer: (layerId: string) => {
     // Mark layer as staged_delete in manifest before filtering
-    console.log(
-      `[LayerDelete] Marking layer ${layerId} as staged_delete in manifest`
-    );
     markLayerStagedDelete(layerId).catch((error) => {
       console.error(
         `[LayerDelete] Error marking layer as staged_delete:`,
@@ -120,6 +126,19 @@ const useLayerStore = create<LayerState>()((set, get) => ({
       );
       // Continue with deletion even if manifest update fails
     });
+
+    // If the layer was tiled (large raster served via the local tile
+    // server), unregister it from the registry and sweep the tilecache
+    // dir. The unregister verb handles the disk delete on the native
+    // side (Electron worker on desktop, Capacitor plugin on Android).
+    const targetLayer = useLayerStore
+      .getState()
+      .layers.find((l) => l.id === layerId);
+    if (targetLayer?.tilesUrl) {
+      RasterTiling.unregisterLayer({ layerId }).catch(() => {
+        /* best-effort */
+      });
+    }
 
     set((state) => {
       // Check if the deleted layer is the one being hovered
@@ -130,7 +149,7 @@ const useLayerStore = create<LayerState>()((set, get) => ({
 
         if ((hoveredObject as any)?.layerId) {
           hoveredLayerId = (hoveredObject as any).layerId;
-        } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+        } else if (isStoreLayerPickObject(hoveredObject)) {
           hoveredLayerId = (hoveredObject as any).id;
         } else if (state.hoverInfo.layer?.id) {
           const deckLayerId = state.hoverInfo.layer.id;
@@ -171,9 +190,11 @@ const useLayerStore = create<LayerState>()((set, get) => ({
             ? ([...updatedLayer.color] as typeof updatedLayer.color)
             : updatedLayer.color;
 
-          // Calculate zoom range if needed (skip point layers)
-          let finalLayer = { ...updatedLayer };
-          if (updatedLayer.type !== "point") {
+          // Calculate zoom range if needed. Skip hand-drawn sketches
+          // (point/line/polygon/azimuth) — they are never zoom-gated, so we don't
+          // stamp an auto-computed minzoom that would hide them at low zoom.
+          const finalLayer = { ...updatedLayer };
+          if (!isSketchLayer(updatedLayer)) {
             // If minzoom is not set, calculate both minzoom and maxzoom
             if (updatedLayer.minzoom === undefined) {
               const zoomRange = calculateLayerZoomRange(updatedLayer);

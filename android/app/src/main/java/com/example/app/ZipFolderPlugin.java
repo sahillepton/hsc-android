@@ -40,11 +40,8 @@ public class ZipFolderPlugin extends Plugin {
     public void zipHscSessionsFolder(PluginCall call) {
         new Thread(() -> {
             try {
-                // Source folder: /Android/data/com.example.app/files/documents/HSC-SESSIONS
-                File docsRoot = getContext().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
-                if (docsRoot == null) {
-                    docsRoot = getContext().getFilesDir();
-                }
+                File docsRoot = getContext().getExternalFilesDir(null);
+                if (docsRoot == null) docsRoot = getContext().getFilesDir();
                 
                 File sourceDir = new File(docsRoot, "HSC-SESSIONS");
                 
@@ -384,11 +381,8 @@ public class ZipFolderPlugin extends Plugin {
 
         new Thread(() -> {
             try {
-                // Get destination directory
-                File docsRoot = getContext().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
-                if (docsRoot == null) {
-                    docsRoot = getContext().getFilesDir();
-                }
+                File docsRoot = getContext().getExternalFilesDir(null);
+                if (docsRoot == null) docsRoot = getContext().getFilesDir();
                 
                 File destDir = new File(docsRoot, outputDir);
                 if (!destDir.exists()) {

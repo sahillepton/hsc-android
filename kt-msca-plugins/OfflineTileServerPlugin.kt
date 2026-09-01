@@ -19,11 +19,48 @@ import java.io.File
 class OfflineTileServerPlugin : Plugin() {
 
     private var tileServer: TileServer? = null
-    
+
+    /**
+     * SAM-friendly callback type so both Java and Kotlin callers can register
+     * a raster-tile provider with a single lambda. Java sees this as a
+     * functional interface; Kotlin gets SAM conversion for `::method` refs.
+     */
+    fun interface RasterTileProvider {
+        fun provideTile(layerId: String, z: Int, x: Int, y: Int): ByteArray?
+    }
+
+    companion object {
+        // Raster tile callback registered by RasterTilingPlugin at startup.
+        // Receives (layerId, z, x, y) and returns a fully-encoded WebP byte
+        // array (cache-hit or freshly-rendered), or null if the layer isn't
+        // registered or the tile is out of bounds.
+        // @JvmStatic so Java callers can use the same entry point.
+        @Volatile private var rasterProvider: RasterTileProvider? = null
+
+        @JvmStatic
+        fun registerRasterTileProvider(provider: RasterTileProvider) {
+            rasterProvider = provider
+        }
+
+        internal fun callRaster(id: String, z: Int, x: Int, y: Int): ByteArray? =
+            rasterProvider?.provideTile(id, z, x, y)
+    }
+
     override fun load() {
         super.load()
         // Always start with default path - React will update if needed
         initializeServer()
+    }
+
+    private fun stopExistingTileServer() {
+        val existing = tileServer ?: return
+        try {
+            existing.stop()
+        } catch (e: Exception) {
+            android.util.Log.w("TileServer", "stop existing server: ${e.message}")
+        } finally {
+            tileServer = null
+        }
     }
     
     private fun getDefaultTilesDir(): File {
@@ -38,6 +75,9 @@ class OfflineTileServerPlugin : Plugin() {
     
     private fun initializeServer() {
         try {
+            // Activity/config recreation can call load() again; release :8080 before rebinding.
+            stopExistingTileServer()
+
             // Check storage permission first (Android 11+)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
                 if (!android.os.Environment.isExternalStorageManager()) {
@@ -154,6 +194,28 @@ class OfflineTileServerPlugin : Plugin() {
     }
     
     @PluginMethod
+    fun basemapSetFolder(call: PluginCall) {
+        val path = call.getString("path")
+        try {
+            if (tileServer == null) {
+                initializeServer()
+            }
+            if (path.isNullOrBlank()) {
+                tileServer?.updateBasemapFolder(null)
+            } else {
+                tileServer?.updateBasemapFolder(Uri.parse(path))
+            }
+            val ret = JSObject()
+            ret.put("ok", true)
+            ret.put("baseUrl", "http://localhost:8080")
+            ret.put("port", 8080)
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject("Failed to set base map folder: ${e.message}")
+        }
+    }
+
+    @PluginMethod
     fun checkStoragePermission(call: PluginCall) {
         val ret = JSObject()
         val hasPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -226,24 +288,182 @@ class TileServer(
         android.util.Log.d("TileServer", "Folder path updated to: ${baseDir.absolutePath}")
     }
 
+    /**
+     * Custom base map folder, served under /basemap/ (swappable at runtime, same
+     * server/port). Null when no custom base map is selected. Kept separate from
+     * `baseDir` so the default tiles + user raster layers are never disturbed.
+     */
+    @Volatile
+    private var basemapDir: File? = null
+
+    fun updateBasemapFolder(newUri: Uri?) {
+        basemapDir = try {
+            newUri?.let { resolveBaseDir(it) }
+        } catch (e: Exception) {
+            android.util.Log.e("TileServer", "basemap folder resolve failed: ${e.message}")
+            null
+        }
+        android.util.Log.d("TileServer", "Base map folder: ${basemapDir?.absolutePath ?: "(cleared)"}")
+    }
+
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         return try {
             val uri = session.uri
-            
+
+            // Raster tile route delegated to RasterTilingPlugin (if registered).
+            // Pattern: /layers/<layerId>/<z>/<x>/<y>.webp
+            // Sits before the pbf pattern so a layerId starting with digits
+            // can't be mis-routed into the vector path.
+            val rasterPattern = Regex("^/layers/([^/]+)/(\\d+)/(\\d+)/(\\d+)\\.webp$")
+            val rasterMatch = rasterPattern.find(uri)
+            if (rasterMatch != null) {
+                val (id, zStr, xStr, yStr) = rasterMatch.destructured
+                val bytes = OfflineTileServerPlugin.callRaster(
+                    id, zStr.toInt(), xStr.toInt(), yStr.toInt()
+                )
+                return if (bytes != null) {
+                    val res = NanoHTTPD.newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.OK,
+                        "image/webp",
+                        ByteArrayInputStream(bytes),
+                        bytes.size.toLong()
+                    )
+                    res.addHeader("Cache-Control", "public, max-age=31536000, immutable")
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    res
+                } else {
+                    val res = NanoHTTPD.newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.NOT_FOUND,
+                        NanoHTTPD.MIME_PLAINTEXT,
+                        "Raster tile not found: $id z=$zStr x=$xStr y=$yStr"
+                    )
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    res
+                }
+            }
+
+            // ── /basemap/... — custom base map tiles + config.txt ──
+            // Served from `basemapDir` (swappable via basemapSetFolder) with the
+            // same immutable-cache policy as the raster route. The default tiles
+            // (served from baseDir) and the stable port stay untouched.
+            //
+            // NOTE vs the in-repo Android copy: that one calls a dedicated
+            // `corsNotFound(...)` helper here. This file's `errorResponse(...)`
+            // already sets Access-Control-Allow-Origin on its 404, so it IS that
+            // helper — reused rather than duplicated.
+            // ── /basemap/__levels — the zoom levels this pack actually has ──
+            // Replaces the minZoom/maxZoom that config.txt used to declare: the
+            // SERVER owns the folder, so it can list the numeric z subdirectories
+            // directly instead of the app being told, or guessing by probing tiles
+            // (which misreads a pack whose 0/0 tile is absent at deeper levels).
+            // The deepest level is the pack's MAX NATIVE ZOOM - the last level with
+            // real tiles, past which the renderer upscales rather than requesting
+            // tiles that would 404. Not a cap on how far the user may zoom.
+            //
+            // Answered BEFORE the generic file route below, so a folder that
+            // happens to contain a "__levels" entry cannot shadow it.
+            if (uri == "/basemap/__levels") {
+                val dir = basemapDir ?: return errorResponse("No base map folder set")
+                val levels = (dir.listFiles() ?: emptyArray())
+                    .filter { it.isDirectory }
+                    .mapNotNull { it.name.toIntOrNull() }
+                    .sorted()
+
+                // Extras used to CHECK the projection/format picked in the Map
+                // Tiles dialog, so a wrong pick is reported instead of silently
+                // rendering a blank map:
+                //   sampleExt   - the extension really used on disk
+                //   probeZ/maxX - widest column index at the shallowest level. A
+                //     Mercator grid has at most 2^z columns, so more than that
+                //     only fits EPSG:4326.
+                // All locals are `val` so they stay smart-castable below.
+                val probeZ = levels.firstOrNull()
+                val zDir = probeZ?.let { File(dir, it.toString()) }
+                val xs = (zDir?.listFiles() ?: emptyArray())
+                    .filter { it.isDirectory }
+                    .mapNotNull { it.name.toIntOrNull() }
+                    .sorted()
+                val maxX = xs.lastOrNull()
+                val sampleExt = if (zDir != null && xs.isNotEmpty()) {
+                    (File(zDir, xs.first().toString()).listFiles() ?: emptyArray())
+                        .firstOrNull { it.isFile && it.extension.isNotEmpty() }
+                        ?.extension
+                        ?.lowercase()
+                        // Constrained charset so the value is always JSON-safe.
+                        ?.takeIf { it.matches(Regex("^[a-z0-9]{1,5}$")) }
+                } else null
+
+                val body = StringBuilder("{\"levels\":[")
+                    .append(levels.joinToString(","))
+                    .append("]")
+                    .apply {
+                        if (probeZ != null) append(",\"probeZ\":").append(probeZ)
+                        if (maxX != null) append(",\"maxX\":").append(maxX)
+                        if (sampleExt != null) {
+                            append(",\"sampleExt\":\"").append(sampleExt).append("\"")
+                        }
+                    }
+                    .append("}")
+                    .toString()
+                val res = NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    "application/json",
+                    body
+                )
+                // Deliberately NOT cached: the folder can be swapped at runtime.
+                res.addHeader("Cache-Control", "no-store")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
+            }
+
+            if (uri == "/basemap" || uri.startsWith("/basemap/")) {
+                val dir = basemapDir ?: return errorResponse("No base map folder set")
+                val rel = uri.removePrefix("/basemap").removePrefix("/")
+                val file = File(dir, rel)
+                // Path-guard: must stay within the base map folder (separator-aware
+                // so a sibling like ".../tiles2" can't match ".../tiles").
+                val dirCanon = dir.canonicalPath
+                val fileCanon = file.canonicalPath
+                if (fileCanon != dirCanon &&
+                    !fileCanon.startsWith(dirCanon + File.separator)
+                ) {
+                    val res = NanoHTTPD.newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.FORBIDDEN,
+                        NanoHTTPD.MIME_PLAINTEXT,
+                        "Forbidden"
+                    )
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
+                }
+                if (!file.exists() || !file.isFile) {
+                    return errorResponse("Not found")
+                }
+                val bytes = file.readBytes()
+                val res = NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    basemapMime(file.name),
+                    ByteArrayInputStream(bytes),
+                    bytes.size.toLong()
+                )
+                res.addHeader("Cache-Control", "public, max-age=31536000, immutable")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
+            }
+
             // Handle style.json request
             if (uri == "/style.json" || uri == "/style.json/") {
                 return serveStyleJson()
             }
-            
+
             // Handle font glyph requests: /fonts/{fontstack}/{range}.pbf
             val fontPattern = Regex("^/fonts/([^/]+)/([^/]+)\\.pbf$")
             val fontMatch = fontPattern.find(uri)
-            
+
             if (fontMatch != null) {
                 val (fontstack, range) = fontMatch.destructured
                 return serveFontGlyph(fontstack, range)
             }
-            
+
             // Handle tile requests: /{z}/{x}/{y}.pbf (no /tiles/ prefix)
             val tilePattern = Regex("^/(\\d+)/(\\d+)/(\\d+)\\.pbf$")
             val match = tilePattern.find(uri)
@@ -433,5 +653,19 @@ class TileServer(
         )
         res.addHeader("Access-Control-Allow-Origin", "*")
         return res
+    }
+
+    /** MIME type for a base map file by extension. */
+    private fun basemapMime(name: String): String {
+        val n = name.lowercase()
+        return when {
+            n.endsWith(".png") -> "image/png"
+            n.endsWith(".jpg") || n.endsWith(".jpeg") -> "image/jpeg"
+            n.endsWith(".webp") -> "image/webp"
+            n.endsWith(".json") -> "application/json"
+            n.endsWith(".txt") -> "text/plain"
+            n.endsWith(".pbf") -> "application/x-protobuf"
+            else -> "application/octet-stream"
+        }
     }
 }

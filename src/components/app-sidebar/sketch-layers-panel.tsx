@@ -14,6 +14,7 @@ import {
   Info,
 } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
+import ConfirmDialog from "../ui/confirm-dialog";
 import { Button } from "../ui/button";
 import {
   useFocusLayerRequest,
@@ -26,13 +27,13 @@ import SketchLayerCardSkeleton from "./sketch-layer-card-skeleton";
 import {
   calculateBearingDegrees,
   formatLayerMeasurements,
-  normalizeAngleSigned,
+  azimuthDisplayAngle,
+  isStoreLayerPickObject,
   type LayerMeasurement,
 } from "@/lib/layers";
 import { isSketchLayer } from "@/lib/sketch-layers";
 import type { LayerProps } from "@/lib/definitions";
 
-// Component to handle skeleton transition for individual sketch layer items
 type SketchLayerCardItemProps = {
   layer: LayerProps;
   isSelected: boolean;
@@ -79,7 +80,9 @@ const SketchLayerCardItem = ({
   }
 
   return (
-    <div className="mb-3">
+    // pb-3, not mb-3 — virtuoso item root; a child margin collapses out of the
+    // measured box and shortens the list's scroll range. See LayerCardSkeleton.
+    <div className="pb-3">
       <div
         key={layer.id}
         className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
@@ -171,9 +174,9 @@ const SketchLayerCardItem = ({
                     !measurement.isIgrsUnavailable
                       ? "IGRS"
                       : measurement.label.includes("IGRS") &&
-                        measurement.isIgrsUnavailable
-                      ? "LAT/LONG"
-                      : measurement.label}
+                          measurement.isIgrsUnavailable
+                        ? "LAT/LONG"
+                        : measurement.label}
                     {measurement.isIgrsUnavailable && (
                       <div className="relative group">
                         <Info
@@ -225,16 +228,17 @@ const SketchLayersPanel = ({
 
   const sketchLayers = useMemo(
     () => layers.filter(isSketchLayer).slice().reverse(),
-    [layers]
+    [layers],
   );
   const layerIds = useMemo(
     () => sketchLayers.map((layer) => layer.id),
-    [sketchLayers]
+    [sketchLayers],
   );
   const layerIdSignature = useMemo(() => layerIds.join("|"), [layerIds]);
   const layerIdSet = useMemo(() => new Set(layerIds), [layerIds]);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
   const [windowHeight, setWindowHeight] = useState(() => window.innerHeight);
   const [renderedItems, setRenderedItems] = useState<Set<string>>(new Set());
@@ -264,12 +268,11 @@ const SketchLayersPanel = ({
     }
   }, [focusedLayerId, layerIdSignature, layerIds]);
 
-  // Reset rendered items when layers change significantly
   useEffect(() => {
     const layerIdsSet = new Set(layerIds);
     setRenderedItems((prev) => {
       const filtered = new Set(
-        Array.from(prev).filter((id) => layerIdsSet.has(id))
+        Array.from(prev).filter((id) => layerIdsSet.has(id)),
       );
       return filtered;
     });
@@ -283,7 +286,7 @@ const SketchLayersPanel = ({
     setSelectedIds((prev) =>
       prev.includes(layerId)
         ? prev.filter((id) => id !== layerId)
-        : [...prev, layerId]
+        : [...prev, layerId],
     );
   };
 
@@ -295,22 +298,22 @@ const SketchLayersPanel = ({
     }
   };
 
+  // Opens the in-app dialog instead of window.confirm(), whose heading is browser
+  // chrome we cannot control — it reads 'The page at "https://localhost" says',
+  // which is meaningless here and wrong once this code is embedded in a host app.
   const handleBulkDelete = () => {
     if (!selectedIds.length) return;
-    if (
-      confirm(
-        `Delete ${selectedIds.length} selected layer${
-          selectedIds.length > 1 ? "s" : ""
-        }?`
-      )
-    ) {
-      // Clear any active tooltip; selection implies intent to remove hovered layer
-      setHoverInfo(undefined);
-      selectedIds.forEach((id) => {
-        deleteLayer(id);
-      });
-      setSelectedIds([]);
-    }
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmBulkDelete = () => {
+    setDeleteConfirmOpen(false);
+    // Clear any active tooltip; selection implies intent to remove hovered layer
+    setHoverInfo(undefined);
+    selectedIds.forEach((id) => {
+      deleteLayer(id);
+    });
+    setSelectedIds([]);
   };
 
   const handleBulkToggleVisibility = () => {
@@ -318,7 +321,7 @@ const SketchLayersPanel = ({
 
     // Get selected layers
     const selectedLayers = sketchLayers.filter((layer) =>
-      selectedIds.includes(layer.id)
+      selectedIds.includes(layer.id),
     );
 
     // Toggle each layer individually based on its current state
@@ -354,7 +357,7 @@ const SketchLayersPanel = ({
       hoveredLayerId = (hoveredObject as any).layer.id;
     } else if ((hoveredObject as any)?.layerId) {
       hoveredLayerId = (hoveredObject as any).layerId;
-    } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
+    } else if (isStoreLayerPickObject(hoveredObject)) {
       hoveredLayerId = (hoveredObject as any).id;
     } else if (hoverInfo.layer?.id) {
       const deckLayerId = hoverInfo.layer.id;
@@ -366,7 +369,7 @@ const SketchLayersPanel = ({
             deckLayerId.startsWith(`${l.id}-icon-layer`) ||
             deckLayerId.startsWith(`${l.id}-signal-overlay`) ||
             deckLayerId.startsWith(`${l.id}-bitmap`) ||
-            deckLayerId.startsWith("polygon-outline-layer")
+            deckLayerId.startsWith("polygon-outline-layer"),
         )?.id;
     }
 
@@ -382,77 +385,77 @@ const SketchLayersPanel = ({
       );
     }
 
-    // Calculate height based on number of layers, capped at 90% of screen height
-    const estimatedItemHeight = 300; // Estimated height per item in pixels
-    const calculatedHeight = sketchLayers.length * estimatedItemHeight + 32; // 24px for padding
-    const maxHeight = windowHeight * 0.9;
-    const dynamicHeight = Math.min(calculatedHeight, maxHeight);
-
     return (
-      <div className="overflow-y-auto" style={{ height: `${dynamicHeight}px` }}>
-        <Virtuoso
-          style={{
-            height: `100%`,
-          }}
-          data={sketchLayers}
-          increaseViewportBy={280}
-          components={{
-            Footer: () => <div style={{ height: "180px" }} />, // Add bottom padding to ensure last item is fully visible
-          }}
-          itemContent={(_, layer) => {
-            const azimuthAngle =
-              layer.type === "azimuth" &&
-              layer.azimuthCenter &&
-              layer.azimuthTarget
-                ? normalizeAngleSigned(
-                    calculateBearingDegrees(
-                      layer.azimuthCenter,
-                      layer.azimuthTarget
-                    )
-                  )
-                : normalizeAngleSigned(layer.azimuthAngleDeg ?? 0);
+      <Virtuoso
+        // `none`, not `contain`. Both stop scroll-chaining to the map/page, but
+        // only `none` also suppresses the LOCAL overscroll affordance — `contain`
+        // still lets the container rubber-band past its own ends, which is the
+        // bounce seen when scrolling rapidly to the bottom on Android.
+        style={{ height: "100%", overscrollBehavior: "none" }}
+        data={sketchLayers}
+        increaseViewportBy={280}
+        itemContent={(_, layer) => {
+          const azimuthAngle =
+            layer.type === "azimuth" &&
+            layer.azimuthCenter &&
+            layer.azimuthTarget
+              ? azimuthDisplayAngle(
+                  calculateBearingDegrees(
+                    layer.azimuthCenter,
+                    layer.azimuthTarget,
+                  ),
+                )
+              : azimuthDisplayAngle(layer.azimuthAngleDeg ?? 0);
 
-            const measurements = formatLayerMeasurements(
-              layer.type === "azimuth"
-                ? { ...layer, azimuthAngleDeg: azimuthAngle }
-                : layer,
-              { useIgrs }
-            );
-            const badgeClass =
-              typeAccent[layer.type] ?? "text-slate-600 bg-slate-100";
-            const isSelected = selectedIds.includes(layer.id);
-            const isFocused = focusedLayerId === layer.id;
-            const isRendered = renderedItems.has(layer.id);
+          const measurements = formatLayerMeasurements(
+            layer.type === "azimuth"
+              ? { ...layer, azimuthAngleDeg: azimuthAngle }
+              : layer,
+            { useIgrs },
+          );
+          const badgeClass =
+            typeAccent[layer.type] ?? "text-slate-600 bg-slate-100";
+          const isSelected = selectedIds.includes(layer.id);
+          const isFocused = focusedLayerId === layer.id;
+          const isRendered = renderedItems.has(layer.id);
 
-            return (
-              <SketchLayerCardItem
-                layer={layer}
-                isSelected={isSelected}
-                isFocused={isFocused}
-                measurements={measurements}
-                badgeClass={badgeClass}
-                enableSelection={enableSelection}
-                useIgrs={useIgrs}
-                onToggleSelect={toggleSelect}
-                onToggleVisibility={handleToggleVisibility}
-                onFocusLayer={focusLayer}
-                onUpdateLayer={updateLayer}
-                setFocusedLayerId={setFocusedLayerId}
-                onItemRendered={handleItemRendered}
-                isRendered={isRendered}
-              />
-            );
-          }}
-        />
-      </div>
+          return (
+            <SketchLayerCardItem
+              layer={layer}
+              isSelected={isSelected}
+              isFocused={isFocused}
+              measurements={measurements}
+              badgeClass={badgeClass}
+              enableSelection={enableSelection}
+              useIgrs={useIgrs}
+              onToggleSelect={toggleSelect}
+              onToggleVisibility={handleToggleVisibility}
+              onFocusLayer={focusLayer}
+              onUpdateLayer={updateLayer}
+              setFocusedLayerId={setFocusedLayerId}
+              onItemRendered={handleItemRendered}
+              isRendered={isRendered}
+            />
+          );
+        }}
+      />
     );
   };
 
   if (variant === "plain") {
+    const selectionBarHeight = enableSelection && sketchLayers.length > 0 ? 48 : 0;
+    const listHeight = Math.max(
+      48,
+      Math.min(
+        sketchLayers.length * 220 + 20,
+        windowHeight * 0.65 - selectionBarHeight,
+      ),
+    );
+
     return (
-      <div className="space-y-3 overflow-hidden">
+      <div className="flex flex-col overflow-hidden">
         {enableSelection && sketchLayers.length > 0 && (
-          <div className="flex items-center justify-between px-0 py-2 text-[13px] sticky top-0 z-10 bg-background mb-4">
+          <div className="flex items-center justify-between px-0 py-2 text-[13px] bg-background shrink-0">
             <label className="flex items-center gap-2 font-medium text-foreground pl-[2%] pr-[2%]">
               <input
                 type="checkbox"
@@ -486,7 +489,22 @@ const SketchLayersPanel = ({
             </div>
           </div>
         )}
-        {renderList()}
+        <div style={{ height: `${listHeight}px` }}>
+          {renderList()}
+        </div>
+
+        {/* The dialog must be rendered in BOTH return paths. This `plain` variant
+            is the one the measurement / layers / network consoles use
+            (map/measurement-box.tsx et al) and it returns before the SidebarGroup
+            branch below — so a dialog placed only there never mounted here, and
+            Delete set state that nothing was listening to: a silent no-op. */}
+        <ConfirmDialog
+          open={deleteConfirmOpen}
+          title="Are you sure you want to delete selected layer/s?"
+          destructive
+          onConfirm={confirmBulkDelete}
+          onCancel={() => setDeleteConfirmOpen(false)}
+        />
       </div>
     );
   }
@@ -545,8 +563,18 @@ const SketchLayersPanel = ({
       <SidebarGroupContent
         className={`${isOpen ? "block" : "hidden"} transition-all relative`}
       >
-        {renderList()}
+        <div style={{ height: `${Math.min(sketchLayers.length * 220 + 20, windowHeight * 0.55)}px` }}>
+          {renderList()}
+        </div>
       </SidebarGroupContent>
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        title="Are you sure you want to delete selected layer/s?"
+        destructive
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setDeleteConfirmOpen(false)}
+      />
     </SidebarGroup>
   );
 };

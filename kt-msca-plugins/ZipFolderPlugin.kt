@@ -39,11 +39,7 @@ class ZipFolderPlugin : Plugin() {
     fun zipHscSessionsFolder(call: PluginCall) {
         Thread {
             try {
-                // Source folder: /Android/data/com.example.app/files/documents/HSC-SESSIONS
-                var docsRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-                if (docsRoot == null) {
-                    docsRoot = context.filesDir
-                }
+                val docsRoot = context.getExternalFilesDir(null) ?: context.filesDir
 
                 val sourceDir = File(docsRoot, "HSC-SESSIONS")
 
@@ -368,8 +364,7 @@ class ZipFolderPlugin : Plugin() {
 
         Thread {
             try {
-                var docsRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-                if (docsRoot == null) docsRoot = context.filesDir
+                val docsRoot = context.getExternalFilesDir(null) ?: context.filesDir
 
                 val destDir = File(docsRoot, outputDir)
                 if (!destDir.exists()) {

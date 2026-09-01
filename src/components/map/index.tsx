@@ -12,17 +12,38 @@ import {
   TextLayer,
 } from "@deck.gl/layers";
 import unkinkPolygon from "@turf/unkink-polygon";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import IconSelection from "./icon-selection";
 import MeasurementBox from "./measurement-box";
 import NetworkBox from "./network-box";
+import RouteBox, {
+  type RouteToolState,
+  initialRouteToolState,
+} from "./route-box";
 import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
+import { useUdpDataStore } from "@/store/udp-data-store";
 // import UdpConfigDialog from "./udp-config-dialog"; // Removed: port is now fixed at 40074
 import OfflineLocationTracker from "./offline-location-tracker";
 import { initializeTileServer } from "./tile-folder-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "../ui/dialog";
 import {
   useRubberBandRectangle,
   useRubberBandOverlay,
@@ -48,14 +69,16 @@ import {
 import {
   calculateBearingDegrees,
   calculateDistanceMeters,
-  destinationPoint,
+  northReferencePoint,
   generateLayerId,
   isPointNearFirstPoint,
   getPolygonCloseThreshold,
-  normalizeAngleSigned,
+  azimuthDisplayAngle,
+  startHiddenOnImport,
   computePolygonAreaMeters,
   computePolygonPerimeterMeters,
   calculateLayerZoomRange,
+  isStoreLayerPickObject,
 } from "@/lib/layers";
 import {
   formatArea,
@@ -66,6 +89,7 @@ import {
   // generateRandomColor,
 } from "@/lib/utils";
 import type { LayerProps } from "@/lib/definitions";
+import { isSketchLayer } from "@/lib/sketch-layers";
 import { toast } from "@/lib/toast";
 import { NativeUploader } from "@/plugins/native-uploader";
 import { Geolocation } from "@capacitor/geolocation";
@@ -73,7 +97,25 @@ import { ZipFolder } from "@/plugins/zip-folder";
 import { Screenshot } from "@/plugins/screenshot";
 import { Capacitor } from "@capacitor/core";
 import { stagedPathToFile } from "@/utils/stagedPathToFile";
-import { MAX_UPLOAD_FILES, HSC_FILES_DIR, HSC_BASE_DIR } from "@/sessions/constants";
+import { MAX_UPLOAD_FILES, getHscFilesDir } from "@/sessions/constants";
+import {
+  UDP_PORT,
+  MAPBOX_ACCESS_TOKEN,
+  DEFAULT_CENTER,
+  DEFAULT_ZOOM,
+  INITIAL_MAP_ZOOM,
+  GEOLOCATION_ZOOM,
+  MAP_MIN_ZOOM,
+  MAP_MAX_ZOOM,
+  MAP_MAX_PITCH,
+  MAX_MERCATOR_LATITUDE,
+  TILE_SOURCE_MAX_NATIVE_ZOOM,
+  ANDROID_TILES_PATH,
+  ANDROID_SCREENSHOTS_PATH,
+  TILES_FOLDER_NAME,
+  STORAGE_PERMISSION_TIMEOUT_MS,
+  DEFAULT_LAYER_MAX_ZOOM,
+} from "@/lib/constants";
 import {
   upsertManifestEntry,
   finalizeSaveManifest,
@@ -86,43 +128,428 @@ import {
   createVectorLayer,
 } from "@/utils/parser";
 import { generateRandomColor } from "@/lib/utils";
-import { Settings } from "lucide-react";
+import { shouldTile } from "@/lib/tiling/threshold";
+import {
+  nextShortestRouteName,
+  persistShortestRouteToSession,
+} from "@/lib/route-layer";
+import { runTilingUpload } from "@/lib/tiling/upload";
+import {
+  addOrUpdateTiledRaster,
+  applyTiledRasterViewportCulling,
+  pruneOrphanTiledRasters,
+  removeTiledRaster,
+} from "@/lib/tiling/render";
+import { waitForRasterTilesLoaded } from "@/lib/tiling/wait-for-tiles";
+import { RasterTiling } from "@/plugins/raster-tiling";
+import { Settings, Pencil, Loader2 as Loader2Icon } from "lucide-react";
+import { OfflineTileServer } from "@/plugins/offline-tile-server";
+import {
+  useBasemapStore,
+  useActiveBasemapSource,
+  basemapLabelFromPath,
+} from "@/lib/basemap/basemapStore";
+import {
+  classifyTiles,
+  resolveTilesConfig,
+  fetchPackInfo,
+  validateTileChoice,
+  projectionLabel,
+  PROJECTION_OPTIONS,
+  TILE_FORMAT_OPTIONS,
+  type TilesConfig,
+  type Projection,
+  type PackInfo,
+  type TileChoiceProblem,
+} from "@/lib/basemap/tileConfig";
+import { mapboxZoomToOrtho, orthoZoomToMapbox } from "@/lib/basemap/tileGrid";
+import GeodeticBasemapView from "./geodetic-basemap-view";
+import type { ElectronAPI } from "@/electron";
+import type { StyleSpecification } from "mapbox-gl";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import ConfirmDialog from "@/components/ui/confirm-dialog";
+
+/** Last path segment, lowercased (handles Windows `\\` and nested zip paths). */
+function fileBasenameLower(fileName: string): string {
+  const normalized = fileName.replace(/\\/g, "/");
+  return (normalized.split("/").pop() ?? normalized).toLowerCase();
+}
+
+/**
+ * Last DEM in `layers` order under lng/lat = topmost raster in the Deck stack.
+ *
+ * Takes the zoom-visibility PREDICATE rather than a zoom number so it asks exactly
+ * the same question the renderer does. It used to re-derive the min/max range and
+ * compare `Math.floor(mapZoom)`, which drifted from `getZoomVisibility` (2-decimal
+ * debounced zoom) — so a raster could be off-screen yet still pickable, or vice
+ * versa, and its tooltip would open for a layer that was not drawn.
+ */
+function resolveTopmostDemUnderLngLat(
+  layers: LayerProps[],
+  isZoomVisible: (layer: LayerProps) => boolean,
+  lng: number,
+  lat: number,
+): LayerProps | null {
+  let top: LayerProps | null = null;
+  for (const layer of layers) {
+    if (layer.type !== "dem" || layer.visible === false || !layer.bounds) {
+      continue;
+    }
+    if (!isZoomVisible(layer)) continue;
+    const [[minLng, minLat], [maxLng, maxLat]] = layer.bounds;
+    if (lng < minLng || lng > maxLng || lat < minLat || lat > maxLat) continue;
+    top = layer;
+  }
+  return top;
+}
+
+/** Blue location-pin SVG (data URI) used for the "Your Location" marker. */
+const USER_LOCATION_ICON_URL =
+  "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJDNy41ODIgMiA0IDUuNTgyIDQgMTBDNCAxNi4wODggMTIgMjIgMTIgMjJDMTIgMjIgMjAgMTYuMDg4IDIwIDEwQzIwIDUuNTgyIDE2LjQxOCAyIDEyIDJaIiBmaWxsPSIjM0I4MkY2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMCIgcj0iMyIgZmlsbD0id2hpdGUiLz4KPC9zdmc+";
+
+function syntheticDemPickingInfo(
+  dem: LayerProps,
+  lng: number,
+  lat: number,
+  px: number,
+  py: number,
+): PickingInfo<unknown> {
+  return {
+    layer: { id: `${dem.id}-bitmap` } as PickingInfo<unknown>["layer"],
+    coordinate: [lng, lat],
+    x: px,
+    y: py,
+    object: null,
+  } as PickingInfo<unknown>;
+}
+
+/**
+ * Minimal mapbox-gl style that renders a single Web-Mercator (EPSG:3857) raster
+ * tile set (served under /basemap/) as the whole base map. Used when a custom
+ * 3857 raster folder is selected. EPSG:4326 sets can't be shown this way — they
+ * need the plate-carrée renderer (next phase).
+ */
+function buildRasterMercatorStyle(
+  baseUrl: string,
+  cfg: TilesConfig,
+  cacheKey = "",
+): StyleSpecification {
+  // ?v= makes immutable tile caching safe across folder switches (same /basemap/
+  // path, different folder content) — the Android server uses a fixed port.
+  const v = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+  return {
+    version: 8,
+    sources: {
+      "custom-basemap": {
+        type: "raster",
+        tiles: [`${baseUrl}/basemap/{z}/{x}/{y}.${cfg.format}${v}`],
+        tileSize: cfg.tileSize,
+        minzoom: cfg.minZoom,
+        maxzoom: cfg.maxZoom,
+      },
+    },
+    layers: [
+      {
+        id: "custom-basemap",
+        type: "raster",
+        source: "custom-basemap",
+      },
+    ],
+  } as StyleSpecification;
+}
+
+/**
+ * Load a custom VECTOR (.pbf) base map: fetch the folder's own style.json from the
+ * /basemap/ route and rewrite every vector-tile + glyph URL to point back through
+ * /basemap/. Returns false if the folder has no usable style.json. This is what
+ * lets a user pick a .pbf folder (same shape as the default) and have it render.
+ */
+async function applyVectorBasemap(
+  map: {
+    setStyle: (
+      style: StyleSpecification,
+      options?: { diff?: boolean },
+    ) => void;
+  },
+  base: string,
+  cacheKey: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/style.json`, { cache: "no-store" });
+    if (!res.ok) return false;
+    const style = (await res.json()) as {
+      sources?: Record<
+        string,
+        {
+          type?: string;
+          tiles?: string[];
+          minzoom?: number;
+          maxzoom?: number;
+        }
+      >;
+      glyphs?: string;
+      layers?: Array<{ layout?: Record<string, unknown> }>;
+    };
+    const v = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+    const toBase = (u: string) => {
+      let p = u;
+      try {
+        p = new URL(u).pathname;
+      } catch {
+        /* relative template */
+      }
+      if (!p.startsWith("/")) p = "/" + p;
+      return `${base}${p}${v}`;
+    };
+    if (style.sources) {
+      for (const key of Object.keys(style.sources)) {
+        const s = style.sources[key];
+        if (s?.type === "vector" && Array.isArray(s.tiles)) {
+          s.tiles = s.tiles.map(toBase);
+          // PRESERVE the tileset's own maxzoom (the tile server declares the real
+          // native max, e.g. 14). mapbox OVERZOOMS beyond it — scaling the last real
+          // tiles and requesting no more. The old code overwrote it with the camera
+          // max, so mapbox fetched the missing higher zooms → 404 → blank. Only fall
+          // back to the constant if the source omits maxzoom. (maxNativeZoom is a
+          // Leaflet prop mapbox ignores, so it's dropped.)
+          s.minzoom = MAP_MIN_ZOOM;
+          s.maxzoom = s.maxzoom ?? TILE_SOURCE_MAX_NATIVE_ZOOM;
+        }
+      }
+    }
+    if (typeof style.glyphs === "string" && style.glyphs.startsWith("/")) {
+      style.glyphs = `${base}${style.glyphs}`;
+    } else if (style.layers?.some((l) => l.layout?.["text-field"])) {
+      style.glyphs = `${base}/fonts/{fontstack}/{range}.pbf`;
+    }
+    // `{ diff: false }` — see the note on the default-style apply: the diff path
+    // drops our tiled-raster sources/layers and never fires "style.load", so the
+    // uploaded rasters would vanish on switching to a vector basemap too.
+    map.setStyle(style as unknown as StyleSpecification, { diff: false });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One hoverable vertex handle of a drawn polygon.
+ *
+ * `layerId` is the field the tooltip resolves the owning layer through, which is
+ * also what makes a hidden layer suppress the tooltip; `polygonVertex` is what
+ * tells the tooltip to report this vertex's own coordinates instead of treating it
+ * as a generic point.
+ */
+type PolygonVertexDatum = {
+  position: [number, number];
+  color: [number, number, number, number];
+  radius: number;
+  layerId: string;
+  polygonVertex: true;
+  vertexIndex: number;
+  vertexTotal: number;
+};
 
 // Settings Button Component
-function SettingsButton() {
+//
+// Also hosts the two-step Map Tiles setup: step 1 picks the tiles folder, step 2
+// asks for the projection and tile format. Those two cannot be worked out from a
+// folder of `{z}/{x}/{y}` images (projection is not observable at all), which is
+// why they are asked once instead of being read from a config.txt the user would
+// otherwise have to author by hand. The zoom range IS observable, so it is read
+// off the served folder and only shown back as confirmation.
+function SettingsButton({ tileServerUrl }: { tileServerUrl: string | null }) {
   const [isOpen, setIsOpen] = useState(false);
+  const isElectronBuild = !!(window as any).electronAPI;
 
-  // Get storage paths
-  const getStoragePaths = () => {
-    if (!Capacitor.isNativePlatform()) {
+  const defaultPaths = (() => {
+    if (isElectronBuild) {
       return {
-        tiles: "Internal storage/Documents/tiles",
-        screenshots: "Internal storage/Pictures/HSC Maps",
-        sessions: `Internal storage/documents/${HSC_BASE_DIR}`,
-        layers: `Internal storage/Android/data/org.deal.mcsa/files/documents/${HSC_FILES_DIR}`,
+        tiles: "Loading...",
+        screenshots: "Loading...",
+        downloads: "Loading...",
       };
     }
 
-    // Get app ID to determine the correct package path
-    const appId = Capacitor.getPlatform() === "android" 
-      ? "org.deal.mcsa" // MCSA app package
-      : "com.example.app"; // hsc-android package (fallback)
-
     return {
-      tiles: "Documents/tiles",
-      screenshots: "Pictures/HSC Maps",
-      sessions: `Android/data/${appId}/files/documents/${HSC_BASE_DIR}`,
-      layers: `Android/data/${appId}/files/documents/${HSC_FILES_DIR}`,
+      tiles: ANDROID_TILES_PATH,
+      screenshots: ANDROID_SCREENSHOTS_PATH,
+      downloads: `Internal Storage/Documents`,
     };
+  })();
+
+  const [paths, setPaths] = useState(defaultPaths);
+
+  // Single custom base map folder (or the built-in default when none is set).
+  const selectFolder = useBasemapStore((s) => s.selectFolder);
+  const setSourceConfig = useBasemapStore((s) => s.setSourceConfig);
+  const promptedForFolder = useBasemapStore((s) => s.promptedForFolder);
+  const markPromptedForFolder = useBasemapStore(
+    (s) => s.markPromptedForFolder,
+  );
+  const activeSource = useActiveBasemapSource();
+  const [pickingFolder, setPickingFolder] = useState(false);
+
+  // Which step of the Map Tiles setup is showing; null = just display the paths.
+  const [tileStep, setTileStep] = useState<null | "folder" | "config">(null);
+  // Step 2's pending selections (committed to the store on Apply, so a dismissed
+  // dialog changes nothing).
+  const [draftProjection, setDraftProjection] = useState<Projection | "">("");
+  const [draftFormat, setDraftFormat] = useState<string>("");
+  const [packInfo, setPackInfo] = useState<PackInfo | null>(null);
+  // A pick the folder contradicts, held until the user decides what to do.
+  const [mismatch, setMismatch] = useState<TileChoiceProblem | null>(null);
+
+  // The persisted store starts at its defaults and only becomes truthful once
+  // Preferences has been read back (async on both platforms). Without waiting,
+  // `promptedForFolder` reads false on every launch and the first-run prompt
+  // would reappear forever.
+  const [hydrated, setHydrated] = useState(
+    () => useBasemapStore.persist?.hasHydrated?.() ?? true,
+  );
+  useEffect(() => {
+    if (hydrated) return;
+    return useBasemapStore.persist.onFinishHydration(() => setHydrated(true));
+  }, [hydrated]);
+
+  // First launch: open the panel once, then never again. Dismissing it is fine —
+  // the built-in default basemap keeps working. An install that already has a
+  // folder from before this dialog existed starts at step 2 instead: it only
+  // needs the projection/format, not a re-pick of a path it already has.
+  useEffect(() => {
+    if (!hydrated || promptedForFolder) return;
+    markPromptedForFolder();
+    setIsOpen(true);
+    setTileStep(activeSource ? "config" : "folder");
+    // activeSource is read once, at the moment of the one-time prompt — it must
+    // not re-open the panel later when the source changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, promptedForFolder, markPromptedForFolder]);
+
+  // A source saved before this dialog existed (or one whose setup was dismissed)
+  // has no projection/format. Surface step 2 when the panel is opened so it can
+  // be completed, instead of leaving it silently guessing.
+  useEffect(() => {
+    if (!isOpen || tileStep !== null) return;
+    if (activeSource && !activeSource.projection) setTileStep("config");
+  }, [isOpen, tileStep, activeSource]);
+
+  // Prefill step 2 from whatever the source already has.
+  useEffect(() => {
+    if (tileStep !== "config") return;
+    setDraftProjection(activeSource?.projection ?? "");
+    setDraftFormat(activeSource?.format ?? "");
+  }, [tileStep, activeSource?.projection, activeSource?.format]);
+
+  // Read what the folder actually holds, for two purposes: showing the zoom range
+  // back to the user, and checking their picks against it on Apply. The deepest
+  // level is the pack's MAX NATIVE ZOOM — the last level with real tiles, past
+  // which the renderer upscales rather than requesting tiles that would 404. How
+  // far the user can zoom is not affected.
+  useEffect(() => {
+    if (tileStep !== "config" || !tileServerUrl || !activeSource) {
+      setPackInfo(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      // Same helper the renderer uses, so the dialog and the map can never
+      // disagree about what is on disk.
+      const info = await fetchPackInfo(`${tileServerUrl}/basemap`);
+      if (!cancelled) setPackInfo(info);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tileStep, tileServerUrl, activeSource]);
+
+  // Commit step 2. Split out so both the Apply button and the "use it anyway"
+  // branch of the mismatch warning go through exactly one code path.
+  const commitTileConfig = (projection: Projection, format: string) => {
+    if (!activeSource) return;
+    setSourceConfig(activeSource.id, { projection, format });
+    setMismatch(null);
+    setTileStep(null);
   };
 
-  const paths = getStoragePaths();
+  const applyTileConfig = () => {
+    if (!activeSource || !draftProjection || !draftFormat) return;
+    const problem = validateTileChoice(packInfo, {
+      projection: draftProjection,
+      format: draftFormat,
+    });
+    // Only a PROVABLE contradiction stops here; anything unverifiable applies
+    // straight away rather than nagging.
+    if (problem) {
+      setMismatch(problem);
+      return;
+    }
+    commitTileConfig(draftProjection, draftFormat);
+  };
+
+  // Resolve actual Windows paths from Electron main process
+  useEffect(() => {
+    if (!isElectronBuild) return;
+    const api = (window as any).electronAPI;
+    (async () => {
+      try {
+        const [docsPath, picsPath] = await Promise.all([
+          api.getPath("documents"),
+          api.getPath("pictures"),
+          api.getPath("userData"),
+        ]);
+        const docs = docsPath.replace(/\\/g, "/");
+        const pics = picsPath.replace(/\\/g, "/");
+        setPaths({
+          tiles: `${docs}/${TILES_FOLDER_NAME}`,
+          screenshots: `${pics}/HSC-Screenshots`,
+          downloads: `${docs}/HSC-SESSIONS`,
+        });
+      } catch (err) {
+        console.error("[SettingsButton] Failed to resolve paths:", err);
+      }
+    })();
+  }, [isElectronBuild]);
+
+  // Pick a folder and make it THE custom base map (replacing any previous one).
+  const handlePickFolder = async () => {
+    if (pickingFolder) return;
+    setPickingFolder(true);
+    try {
+      let picked: string | null = null;
+      const api = (window as Window & { electronAPI?: ElectronAPI })
+        .electronAPI;
+      if (api?.openFolder) {
+        picked = await api.openFolder();
+      } else {
+        const res = await OfflineTileServer.selectTileFolder();
+        picked = res?.uri ?? null;
+      }
+      if (picked) {
+        selectFolder(basemapLabelFromPath(picked), picked);
+        // Step 1 done → ask for projection/format for the folder just picked.
+        setTileStep("config");
+      }
+    } catch (err) {
+      console.error("[SettingsButton] Folder pick failed:", err);
+    } finally {
+      setPickingFolder(false);
+    }
+  };
+
+  const displayTilesPath = activeSource ? activeSource.path : paths.tiles;
 
   return (
     <div className="absolute top-2 right-2 z-50 pointer-events-none">
@@ -154,15 +581,166 @@ function SettingsButton() {
 
             <div className="space-y-3">
               <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-blue-500"></div>
-                  <span className="text-xs font-semibold text-slate-700 uppercase">
-                    Map Tiles
-                  </span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-blue-500"></div>
+                    <span className="text-xs font-semibold text-slate-700 uppercase">
+                      Map Tiles
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:opacity-60"
+                    title="Change base map folder"
+                    onClick={handlePickFolder}
+                    disabled={pickingFolder}
+                  >
+                    {pickingFolder ? (
+                      <Loader2Icon className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Pencil className="h-3.5 w-3.5" />
+                    )}
+                  </button>
                 </div>
                 <p className="text-xs text-slate-600 pl-4 font-mono break-all">
-                  {paths.tiles}
+                  {displayTilesPath}
                 </p>
+
+                {/* Step 1 - choose the folder. Shown on first launch; after that
+                    the pencil above is the way in and goes straight to the native
+                    folder picker.
+
+                    No step heading and no dismiss button. The panel sits directly
+                    under the MAP TILES label and its copy says what to do, and
+                    closing the popover already means "not now" — a ✕ that only
+                    hid a panel with nothing to lose was pure height. */}
+                {tileStep === "folder" && (
+                  <div className="ml-4 mt-2 space-y-2 rounded border border-blue-200 bg-blue-50/60 p-2.5">
+                    <p className="text-xs text-slate-600">
+                      Pick the folder holding your{" "}
+                      <span className="font-mono">{"{z}/{x}/{y}"}</span> tiles, or
+                      close this panel to keep the built-in map.
+                    </p>
+                    <Button
+                      size="sm"
+                      className="h-7 w-full text-xs"
+                      onClick={handlePickFolder}
+                      disabled={pickingFolder}
+                    >
+                      {pickingFolder ? (
+                        <>
+                          <Loader2Icon className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          Opening...
+                        </>
+                      ) : (
+                        "Browse..."
+                      )}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Step 2 - projection + format. Asked because neither can be
+                    detected from a folder of tiles; the zoom range below IS
+                    detected, and is shown read-only. */}
+                {tileStep === "config" && (
+                  <div className="ml-4 mt-2 space-y-2 rounded border border-blue-200 bg-blue-50/60 p-2.5">
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Projection
+                      </span>
+                      <Select
+                        value={draftProjection}
+                        onValueChange={(v) =>
+                          setDraftProjection(v as Projection)
+                        }
+                      >
+                        <SelectTrigger
+                          size="sm"
+                          className="w-full bg-white px-2 py-0 text-xs data-[size=sm]:h-7"
+                        >
+                          <SelectValue placeholder="Select projection" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PROJECTION_OPTIONS.map((o) => (
+                            <SelectItem
+                              key={o.value}
+                              value={o.value}
+                              className="py-1 text-xs"
+                            >
+                              {o.label} ({o.code})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Tile format
+                      </span>
+                      <Select value={draftFormat} onValueChange={setDraftFormat}>
+                        <SelectTrigger
+                          size="sm"
+                          className="w-full bg-white px-2 py-0 text-xs data-[size=sm]:h-7"
+                        >
+                          <SelectValue placeholder="Select format" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {TILE_FORMAT_OPTIONS.map((o) => (
+                            <SelectItem
+                              key={o.value}
+                              value={o.value}
+                              className="py-1 text-xs"
+                            >
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <p className="text-[11px] text-slate-500">
+                      {packInfo
+                        ? `Zoom levels found: ${packInfo.minZoom}-${packInfo.maxZoom} (max native zoom ${packInfo.maxZoom})`
+                        : "Zoom levels are detected from the folder."}
+                    </p>
+
+                    {/* Apply only. "Back" duplicated the ✎ beside the path above,
+                        which is how the folder is changed everywhere else in this
+                        panel. */}
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        className="h-7 text-xs"
+                        disabled={
+                          !activeSource || !draftProjection || !draftFormat
+                        }
+                        onClick={applyTileConfig}
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Settled state: how the folder is being read, with a way back
+                    into step 2 that skips re-picking the folder. */}
+                {tileStep === null && activeSource?.projection && (
+                  <button
+                    type="button"
+                    className="ml-4 mt-0.5 flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-700"
+                    title="Change projection or tile format"
+                    onClick={() => setTileStep("config")}
+                  >
+                    <span className="uppercase">
+                      {projectionLabel(activeSource.projection)}
+                      {" / "}
+                      {/* the option label would read "PNG (.png)" - extension only */}
+                      {activeSource.format?.toUpperCase()}
+                    </span>
+                    <Pencil className="h-2.5 w-2.5" />
+                  </button>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -181,38 +759,110 @@ function SettingsButton() {
                 <div className="flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-purple-500"></div>
                   <span className="text-xs font-semibold text-slate-700 uppercase">
-                    Session Files
+                    Downloaded Files
                   </span>
                 </div>
                 <p className="text-xs text-slate-600 pl-4 font-mono break-all">
-                  {paths.sessions}
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-orange-500"></div>
-                  <span className="text-xs font-semibold text-slate-700 uppercase">
-                    Layer Files
-                  </span>
-                </div>
-                <p className="text-xs text-slate-600 pl-4 font-mono break-all">
-                  {paths.layers}
+                  {paths.downloads}
                 </p>
               </div>
             </div>
           </div>
         </PopoverContent>
       </Popover>
+
+      {/* A pick the folder contradicts. Reuses the app's ConfirmDialog rather
+          than a native alert(), which in a WebView shows a "localhost says"
+          heading and cannot be styled. The confirm action is the FIX, since that
+          is what the user almost always wants; keeping the original pick stays
+          possible because the check can only see the shallowest level and a hand
+          built pack may legitimately be mixed. */}
+      <ConfirmDialog
+        open={mismatch !== null}
+        title={
+          mismatch?.kind === "format"
+            ? "These tiles are not " + mismatch.chosen.toUpperCase()
+            : "These tiles are not " + projectionLabel("epsg3857")
+        }
+        description={
+          mismatch?.kind === "format"
+            ? `The folder holds .${mismatch.actual} tiles, but ${mismatch.chosen.toUpperCase()} is selected. Keeping ${mismatch.chosen.toUpperCase()} will show a blank map. Switch to ${mismatch.actual.toUpperCase()}?`
+            : mismatch
+              ? `This folder has more columns than a ${projectionLabel("epsg3857")} grid can have, so it must be ${projectionLabel("epsg4326")}. Keeping ${projectionLabel("epsg3857")} will show a blank or distorted map. Switch to ${projectionLabel("epsg4326")}?`
+              : undefined
+        }
+        confirmLabel={
+          mismatch?.kind === "format"
+            ? `Use ${mismatch.actual.toUpperCase()}`
+            : `Use ${projectionLabel("epsg4326")}`
+        }
+        cancelLabel="Keep my choice"
+        onConfirm={() => {
+          if (!mismatch) return;
+          // Apply the correction, and reflect it in the dropdowns so the panel
+          // does not keep showing the value that was just rejected.
+          if (mismatch.kind === "format") {
+            setDraftFormat(mismatch.actual);
+            commitTileConfig(draftProjection as Projection, mismatch.actual);
+          } else {
+            setDraftProjection(mismatch.actual);
+            commitTileConfig(mismatch.actual, draftFormat);
+          }
+        }}
+        // "Keep my choice" (and a backdrop click) applies exactly what was
+        // picked. The check only samples the shallowest level, so a hand-built
+        // pack could legitimately contradict it - the user stays in charge.
+        onCancel={() => {
+          if (!mismatch) return;
+          commitTileConfig(draftProjection as Projection, draftFormat);
+        }}
+      />
     </div>
   );
 }
 
-function DeckGLOverlay({ layers }: { layers: any[] }) {
-  const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay({}));
+function DeckGLOverlay({
+  layers,
+  overlayRef,
+  demRasterPickSuppressRef,
+}: {
+  layers: any[];
+  overlayRef: MutableRefObject<MapboxOverlay | null>;
+  demRasterPickSuppressRef: MutableRefObject<boolean>;
+}) {
+  const layersRef = useRef(layers);
+  layersRef.current = layers;
+
+  const overlay = useControl<MapboxOverlay>(
+    () =>
+      new MapboxOverlay({
+        layerFilter: (ctx: { layer: { id: string }; isPicking: boolean }) => {
+          if (!ctx.isPicking) return true;
+          if (!demRasterPickSuppressRef.current) return true;
+          const lid = ctx.layer.id;
+          if (!lid.endsWith("-bitmap")) return true;
+          const baseId = lid
+            .replace(/-icon-layer$/, "")
+            .replace(/-signal-overlay$/, "")
+            .replace(/-bitmap$/, "")
+            .replace(/-mesh$/, "");
+          const storeLayer = (layersRef.current as LayerProps[]).find(
+            (l) => l.id === baseId,
+          );
+          if (storeLayer?.type === "dem") return false;
+          return true;
+        },
+      }),
+  );
+  overlayRef.current = overlay;
   useEffect(() => {
     overlay.setProps({ layers });
   }, [overlay, layers]);
+  useEffect(() => {
+    return () => {
+      overlayRef.current = null;
+    };
+  }, [overlayRef]);
 
   return null;
 }
@@ -238,10 +888,13 @@ const MapComponent = ({
     (a: [number, number], b: [number, number], thresholdMeters = 25) => {
       return calculateDistanceMeters(a, b) <= thresholdMeters;
     },
-    []
+    [],
   );
 
   const mapRef = useRef<any>(null);
+  const deckOverlayRef = useRef<MapboxOverlay | null>(null);
+  /** When true, Deck picking skips DEM `-bitmap` proxies so map click pick is O(vectors) not O(rasters). */
+  const demRasterPickSuppressRef = useRef(false);
   const zoomUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const zoomDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -290,10 +943,8 @@ const MapComponent = ({
           "appStateChange",
           async ({ isActive }) => {
             if (isActive) {
-       
-              const { initializeTileServer } = await import(
-                "./tile-folder-dialog"
-              );
+              const { initializeTileServer } =
+                await import("./tile-folder-dialog");
               // Wait for permissions when app comes to foreground (user might have granted them)
               const url = await initializeTileServer(true);
 
@@ -312,7 +963,7 @@ const MapComponent = ({
                 }, 100);
               }
             }
-          }
+          },
         );
       } catch (error) {
         // Capacitor App plugin not available, use browser visibility API as fallback
@@ -320,9 +971,8 @@ const MapComponent = ({
           if (!document.hidden) {
             // App came to foreground - restart tile server fresh
 
-            const { initializeTileServer } = await import(
-              "./tile-folder-dialog"
-            );
+            const { initializeTileServer } =
+              await import("./tile-folder-dialog");
             // Wait for permissions when app comes to foreground (user might have granted them)
             const url = await initializeTileServer(true);
 
@@ -363,12 +1013,43 @@ const MapComponent = ({
   // UDP config dialog removed - port is now fixed at 40074, data arrives automatically from intranet
 
   const { networkLayersVisible } = useNetworkLayersVisible();
+  const topologyNodes = useUdpDataStore((s) => s.udpData.topology.nodes);
+  /**
+   * True while the Route Finder is waiting for an A or B point.
+   *
+   * A ref, not state, because the raster pick handler is attached to the mapbox map
+   * ONCE (empty deps) and must read the live value, and because
+   * `commitDeckPickToHover` is called from deck's hover callbacks where a stale
+   * closure would let a tooltip through.
+   */
+  const routePickActiveRef = useRef(false);
+
+  /**
+   * Live `getZoomVisibility`, for handlers that cannot depend on it.
+   *
+   * The raster pick handler is attached to the mapbox map ONCE (empty deps), so it
+   * would otherwise capture the predicate from first render and pick rasters using a
+   * stale zoom. Assigned during render below, which always runs before the handler
+   * can fire.
+   */
+  const getZoomVisibilityRef = useRef<(layer: LayerProps) => boolean>(
+    () => true,
+  );
+
+  // Subscribed so an open tooltip can be closed the moment its subject stops
+  // arriving from the UDP feed (see the staleness effect below).
+  const topologyConnections = useUdpDataStore(
+    (s) => s.udpData.topology.connections,
+  );
+  const udpNetworkMembers = useUdpDataStore((s) => s.udpData.networkMembers);
+  const udpTargets = useUdpDataStore((s) => s.udpData.targets);
   const { dragStart, setDragStart } = useDragStart();
   const { mousePosition, setMousePosition } = useMousePosition();
-  const { layers, addLayer, setLayers } = useLayers();
+  const { layers, addLayer, setLayers, bringLayerToTop } = useLayers();
   // const { setNodeIconMappings } = useNodeIconMappings();
-  const { focusLayerRequest, setFocusLayerRequest } = useFocusLayerRequest();
-  const { drawingMode } = useDrawingMode();
+  const { focusLayerRequest, setFocusLayerRequest, focusLayer } =
+    useFocusLayerRequest();
+  const { drawingMode, setDrawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
   const { currentPath, setCurrentPath } = useCurrentPath();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
@@ -394,27 +1075,395 @@ const MapComponent = ({
     [number, number] | null
   >(null);
   const [rubberBandEnd, setRubberBandEnd] = useState<[number, number] | null>(
-    null
+    null,
   );
   const [isAndroidTablet, setIsAndroidTablet] = useState(false);
   const [rubberBandToastId, setRubberBandToastId] = useState<string | null>(
-    null
+    null,
   );
 
   const [selectedNodeForIcon, setSelectedNodeForIcon] = useState<string | null>(
-    null
+    null,
   );
-  const [mapZoom, setMapZoom] = useState(4);
+  const [mapZoom, setMapZoom] = useState(INITIAL_MAP_ZOOM);
   const [mapBearing, setMapBearing] = useState(0);
   // UDP config dialog state removed - port is now fixed at 40074
   const [showConnectionError, setShowConnectionError] = useState(false);
   const [isCameraPopoverOpen, setIsCameraPopoverOpen] = useState(false);
   const [isMeasurementBoxOpen, setIsMeasurementBoxOpen] = useState(false);
   const [isNetworkBoxOpen, setIsNetworkBoxOpen] = useState(false);
+  const [isRoutePanelOpen, setIsRoutePanelOpen] = useState(false);
+
+  // ── Android hardware / system BACK button ─────────────────────────────────
+  //
+  // Nothing listened for it at all, so on the GIS screen the button did nothing:
+  // Capacitor does not wire a default, and because this app never pushes History
+  // entries the WebView had nothing to pop either. That is why it was dead in both
+  // the standalone APK and the integrated host app.
+  //
+  // Back now dismisses ONE layer of UI per press, innermost first, which is the
+  // Android convention. Only the last case is delegated to the host: with nothing
+  // open we do NOT call App.exitApp() ourselves — in an integrated build the GIS
+  // screen is one screen inside someone else's activity stack, and killing the
+  // process would be hostile. Returning without calling preventDefault lets the
+  // host decide (pop its own back stack, or exit if it is the root).
+  const backHandlerStateRef = useRef({
+    hoverInfo: false,
+    drawingMode: false,
+    rubberBandMode: false,
+    isRoutePanelOpen: false,
+    isMeasurementBoxOpen: false,
+    isNetworkBoxOpen: false,
+    isLayersBoxOpen: false,
+  });
+  backHandlerStateRef.current = {
+    hoverInfo: !!hoverInfo,
+    drawingMode: !!drawingMode,
+    rubberBandMode,
+    isRoutePanelOpen,
+    isMeasurementBoxOpen,
+    isNetworkBoxOpen,
+    isLayersBoxOpen: !!isLayersBoxOpen,
+  };
+  // Latest closers, read through a ref so the listener is registered ONCE and
+  // never re-attached (a re-attach races with the native listener list and can
+  // drop presses).
+  const backHandlerActionsRef = useRef<() => boolean>(() => false);
+  backHandlerActionsRef.current = () => {
+    const st = backHandlerStateRef.current;
+    // 1. A tooltip is the lightest thing on screen — dismiss it first.
+    if (st.hoverInfo) {
+      setHoverInfo(undefined);
+      return true;
+    }
+    // 2. An in-progress sketch: cancel the mode and drop the partial geometry,
+    //    so back behaves like "abandon this drawing" rather than leaving a
+    //    half-drawn path armed.
+    if (st.drawingMode) {
+      setDrawingMode(null);
+      setIsDrawing(false);
+      setCurrentPath([]);
+      setPendingPolygonPoints([]);
+      return true;
+    }
+    if (st.rubberBandMode) {
+      setRubberBandMode(false);
+      return true;
+    }
+    if (st.isRoutePanelOpen) {
+      setIsRoutePanelOpen(false);
+      return true;
+    }
+    // 3. Panels, outermost UI last.
+    if (st.isMeasurementBoxOpen) {
+      setIsMeasurementBoxOpen(false);
+      return true;
+    }
+    if (st.isNetworkBoxOpen) {
+      setIsNetworkBoxOpen(false);
+      return true;
+    }
+    if (st.isLayersBoxOpen) {
+      onToggleLayersBox?.();
+      return true;
+    }
+    return false; // nothing of ours to close — let the host handle it
+  };
+
+  useEffect(() => {
+    let listener: { remove: () => void } | undefined;
+    let removed = false;
+
+    (async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        const l = await App.addListener("backButton", () => {
+          backHandlerActionsRef.current();
+        });
+        if (removed) l.remove();
+        else listener = l;
+      } catch {
+        // Not running under Capacitor (browser / Electron) — nothing to bind.
+      }
+    })();
+
+    return () => {
+      removed = true;
+      listener?.remove();
+    };
+  }, []);
+
+  const [routeState, setRouteState] = useState<RouteToolState>(
+    initialRouteToolState,
+  );
+  const dijkstraWorkerRef = useRef<Worker | null>(null);
+  // Mirror "waiting for a route endpoint" into the ref the pick handlers read, and
+  // dismiss any tooltip already on screen when placement begins — otherwise a panel
+  // opened a moment earlier keeps covering the spot the user is aiming at.
+  useEffect(() => {
+    const active = isRoutePanelOpen && !!routeState.pickMode;
+    routePickActiveRef.current = active;
+    if (active) setHoverInfo(undefined);
+  }, [isRoutePanelOpen, routeState.pickMode, setHoverInfo]);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
+  // Flips true once the mapbox instance has loaded. The custom-basemap apply effect
+  // depends on this so it RE-RUNS when the map becomes ready. On restart the tile
+  // server URL and the rehydrated basemap selection can both be set BEFORE the map
+  // instance exists, so the effect's first run bails on a null map and — since no
+  // other dependency changes afterward — would never fire again, leaving the
+  // default basemap loaded instead of the saved one.
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const [tileDataError, setTileDataError] = useState<string | null>(null);
+  // Live "is the map actually rendering tiles?" signal — driven by the fetch
+  // interceptor (see the tile-server effect below). It latches true the instant ANY
+  // tile returns OK, from mapbox raster/vector sources OR the deck.gl geodetic view.
+  // This is the ONE signal that works across every renderer (mapbox-only style
+  // checks miss the geodetic deck view entirely); a blank map where every tile 404s
+  // never sets it.
+  const [mapHasTiles, setMapHasTiles] = useState(false);
+  // True once the user dismisses the dialog, so a persistently-blank map doesn't
+  // re-pop it. Reset when the active basemap changes (see effect below) so a
+  // freshly-picked basemap is judged on its own.
+  const [tileErrorDismissed, setTileErrorDismissed] = useState(false);
+  // Sets the dialog's MESSAGE text (specific failure paths call this). The dialog no
+  // longer TRIGGERS on it — it triggers on a blank map (effect below) — so this is
+  // purely informational; a null message falls back to a default in the dialog.
+  const showTileDataError = useCallback((msg: string) => {
+    setTileDataError(msg);
+  }, []);
+  // The "Map Data Not Found" dialog fires when — after a grace period long enough
+  // for even a slow relaunch to render — the map STILL has no tiles (`!mapHasTiles`),
+  // the tile server is up, and the user hasn't dismissed it. Renderer-agnostic: a
+  // default-style 404, a custom basemap with no usable tiles, or a geodetic folder
+  // whose tiles all 404 ALL mean "nothing rendered" and all land here. If any tile
+  // loads within the grace, `mapHasTiles` latches true and the dialog never shows.
+  // One honest condition that fixes BOTH the false-positive-over-a-working-map AND
+  // the missing-dialog-over-a-blank-map bugs.
+  const [tileDataErrorConfirmed, setTileDataErrorConfirmed] = useState(false);
+  useEffect(() => {
+    if (mapLoaded && tileServerUrl && !mapHasTiles && !tileErrorDismissed) {
+      const t = setTimeout(() => setTileDataErrorConfirmed(true), 4000);
+      return () => clearTimeout(t);
+    }
+    setTileDataErrorConfirmed(false);
+  }, [mapLoaded, tileServerUrl, mapHasTiles, tileErrorDismissed]);
+  // Custom base map switching (Storage Paths → Map Tiles). activeId === null is
+  // the built-in default (Documents/tiles vector), so this is inert until a user
+  // picks another folder — the current basemap path is left completely untouched.
+  const basemapActiveId = useBasemapStore((s) => s.activeId);
+  const basemapSources = useBasemapStore((s) => s.sources);
+  const selectBasemapFolder = useBasemapStore((s) => s.selectFolder);
+  const customBasemapActiveRef = useRef(false);
+  const [pickingBasemapFolder, setPickingBasemapFolder] = useState(false);
+  // Re-evaluate the "map is blank" check whenever the active basemap changes: the
+  // newly-selected basemap must prove it can load a tile, and any prior dismissal is
+  // cleared so a broken new basemap warns on its own. (mapHasTiles latches true on
+  // the first loaded tile from the new basemap; if none load, the dialog returns.)
+  useEffect(() => {
+    setMapHasTiles(false);
+    setTileErrorDismissed(false);
+  }, [basemapActiveId]);
+  // "Change folder" action for the not-found dialog: pick a new basemap folder and
+  // make it active. Clears the not-found state so the new folder is judged fresh —
+  // if it has tiles the dialog closes; if it's also empty the dialog returns showing
+  // the new path. Same picker the Storage Paths panel uses.
+  const handleChangeBasemapFolder = async () => {
+    if (pickingBasemapFolder) return;
+    setPickingBasemapFolder(true);
+    try {
+      let picked: string | null = null;
+      const api = (window as Window & { electronAPI?: ElectronAPI })
+        .electronAPI;
+      if (api?.openFolder) {
+        picked = await api.openFolder();
+      } else {
+        const res = await OfflineTileServer.selectTileFolder();
+        picked = res?.uri ?? null;
+      }
+      if (picked) {
+        setTileDataError(null);
+        setTileErrorDismissed(false);
+        setMapHasTiles(false);
+        selectBasemapFolder(basemapLabelFromPath(picked), picked);
+      }
+    } catch (err) {
+      console.error("[Map] Basemap folder pick failed:", err);
+    } finally {
+      setPickingBasemapFolder(false);
+    }
+  };
+  // Bumped to force the default vector style to reload (e.g. reverting to Default).
+  const [vectorStyleNonce, setVectorStyleNonce] = useState(0);
+  // Geodetic (EPSG:4326) plate-carrée mode: non-null while a 4326 base map is
+  // active. Rendered as a deck.gl OrthographicView overlay above the (covered)
+  // mapbox map, so Mercator mode is untouched. Ref mirrors state for effect logic.
+  const [geodeticBasemap, setGeodeticBasemap] = useState<{
+    config: TilesConfig;
+    baseUrl: string;
+  } | null>(null);
+  const geodeticBasemapRef = useRef<typeof geodeticBasemap>(null);
+  const geodeticInitRef = useRef<{ center: [number, number]; zoom: number }>({
+    center: [DEFAULT_CENTER[0], DEFAULT_CENTER[1]],
+    zoom: mapboxZoomToOrtho(DEFAULT_ZOOM),
+  });
+  const geodeticViewRef = useRef<{ center: [number, number]; zoom: number }>(
+    geodeticInitRef.current,
+  );
+  // A one-shot view command pushed to the geodetic OrthographicView. In geodetic
+  // mode the mapbox camera is covered and inert, so "focus layer" (and any camera
+  // move) must be routed here instead of to map.fitBounds/flyTo.
+  const geodeticCmdNonceRef = useRef(0);
+  /**
+   * A "show my location" press that could not be satisfied yet.
+   *
+   * Set when the one-shot getCurrentPosition gives up on a cold GPS; cleared by
+   * the first fix the watch delivers, which then recentres the map. Without it the
+   * button press is simply lost when the receiver takes longer than the native
+   * fused provider is willing to wait.
+   */
+  const pendingLocationRecenterRef = useRef(false);
+  const [geodeticCommand, setGeodeticCommand] = useState<{
+    center: [number, number];
+    zoom: number;
+    nonce: number;
+  } | null>(null);
+  const applyGeodeticBasemap = useCallback(
+    (v: { config: TilesConfig; baseUrl: string } | null) => {
+      geodeticBasemapRef.current = v;
+      setGeodeticBasemap(v);
+    },
+    [],
+  );
+  // Tiled rasters (mapbox raster sources in Mercator mode) re-expressed for the
+  // geodetic view, which renders their Web-Mercator tiles at true lng/lat bounds.
+  const geodeticRasterLayers = useMemo(
+    () =>
+      layers
+        .filter((l) => l.tilesUrl && l.visible !== false)
+        .map((l) => ({
+          id: l.id,
+          tilesUrl: l.tilesUrl as string,
+          tileMinZoom: l.tileMinZoom,
+          tileMaxZoom: l.tileMaxZoom,
+          // The settings panel's Min/Max Zoom. Without these the geodetic view had
+          // no way to honour the slider, so Min Zoom silently did nothing to a
+          // raster on any EPSG:4326 basemap (it worked on mercator basemaps, where
+          // the mapbox layer gets minzoom/maxzoom from resolveLayerZoomRange).
+          userMinZoom: l.minzoom,
+          userMaxZoom: l.maxzoom,
+          tileBoundsWgs84: l.tileBoundsWgs84,
+          opacity:
+            Array.isArray(l.color) && l.color.length === 4
+              ? Math.max(0, Math.min(1, (l.color[3] as number) / 255))
+              : 1,
+        })),
+    [layers],
+  );
+  const [expectedTilePath, setExpectedTilePath] = useState<string>(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = (window as any).electronAPI;
+    return api
+      ? `Documents / ${TILES_FOLDER_NAME}`
+      : `Internal Storage / Documents / ${TILES_FOLDER_NAME}`;
+  });
+  // When a CUSTOM basemap is the active one that failed to load, the dialog should
+  // point at ITS saved folder (the path the user actually selected), not the default
+  // Documents/tiles — otherwise the "expected location" is misleading. Falls back to
+  // the default location when no custom basemap is active.
+  const activeBasemapForError =
+    basemapActiveId != null
+      ? (basemapSources.find((s) => s.id === basemapActiveId) ?? null)
+      : null;
+  const missingTilesPath = activeBasemapForError?.path ?? expectedTilePath;
   const lastLayerCreationTimeRef = useRef<number>(0);
+
+  // Reset route tool state when the layer used for routing is deleted (avoids stale path/graph).
+  useEffect(() => {
+    const id = routeState.selectedLayerId;
+    if (!id) return;
+    if (layers.some((l) => l.id === id)) return;
+    setRouteState(initialRouteToolState);
+    if (dijkstraWorkerRef.current) {
+      dijkstraWorkerRef.current.terminate();
+      dijkstraWorkerRef.current = null;
+    }
+  }, [layers, routeState.selectedLayerId]);
+
+  // Persist every calculated shortest route as its OWN geojson layer + staged manifest file
+  // (main Layers panel). Each distinct A→B route accumulates: earlier routes stay on the map and
+  // in the unstaged changes, so saving/autosaving the session persists all of them.
+  const lastPersistedRouteKeyRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const path = routeState.pathResult?.path;
+    if (!path || path.length < 2) return;
+    const from = routeState.snappedA ?? routeState.pointA;
+    const to = routeState.snappedB ?? routeState.pointB;
+    if (!from || !to) return;
+
+    const distMeters = routeState.pathResult?.dist ?? 0;
+    // Key off the computed path geometry (stable across snapped-endpoint display updates) so a
+    // single route isn't persisted twice, while genuinely distinct routes each get their own layer.
+    const start = path[0];
+    const end = path[path.length - 1];
+    const routeKey = `${start[0]},${start[1]}|${end[0]},${end[1]}|${path.length}|${distMeters}`;
+    if (lastPersistedRouteKeyRef.current === routeKey) return;
+    lastPersistedRouteKeyRef.current = routeKey;
+
+    // Sequential name ("Shortest Route 3"), NOT the coordinate-built one. The
+    // from/to pair is rendered as the row's subtitle by the panels, so baking it
+    // into the name put the same coordinates on screen twice and left no short
+    // label to identify the route by.
+    const name = nextShortestRouteName(layers);
+
+    void (async () => {
+      try {
+        const id = generateLayerId();
+        const { layer } = await persistShortestRouteToSession({
+          layerId: id,
+          layerName: name,
+          path,
+          distMeters,
+        });
+        addLayer(layer);
+        bringLayerToTop(id);
+        lastLayerCreationTimeRef.current = Date.now();
+      } catch (err) {
+        console.error("[ShortestRoute] Failed to persist route layer:", err);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- persist only when route result/endpoints change
+  }, [
+    routeState.pathResult,
+    routeState.snappedA,
+    routeState.snappedB,
+    routeState.pointA,
+    routeState.pointB,
+  ]);
+
+  const closeRoutePanel = useCallback(() => {
+    setIsRoutePanelOpen(false);
+    if (dijkstraWorkerRef.current) {
+      dijkstraWorkerRef.current.terminate();
+      dijkstraWorkerRef.current = null;
+    }
+    setRouteState(initialRouteToolState);
+    lastPersistedRouteKeyRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = (window as any).electronAPI;
+    if (!api) return;
+    api
+      .getPath("documents")
+      .then((docsPath: string) => {
+        const docs = docsPath.replace(/\\/g, "/");
+        setExpectedTilePath(`${docs}/${TILES_FOLDER_NAME}`);
+      })
+      .catch(() => {});
+  }, []);
 
   // Initialize tile server on mount and set up fetch interceptor for tile logging
   useEffect(() => {
@@ -424,28 +1473,49 @@ const MapComponent = ({
       if (url) {
         setTileServerUrl(url);
 
-        // Intercept fetch requests to log tile requests with x, y, z values
+        // Intercept fetch requests to log tile requests AND to drive `mapHasTiles`.
+        // This is the ONE place every tile fetch flows through — mapbox raster/
+        // vector sources AND the deck.gl geodetic BitmapLayer. So a tile that comes
+        // back OK here is the ground truth that "the map is showing real data",
+        // regardless of which renderer requested it (the mapbox-only getStyle/data
+        // checks miss the deck geodetic view entirely). A blank map where every tile
+        // 404s never sets it → the "Map Data Not Found" dialog correctly appears.
         const originalFetch = window.fetch;
         window.fetch = async function (...args) {
-          const url = args[0]?.toString() || "";
-          const tileMatch = url.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf/);
+          // mapbox-gl AND deck/loaders.gl pass a Request OBJECT here, not a string
+          // (so the old `args[0].toString()` gave "[object Request]" and never
+          // matched — that's why tiles fell through and this signal was dead). Read
+          // `.url` off the Request; handle string / URL forms too.
+          const first = args[0] as any;
+          const url =
+            typeof first === "string"
+              ? first
+              : (first?.url ?? String(first ?? ""));
+          // Any XYZ tile: /{z}/{x}/{y}.{pbf|png|jpg|jpeg|webp}. Glyphs
+          // (/fonts/.../0-255.pbf) and sprites (/sprite.png) don't match this shape.
+          const tileMatch = url.match(
+            /\/(\d+)\/(\d+)\/(\d+)\.(pbf|png|jpe?g|webp)/i,
+          );
 
           if (tileMatch) {
             const [, z, x, y] = tileMatch;
 
-
             try {
               const response = await originalFetch.apply(this, args);
-              if (!response.ok) {
+              if (response.ok) {
+                // A real tile loaded → the map is rendering data. Latch it so the
+                // dialog can't show over a working map (any renderer).
+                setMapHasTiles(true);
+              } else {
                 console.error(
-                  `CAPACITOR_HAHA [Tile Request] FAILED: z=${z}, x=${x}, y=${y} - Status: ${response.status} ${response.statusText}`
+                  `CAPACITOR_HAHA [Tile Request] FAILED: z=${z}, x=${x}, y=${y} - Status: ${response.status} ${response.statusText}`,
                 );
-              } 
+              }
               return response;
             } catch (error) {
               console.error(
                 `CAPACITOR_HAHA [Tile Request] ERROR: z=${z}, x=${x}, y=${y} -`,
-                error
+                error,
               );
               throw error;
             }
@@ -465,12 +1535,466 @@ const MapComponent = ({
     };
   }, []);
 
+  // Fire-and-forget: keep `toastId` in loading state until Mapbox has
+  // actually rendered the layer's visible tiles. Without this, the upload
+  // flow ack'd "ready" the moment `runTilingUpload` returned — long before
+  // any pixel hit the canvas.
+  const waitAndAckTiledLayer = useCallback(
+    (
+      layerId: string,
+      displayName: string,
+      toastId: any,
+      startsHidden = false,
+    ) => {
+      const map = mapRef.current?.getMap?.();
+      if (!map) {
+        toast.dismiss(toastId);
+        return;
+      }
+      // An import starts switched off (startHiddenOnImport), which means the
+      // raster sits in the style with visibility:none — mapbox never requests its
+      // tiles, so waiting for tiles to reach the canvas would always run to the
+      // timeout and then dismiss the toast with no confirmation at all. Ack now,
+      // and say where the layer went, since nothing appeared on the map.
+      if (startsHidden) {
+        toast.update(
+          toastId,
+          `${displayName} added — turn it on in the Layers panel`,
+          "success",
+        );
+        return;
+      }
+      void waitForRasterTilesLoaded(map, layerId).then((ok) => {
+        if (ok) {
+          toast.update(toastId, `${displayName} loaded`, "success");
+        } else {
+          // Hit the timeout — tiles likely still rendering. Don't claim
+          // success; just drop the toast so the UI doesn't show a stale
+          // "Tiling..." forever. The user sees ongoing visual progress
+          // as tiles continue to fill in.
+          toast.dismiss(toastId);
+        }
+      });
+    },
+    [],
+  );
+
+  // ── Tiled raster Mapbox source/layer manager ──────────────────────────
+  // For every layer with `tilesUrl`, add (or update) a Mapbox raster
+  // source pointing at the local tile server. Track which sources we own
+  // so we tear them down when the layer is removed.
+  const ownedTiledLayerIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const map = mapRef.current.getMap?.();
+    if (!map) return;
+
+    const apply = () => {
+      const liveIds = new Set<string>();
+      for (const l of layers) {
+        if (!l.tilesUrl) continue;
+        liveIds.add(l.id);
+        try {
+          addOrUpdateTiledRaster(map, l);
+        } catch (err) {
+          console.warn(`[TiledRaster] add ${l.id} failed:`, err);
+        }
+      }
+      // Remove sources whose layers are gone (or no longer tiled).
+      for (const oldId of ownedTiledLayerIdsRef.current) {
+        if (!liveIds.has(oldId)) {
+          try {
+            removeTiledRaster(map, oldId);
+          } catch {
+            /* noop */
+          }
+        }
+      }
+      // Then sweep the STYLE itself for any `raster-*` layer whose store layer is
+      // gone. The ref above only knows what this effect last believed it owned, and
+      // it can drift: a `setStyle` destroys these layers without going through
+      // removeTiledRaster, an early run bails before the map exists, and a stale
+      // `once("load")` closure could re-add an already-deleted id. When it drifted
+      // this way the raster stayed painted after being deleted from the layers
+      // panel. Reading the style makes teardown self-correcting.
+      try {
+        pruneOrphanTiledRasters(map, liveIds);
+      } catch {
+        /* style not queryable — the ref-based pass above still ran */
+      }
+      ownedTiledLayerIdsRef.current = liveIds;
+    };
+
+    if (map.isStyleLoaded?.()) {
+      apply();
+    } else {
+      // NOTE: this listener must be removed on cleanup too. It captures `layers`
+      // from THIS render, so if it fired after a delete it would re-add the
+      // removed raster and then overwrite ownedTiledLayerIdsRef with the stale
+      // set — a ghost the next pass would no longer know to remove.
+      map.once?.("load", apply);
+    }
+    // Re-attach tiled rasters after ANY full style replacement (e.g. switching
+    // the base map via setStyle) — a one-shot listener would drop them on the
+    // second style load, wiping user raster layers.
+    //
+    // This only works because the basemap `setStyle` calls now pass
+    // `{ diff: false }`. On mapbox's default diff path the raster layers are
+    // removed but "style.load" is never emitted, so this listener never ran.
+    map.on?.("style.load", apply);
+    return () => {
+      try {
+        map.off?.("style.load", apply);
+        // Drop the pending one-shot too, so a `load` that arrives after this
+        // render's `layers` snapshot went stale cannot resurrect a deleted raster.
+        map.off?.("load", apply);
+      } catch {
+        /* noop */
+      }
+    };
+    // `tileServerUrl` is a dependency, not just `layers`.
+    //
+    // Returning from the background restarts the tile server and bounces this URL
+    // (null → url, see the app-lifecycle effect). The raster layers' own tilesUrl
+    // does not change — the port is fixed — so nothing in `layers` changes and this
+    // effect never re-ran. Any tile request that failed while the server was down
+    // is not retried by mapbox, so the raster stayed blank until a pan/zoom asked
+    // for different tiles. Re-running on the URL bounce re-adds the sources and
+    // makes mapbox fetch again.
+  }, [layers, tileServerUrl]);
+
+  // ── Viewport culling for tiled rasters ───────────────────────────────
+  // Hide tiled raster layers whose bounds don't intersect the current
+  // viewport. Without this, Mapbox runs style + tile-state evaluation
+  // for ALL N raster layers every frame even though only the few in
+  // view actually paint. With ~150 layers, that overhead is significant
+  // on a tablet WebView.
+  //
+  // O(N) intersection per cull call, sub-millisecond for N=200.
+
+  // Mirror layers into a ref so the cull callback (attached once) reads
+  // the current set without re-attaching listeners on every store mutation.
+  const layersForCullingRef = useRef(layers);
+  useEffect(() => {
+    layersForCullingRef.current = layers;
+  }, [layers]);
+
+  // Pull cull() out so both the listener-attach effect (runs once) and
+  // the layers-changed effect (re-cull when layer set mutates) can call it.
+  const cullTiledRastersRef = useRef<() => void>(() => {});
+
+  // Track which tiled rasters were in view on the previous cull pass so
+  // we can detect "newly entered viewport" and pre-warm their sampleAt
+  // cache (gdal.Open + PROJ setup happens on the dedicated samplePool
+  // BEFORE the user taps). Without this, the first tap on any newly-
+  // visible layer pays a 250-500 ms cold-storage cost.
+  const lastVisibleTiledRasterIdsRef = useRef<Set<string>>(new Set());
+
+  // Effect A: attach moveend/zoomend listeners ONCE. Detach on unmount.
+  useEffect(() => {
+    if (!mapRef.current) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const map = (mapRef.current as any).getMap?.();
+    if (!map) return;
+
+    const cull = () => {
+      try {
+        const b = map.getBounds?.();
+        if (!b) return;
+        const viewport: [number, number, number, number] = [
+          b.getWest(),
+          b.getSouth(),
+          b.getEast(),
+          b.getNorth(),
+        ];
+        const layersNow = layersForCullingRef.current;
+        applyTiledRasterViewportCulling(map, layersNow, viewport);
+
+        // Pre-warm: for any tiled raster that's newly in the viewport,
+        // fire a throwaway sampleAt at its centroid. Capacitor IPC is
+        // async; the samplePool processes it in the background so the
+        // dataset + SR/CT are cached by the time the user taps.
+        const [vw, vs, ve, vn] = viewport;
+        const nowVisible = new Set<string>();
+        const newlyVisible: Array<{ id: string; lon: number; lat: number }> =
+          [];
+        for (const l of layersNow) {
+          if (!l.tilesUrl || !l.tileBoundsWgs84) continue;
+          if (l.visible === false) continue;
+          const [lw, ls, le, ln] = l.tileBoundsWgs84;
+          const inView = !(le < vw || lw > ve || ln < vs || ls > vn);
+          if (!inView) continue;
+          nowVisible.add(l.id);
+          if (lastVisibleTiledRasterIdsRef.current.has(l.id)) continue;
+          // Centroid of layer bounds — any in-bounds point works for
+          // warming the cache; the value is discarded.
+          newlyVisible.push({
+            id: l.id,
+            lon: (lw + le) / 2,
+            lat: (ls + ln) / 2,
+          });
+        }
+        lastVisibleTiledRasterIdsRef.current = nowVisible;
+
+        if (newlyVisible.length > 0) {
+          // Fire-and-forget. Capacitor.Plugins may not be available in
+          // dev / Electron — guard cleanly.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const cap: any = (window as any).Capacitor;
+          const rt = cap?.Plugins?.RasterTiling;
+          if (rt?.sampleAt) {
+            for (const { id, lon, lat } of newlyVisible) {
+              rt.sampleAt({ layerId: id, lon, lat }).catch(() => {});
+            }
+          }
+        }
+      } catch {
+        /* style may not be loaded yet — safe to skip */
+      }
+    };
+    cullTiledRastersRef.current = cull;
+
+    // Run once now (or queue for first style load).
+    if (map.isStyleLoaded?.()) {
+      cull();
+    } else {
+      map.once?.("load", cull);
+    }
+    // Re-cull after EVERY style replacement, not just the first.
+    //
+    // This was `once("style.load", cull)` while moveend/zoomend were persistent
+    // `on(...)` — so the very first style load consumed it and no later style
+    // replacement ever re-culled. The tiled-raster ADD effect above already uses a
+    // persistent `on("style.load", ...)` for exactly this reason; the two were
+    // asymmetric, which is how a resume/basemap switch could leave the raster
+    // layers re-added but never re-evaluated against the viewport until the user
+    // happened to pan or zoom.
+    map.on?.("style.load", cull);
+
+    map.on?.("moveend", cull);
+    map.on?.("zoomend", cull);
+
+    return () => {
+      try {
+        map.off?.("moveend", cull);
+        map.off?.("zoomend", cull);
+        map.off?.("style.load", cull);
+        map.off?.("load", cull);
+      } catch {
+        /* noop */
+      }
+    };
+    // Listeners attach once. Layer-set changes are picked up via
+    // layersForCullingRef (Effect B below triggers an immediate re-cull).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Effect B: re-cull immediately when the layer set changes (new layer
+  // added, visibility toggled, etc.) so the user sees the right set
+  // without waiting for the next pan/zoom.
+  useEffect(() => {
+    cullTiledRastersRef.current?.();
+  }, [layers]);
+
+  // Tooltip-on-leave fix for tiled rasters. deck.gl's onHover does not fire
+  // reliably when the cursor leaves a SolidPolygonLayer picking proxy, so the
+  // tooltip would stick at the last hovered position with stale data. We
+  // listen to Mapbox's mousemove (which fires regardless of deck.gl picking)
+  // and clear hoverInfo when the cursor's actual lng/lat is outside the
+  // currently hovered raster's bounds. Refs keep this off the React render
+  // path so mousemove stays cheap.
+  const hoveredRasterBoundsRef = useRef<
+    [number, number, number, number] | null
+  >(null);
+  useEffect(() => {
+    if (!hoverInfo) {
+      hoveredRasterBoundsRef.current = null;
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deckLayerId = (hoverInfo.layer as any)?.id as string | undefined;
+    if (!deckLayerId) {
+      hoveredRasterBoundsRef.current = null;
+      return;
+    }
+    const baseId = deckLayerId
+      .replace(/-icon-layer$/, "")
+      .replace(/-signal-overlay$/, "")
+      .replace(/-bitmap$/, "")
+      .replace(/-mesh$/, "");
+    const matched = layers.find((l) => l.id === baseId);
+    hoveredRasterBoundsRef.current =
+      matched?.tilesUrl && matched.tileBoundsWgs84
+        ? matched.tileBoundsWgs84
+        : null;
+  }, [hoverInfo, layers]);
+
+  // Tracks the currently-picked raster so we know when to fire
+  // setHoverInfo(undefined) on leave (cursor exits all raster bounds)
+  // without spamming React on every move within the same raster.
+  const lastPickedRasterIdRef = useRef<string | null>(null);
+
+  // Set true between movestart and moveend. handleRasterPick early-returns
+  // while panning so we don't fire 60 setHoverInfo / React re-renders per
+  // second during a drag. Tap (click) is unaffected: Mapbox doesn't fire
+  // click when the touch turned into a drag, only on a clean tap.
+  const isPanningRef = useRef(false);
+
+  const rasterMousemoveAttachedRef = useRef(false);
+  useEffect(() => {
+    if (rasterMousemoveAttachedRef.current) return;
+    if (!mapRef.current) return;
+    const map = mapRef.current.getMap?.();
+    if (!map) return;
+
+    // Combined enter/leave handler.
+    //
+    // BEFORE: deck.gl ran a synchronous GPU picking pass over all 153
+    // SolidPolygonLayer raster proxies on every mousemove/tap — multi-
+    // second main-thread stall on tablet WebView. Native sampleAt was
+    // also slow then, masking this.
+    //
+    // NOW: SolidPolygonLayer rasters have pickable: false (see
+    // deckGlLayers below). This handler walks the rect index in JS
+    // (sub-millisecond for any N), picks the topmost containing raster,
+    // synthesises a hoverInfo shape compatible with what deck.gl picking
+    // would have produced, and fires setHoverInfo. The downstream
+    // tooltip + tile-sampler effects continue to work unchanged.
+    //
+    // Vector / point / polygon / line layers stay GPU-picked via
+    // handleLayerHover — only raster picking is moved to JS.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handleRasterPick = (e: any) => {
+      // Skip during active pan/zoom — prevents 60 Hz re-render churn
+      // while the user is dragging the map. Re-enabled at moveend below.
+      if (isPanningRef.current) return;
+      const lng = e?.lngLat?.lng;
+      const lat = e?.lngLat?.lat;
+      if (typeof lng !== "number" || typeof lat !== "number") return;
+
+      // Walk visible DEM rasters top-down (most recent in array =
+      // visually topmost, mirrors deck.gl picking order). Handles BOTH:
+      //   • Tiled rasters: bounds at l.tileBoundsWgs84
+      //   • Non-tiled BitmapLayer rasters: bounds at l.bounds[[w,s],[e,n]]
+      // Same hit-test algorithm (point-in-rect) for both — the only
+      // difference is which field holds the rectangle.
+      const layersNow = layersForCullingRef.current;
+      let hitId: string | null = null;
+      for (let i = layersNow.length - 1; i >= 0; i--) {
+        const l = layersNow[i];
+        if (l.visible === false) continue;
+        if (l.type !== "dem") continue;
+        // Skip rasters the zoom range has hidden. Without this, a raster that is
+        // NOT being drawn is still pickable: the "close the tooltip when the layer
+        // is zoom-hidden" effect would dismiss the panel, and then the very next
+        // mousemove over the same bounds re-opened it — so on a mouse-driven
+        // desktop the tooltip appeared never to close at all.
+        if (!getZoomVisibilityRef.current(l)) continue;
+
+        let w: number, s: number, ee: number, n: number;
+        if (l.tilesUrl && l.tileBoundsWgs84) {
+          // Tiled raster — bounds already in [w, s, e, n] form.
+          [w, s, ee, n] = l.tileBoundsWgs84;
+        } else if (
+          Array.isArray(l.bounds) &&
+          l.bounds.length === 2 &&
+          Array.isArray(l.bounds[0]) &&
+          Array.isArray(l.bounds[1])
+        ) {
+          // Non-tiled BitmapLayer raster — bounds is [[minLng, minLat], [maxLng, maxLat]].
+          w = l.bounds[0][0];
+          s = l.bounds[0][1];
+          ee = l.bounds[1][0];
+          n = l.bounds[1][1];
+        } else {
+          continue;
+        }
+
+        if (lng >= w && lng <= ee && lat >= s && lat <= n) {
+          hitId = l.id;
+          break;
+        }
+      }
+
+      if (!hitId) {
+        // Cursor / tap outside all raster bounds → clear stale tooltip.
+        if (lastPickedRasterIdRef.current) {
+          lastPickedRasterIdRef.current = null;
+          setHoverInfo(undefined);
+        }
+        return;
+      }
+
+      // Suppress hover/tap briefly after layer creation — matches the
+      // 500 ms cooldown handleLayerHover used to enforce on tablets,
+      // where rapid layer adds during upload fired spurious hovers.
+      const sinceCreation = Date.now() - lastLayerCreationTimeRef.current;
+      if (sinceCreation < 500) {
+        if (lastPickedRasterIdRef.current) {
+          lastPickedRasterIdRef.current = null;
+          setHoverInfo(undefined);
+        }
+        return;
+      }
+
+      lastPickedRasterIdRef.current = hitId;
+
+      // Synthesise hoverInfo. Tooltip code reads layer.id (with -bitmap
+      // suffix the deck.gl path produced — preserved so the regex strip
+      // in tooltip.tsx still finds the base id), coordinate, x, y, and
+      // object (null for rasters).
+      const screenX = e?.point?.x ?? 0;
+      const screenY = e?.point?.y ?? 0;
+      setHoverInfo({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        layer: { id: `${hitId}-bitmap` } as any,
+        coordinate: [lng, lat],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        object: null as any,
+        x: screenX,
+        y: screenY,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    };
+
+    // mousemove handles desktop pointer movement.
+    // click handles touch taps on Android — touch devices don't fire
+    // mousemove reliably between two distant taps, so without this the
+    // tooltip would stick at the previously-tapped raster position.
+    map.on("mousemove", handleRasterPick);
+    map.on("click", handleRasterPick);
+
+    // Suspend the pick during active pan/zoom to avoid React re-render
+    // churn (60 Hz mousemove × setHoverInfo × ~150-layer tree = visible
+    // pan jank). Mapbox's click event doesn't fire if the gesture turned
+    // into a drag, so taps on rasters still work cleanly.
+    const onMoveStart = () => {
+      isPanningRef.current = true;
+    };
+    const onMoveEnd = () => {
+      isPanningRef.current = false;
+    };
+    map.on("movestart", onMoveStart);
+    map.on("zoomstart", onMoveStart);
+    map.on("moveend", onMoveEnd);
+    map.on("zoomend", onMoveEnd);
+
+    rasterMousemoveAttachedRef.current = true;
+    // Listeners attach once. Layer set is read live via layersForCullingRef.
+    // setHoverInfo + lastLayerCreationTimeRef are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Reload style when tileServerUrl changes (after map is loaded)
   useEffect(() => {
     if (!tileServerUrl || !mapRef.current) return;
 
     const map = mapRef.current.getMap();
     if (!map || !map.loaded()) return;
+
+    // A custom (raster) base map owns the style right now — don't overwrite it
+    // with the default vector style. Reverting to Default clears this flag first.
+    if (customBasemapActiveRef.current) return;
 
     // Load style from URL
     const styleUrl = `${tileServerUrl}/style.json`;
@@ -482,13 +2006,15 @@ const MapComponent = ({
           // If 404, check permissions and retry once
           if (response.status === 404) {
             console.warn(
-              "[Map] style.json not found (404), checking permissions..."
+              "[Map] style.json not found (404), checking permissions...",
             );
             const { checkStoragePermission, waitForStoragePermission } =
               await import("./tile-folder-dialog");
             const hasPermission = await checkStoragePermission();
             if (!hasPermission) {
-              const granted = await waitForStoragePermission(5000); // Wait 5 seconds
+              const granted = await waitForStoragePermission(
+                STORAGE_PERMISSION_TIMEOUT_MS,
+              );
               if (granted) {
                 // Retry fetch
                 const retryResponse = await fetch(styleUrl);
@@ -499,7 +2025,7 @@ const MapComponent = ({
             }
             // If still 404 or no permission, throw error
             throw new Error(
-              `style.json not found (404) - Check if file exists in Documents/tiles/ and permissions are granted`
+              `style.json not found (404) - Check if file exists in Documents/${TILES_FOLDER_NAME}/ and permissions are granted`,
             );
           }
           if (!response.ok) {
@@ -513,7 +2039,6 @@ const MapComponent = ({
             Object.keys(styleJson.sources).forEach((sourceKey) => {
               const source = styleJson.sources[sourceKey];
               if (source.type === "vector" && source.tiles) {
-            
                 source.tiles = source.tiles.map((tileUrl: string) => {
                   // Extract the tile path (e.g., /3/5/3.pbf from any URL format)
                   let tilePath = tileUrl;
@@ -547,10 +2072,9 @@ const MapComponent = ({
 
                   // Always use tile server URL
                   const finalUrl = `${tileServerUrl}${tilePath}`;
-               
+
                   return finalUrl;
                 });
-         
               }
             });
           }
@@ -563,35 +2087,58 @@ const MapComponent = ({
           } else if (
             styleJson.layers &&
             styleJson.layers.some(
-              (layer: any) => layer.layout && layer.layout["text-field"]
+              (layer: any) => layer.layout && layer.layout["text-field"],
             )
           ) {
             // If glyphs is missing but text layers exist, set default glyphs path
             styleJson.glyphs = `${tileServerUrl}/fonts/{fontstack}/{range}.pbf`;
           }
 
-          // Apply the modified style
-          map.setStyle(styleJson);
+          // A custom base map may have taken over while this fetch was in
+          // flight (e.g. a persisted raster set on startup) — don't clobber it.
+          if (customBasemapActiveRef.current) return;
+          // Apply the modified style.
+          //
+          // `{ diff: false }` is REQUIRED, not a tuning knob. mapbox's setStyle
+          // defaults to diff:true, which takes Style._diffStyle → Style.setState:
+          // that REMOVES every source/layer absent from the incoming style —
+          // including our `raster-<layerId>` tiled rasters — and never emits
+          // "style.load", because that event is only fired from Style._load (the
+          // full-rebuild path). So on the diff path the uploaded rasters were
+          // silently dropped and the re-attach listener below never ran; the only
+          // way to get them back was mutating the layers array (e.g. toggling a
+          // layer's visibility), which re-runs the attach effect directly.
+          // diff:false forces the full load, so "style.load" fires and every
+          // handler registered against it — the raster re-attach, the tile-URL
+          // rewrite below — works as written.
+          map.setStyle(styleJson, { diff: false });
         })
         .catch((error) => {
           console.error("[Map] Failed to fetch and apply style:", error);
+          showTileDataError(
+            `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
+          );
         });
     } catch (error) {
       console.error("[Map] Error reloading style:", error);
     }
 
     map.once("style.load", () => {
-
       // Force update all tile source URLs to point to tile server
       const currentStyle = map.getStyle();
+      // A real style with sources loaded → clear any spurious "not found" error.
+      if (
+        currentStyle?.sources &&
+        Object.keys(currentStyle.sources).length > 0
+      ) {
+        setTileDataError(null);
+      }
       if (currentStyle && currentStyle.sources) {
         Object.keys(currentStyle.sources).forEach((sourceKey) => {
           const source = map.getSource(sourceKey);
           if (source) {
             const sourceData = source as any;
             if (sourceData.type === "vector" && sourceData.tiles) {
-             
-
               // Update tiles to point to tile server
               const updatedTiles = sourceData.tiles.map((tileUrl: string) => {
                 let tilePath = tileUrl;
@@ -630,17 +2177,15 @@ const MapComponent = ({
                 map.addSource(sourceKey, {
                   type: "vector",
                   tiles: updatedTiles,
-
-                  minzoom: 0,
-                  maxzoom: 18, // camera zoom allowed
-                  maxNativeZoom: 14, // 🔥 THIS IS THE KEY
+                  minzoom: MAP_MIN_ZOOM,
+                  // Native max: mapbox overzooms beyond it instead of 404-ing the
+                  // missing higher zooms (which blanked the tiles). See constants.
+                  maxzoom: TILE_SOURCE_MAX_NATIVE_ZOOM,
                 });
-               
               } catch (e) {
                 console.error(`[Map] Failed to update source ${sourceKey}:`, e);
               }
             } else {
-              
             }
           }
         });
@@ -649,8 +2194,162 @@ const MapComponent = ({
 
     map.once("style.error", (e: any) => {
       console.error("[Map] Failed to reload style:", e);
+      // Ignored if the map already has a working style (a later resource error over
+      // a loaded map is not "map data not found").
+      showTileDataError(
+        "Failed to load map style. The tile data may be missing or corrupted at the expected location.",
+      );
     });
-  }, [tileServerUrl]);
+  }, [tileServerUrl, vectorStyleNonce, showTileDataError]);
+
+  // Apply the active custom base map (Storage Paths → Map Tiles → ✎). Inert while
+  // activeId === null (built-in default vector) so the current basemap is untouched
+  // until a folder is picked; then the picked projection/format decide the path.
+  useEffect(() => {
+    const wrap = mapRef.current;
+    if (!wrap) return;
+    const map = wrap.getMap?.();
+    if (!map) return;
+
+    const active =
+      basemapActiveId != null
+        ? (basemapSources.find((s) => s.id === basemapActiveId) ?? null)
+        : null;
+
+    let cancelled = false;
+
+    // Leave geodetic mode, carrying the geodetic camera back to the mapbox map
+    // (clamped to Mercator's ±85°) so the transition is seamless.
+    const exitGeodetic = () => {
+      if (!geodeticBasemapRef.current) return;
+      const gv = geodeticViewRef.current;
+      if (gv && map) {
+        try {
+          map.jumpTo({
+            center: [gv.center[0], Math.max(-85, Math.min(85, gv.center[1]))],
+            zoom: orthoZoomToMapbox(gv.zoom),
+          });
+        } catch {
+          /* noop */
+        }
+      }
+      applyGeodeticBasemap(null);
+    };
+
+    const apply = async () => {
+      if (cancelled) return;
+
+      // Revert to the built-in default vector base map.
+      if (!active) {
+        exitGeodetic();
+        if (customBasemapActiveRef.current) {
+          customBasemapActiveRef.current = false;
+          await OfflineTileServer.basemapSetFolder({ path: "" }).catch(
+            () => {},
+          );
+          setVectorStyleNonce((n) => n + 1); // re-runs the vector reload effect
+        }
+        return;
+      }
+
+      if (!tileServerUrl) return; // tile server not ready yet — effect re-runs
+
+      // Point the /basemap/ route at the folder, then read its config from the
+      // SERVED folder over HTTP. This works on BOTH Electron (abs path) and
+      // Android (SAF tree URI), instead of a desktop-only direct file read.
+      try {
+        await OfflineTileServer.basemapSetFolder({ path: active.path });
+      } catch (err) {
+        console.error("[Basemap] setFolder failed:", err);
+        toast.error(`Couldn't open ${active.label}`);
+        return;
+      }
+      if (cancelled) return;
+
+      // Projection/format come from what the user picked for THIS source; the zoom
+      // range is read off the served folder. Nothing is read from config.txt.
+      const cfg = await resolveTilesConfig(`${tileServerUrl}/basemap`, {
+        projection: active.projection,
+        format: active.format,
+      });
+      if (cancelled) return;
+
+      const kind = classifyTiles(cfg);
+
+      // EPSG:4326 / plate-carrée — reaches the full ±90° (incl. 85–90°).
+      if (kind === "raster-geodetic") {
+        customBasemapActiveRef.current = true;
+        // Seed the geodetic camera from the current mapbox view, but only when
+        // ENTERING geodetic mode (not when switching between two 4326 folders).
+        if (!geodeticBasemapRef.current) {
+          let center: [number, number] = [DEFAULT_CENTER[0], DEFAULT_CENTER[1]];
+          let oz = mapboxZoomToOrtho(DEFAULT_ZOOM);
+          try {
+            if (map) {
+              const c = map.getCenter();
+              center = [c.lng, c.lat];
+              oz = mapboxZoomToOrtho(map.getZoom());
+            }
+          } catch {
+            /* use defaults */
+          }
+          geodeticInitRef.current = { center, zoom: oz };
+          geodeticViewRef.current = { center, zoom: oz };
+        }
+        applyGeodeticBasemap({
+          config: cfg,
+          baseUrl: `${tileServerUrl}/basemap`,
+        });
+        return;
+      }
+
+      // Non-geodetic target: leave geodetic mode if we were in it.
+      exitGeodetic();
+
+      // Vector (.pbf) folder — load its own style.json through /basemap/.
+      if (kind === "vector-mercator") {
+        customBasemapActiveRef.current = true;
+        const ok = await applyVectorBasemap(
+          map,
+          `${tileServerUrl}/basemap`,
+          active.id,
+        );
+        if (cancelled) return;
+        if (!ok) {
+          customBasemapActiveRef.current = false;
+          setVectorStyleNonce((n) => n + 1); // fall back to the default vector map
+          toast.error(`${active.label} has no usable style.json.`);
+        }
+        return;
+      }
+
+      // raster-mercator: render as a mapbox raster style from /basemap/.
+      // `{ diff: false }` for the same reason as the default-style apply above:
+      // the diff path drops our tiled-raster sources/layers and never fires
+      // "style.load", so the uploaded rasters vanish until something else
+      // mutates the layers array.
+      customBasemapActiveRef.current = true;
+      map.setStyle(buildRasterMercatorStyle(tileServerUrl, cfg, active.id), {
+        diff: false,
+      });
+    };
+
+    // Apply immediately. Gating on map.loaded()/the 'load' event misses the
+    // common startup case where the SAVED basemap rehydrates AFTER the initial
+    // load event already fired — the map would then never switch on launch. The
+    // map object is usable once created (geodetic needs no mapbox call; setStyle/
+    // jumpTo are safe any time), so a direct apply is correct.
+    void apply();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    basemapActiveId,
+    basemapSources,
+    tileServerUrl,
+    applyGeodeticBasemap,
+    mapLoaded,
+  ]);
 
   // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
   // const fileInputRef = useRef<HTMLInputElement>(null);
@@ -662,8 +2361,34 @@ const MapComponent = ({
     setIsProcessingFiles(true);
     const toastId = toast.loading("Opening file picker...");
     let progressListener: { remove: () => void } | null = null;
+    let pickerClosedListener: { remove: () => void } | null = null;
 
     try {
+      // Flip the overlay out of "Opening file picker…" the moment the
+      // native dialog actually dismisses, even before any bytes have been
+      // read. Without this, for large files the overlay appeared stuck on
+      // "Opening file picker…" for many seconds while the native side was
+      // actually already streaming the copy.
+      try {
+        pickerClosedListener = await NativeUploader.addListener(
+          "pickerClosed",
+          (event) => {
+            if (event.count > 0) {
+              toast.update(
+                toastId,
+                `Staging ${event.count} file(s)…`,
+                "loading",
+              );
+            }
+          },
+        );
+      } catch (listenerError) {
+        console.warn(
+          "[FileUpload] Failed to add pickerClosed listener:",
+          listenerError,
+        );
+      }
+
       // Set up progress listener for upload
       let currentUploadProgress = 0;
       try {
@@ -672,32 +2397,39 @@ const MapComponent = ({
           (event) => {
             if (event.totalBytes > 0) {
               currentUploadProgress = Math.round(
-                (event.bytesWritten / event.totalBytes) * 100
+                (event.bytesWritten / event.totalBytes) * 100,
               );
-        
+
               toast.update(
                 toastId,
                 `Uploading File: ${currentUploadProgress}/100 %`,
-                "loading"
+                "loading",
               );
+            } else {
+              // Unknown size (content provider didn't report SIZE): at
+              // least swap the message so the user sees activity.
+              const mb = (event.bytesWritten / (1024 * 1024)).toFixed(1);
+              toast.update(toastId, `Uploading file: ${mb} MB…`, "loading");
             }
-          }
+          },
         );
       } catch (listenerError) {
         console.warn(
           "[FileUpload] Failed to add progress listener:",
-          listenerError
+          listenerError,
         );
         // Continue without progress listener
       }
 
-;
       const result = await NativeUploader.pickAndStageMany({
         maxFiles: MAX_UPLOAD_FILES,
       });
 
       if (progressListener) {
         await progressListener.remove();
+      }
+      if (pickerClosedListener) {
+        await pickerClosedListener.remove();
       }
 
       if (!result.files || result.files.length === 0) {
@@ -707,6 +2439,26 @@ const MapComponent = ({
 
       // Track if any files were actually valid
       let hasValidFiles = false;
+      // Remember the reason the most-recent file was rejected so the
+      // end-of-loop fallback toast can report something actionable instead
+      // of the misleading "No valid files found" when every file hit a
+      // specific gate (size cap, blocked extension, etc.).
+      let lastRejectionMessage: string | null = null;
+
+      // Per-type size caps (MB). Raster rasters are now aggressively
+      // downsampled at decode time (GPU-safe 4096px cap), so a multi-gigabyte
+      // GeoTIFF no longer blows up memory on the render side — the only real
+      // cost is buffering the bytes once into an ArrayBuffer for the worker.
+      // Desktop Electron (64-bit V8) handles ~2 GB comfortably; keep vectors
+      // conservative since a 1 GB GeoJSON would be unusable anyway.
+      const RASTER_SIZE_CAP_MB = 4096;
+      const GENERIC_SIZE_CAP_MB = 4096;
+      const rasterExtensionsForCap = new Set(["tif", "tiff", "hgt", "dett"]);
+      const extOf = (name: string) => {
+        const lower = name.toLowerCase();
+        const dot = lower.lastIndexOf(".");
+        return dot >= 0 ? lower.slice(dot + 1) : "";
+      };
 
       // Process files sequentially
       for (let i = 0; i < result.files.length; i++) {
@@ -718,11 +2470,9 @@ const MapComponent = ({
           const { isFileExtensionAllowed, getBlockedFileMessage } =
             await import("@/lib/allowed-file-extensions");
           if (!isFileExtensionAllowed(stagedFile.originalName)) {
-            toast.update(
-              toastId,
-              getBlockedFileMessage(stagedFile.originalName),
-              "error"
-            );
+            const msg = getBlockedFileMessage(stagedFile.originalName);
+            lastRejectionMessage = msg;
+            toast.update(toastId, msg, "error");
             continue; // Skip this file
           }
 
@@ -732,47 +2482,75 @@ const MapComponent = ({
           // Step 2: Wait a bit for file to be fully written to disk
           await new Promise((resolve) => setTimeout(resolve, 500));
 
-          // Step 3: Check file size before reading (prevent memory issues)
+          // Step 3: Check file size before reading (prevent memory issues).
+          // Rasters get a higher cap than other file types because the decoder
+          // pipeline subsamples huge TIFFs at read time.
           const fileSizeMB = stagedFile.size / (1024 * 1024);
-          if (fileSizeMB > 500) {
-            toast.update(
-              toastId,
-              `File ${
-                stagedFile.originalName
-              } is too large (${fileSizeMB.toFixed(
-                2
-              )} MB). Maximum size is 500 MB.`,
-              "error"
-            );
+          const ext = extOf(stagedFile.originalName);
+          const sizeCapMB = rasterExtensionsForCap.has(ext)
+            ? RASTER_SIZE_CAP_MB
+            : GENERIC_SIZE_CAP_MB;
+          if (fileSizeMB > sizeCapMB) {
+            const msg = `File ${
+              stagedFile.originalName
+            } is too large (${fileSizeMB.toFixed(
+              2,
+            )} MB). Maximum size is ${sizeCapMB} MB for ${
+              rasterExtensionsForCap.has(ext) ? "raster" : "this file type"
+            }.`;
+            lastRejectionMessage = msg;
+            toast.update(toastId, msg, "error");
             continue; // Skip this file
           }
-
-          // Step 3: Convert staged file to File object (with error handling and timeout)
-          let file: File;
-          try {
-            file = await Promise.race([
-              stagedPathToFile({
-                absolutePath: stagedFile.absolutePath,
-                originalName: stagedFile.originalName,
-                mimeType: stagedFile.mimeType,
-              }),
-              new Promise<never>((_, reject) =>
-                setTimeout(
-                  () => reject(new Error("File read timeout (30 seconds)")),
-                  30000
-                )
-              ),
-            ]);
-          } catch (fileError) {
-            console.error("[FileUpload] Error reading file:", fileError);
-            const errorMsg =
-              fileError instanceof Error ? fileError.message : "Unknown error";
-            toast.update(
-              toastId,
-              `Error reading file ${stagedFile.originalName}: ${errorMsg}`,
-              "error"
+          if (rasterExtensionsForCap.has(ext) && fileSizeMB > 1024) {
+            // Inform the user that a very large TIFF may take longer — it's
+            // still going to work, but the ArrayBuffer copy + worker transfer
+            // is not instant at this size.
+            toast.notification(
+              `Large raster (${fileSizeMB.toFixed(
+                0,
+              )} MB). Processing may take up to a few minutes…`,
             );
-            continue; // Skip this file and move to next
+          }
+
+          // Step 3: Convert staged file to a File object — but skip the
+          // binary read for tiled rasters. The gdal-async worker opens the
+          // file by absolute path, so the renderer never needs the bytes.
+          // (Without this guard, files >2 GB blow up Node's
+          // ERR_FS_FILE_TOO_LARGE on fs:readFileBinary.)
+          const stagedNameLower = stagedFile.originalName.toLowerCase();
+          const isTiffExt =
+            stagedNameLower.endsWith(".tif") ||
+            stagedNameLower.endsWith(".tiff");
+          const willTile = isTiffExt && shouldTile(stagedFile.size);
+
+          let file: File = null as unknown as File;
+          if (!willTile) {
+            try {
+              file = await Promise.race([
+                stagedPathToFile({
+                  absolutePath: stagedFile.absolutePath,
+                  originalName: stagedFile.originalName,
+                  mimeType: stagedFile.mimeType,
+                }),
+                new Promise<never>((_, reject) =>
+                  setTimeout(
+                    () => reject(new Error("File read timeout (30 seconds)")),
+                    30000,
+                  ),
+                ),
+              ]);
+            } catch (fileError) {
+              console.error("[FileUpload] Error reading file:", fileError);
+              const errorMsg =
+                fileError instanceof Error
+                  ? fileError.message
+                  : "Unknown error";
+              const msg = `Error reading file ${stagedFile.originalName}: ${errorMsg}`;
+              lastRejectionMessage = msg;
+              toast.update(toastId, msg, "error");
+              continue; // Skip this file and move to next
+            }
           }
 
           // Step 4: Check if file is ZIP and handle accordingly
@@ -780,25 +2558,73 @@ const MapComponent = ({
           const isZip = fileNameLower.endsWith(".zip");
 
           if (isZip) {
-
             const extractToastId = toast.loading(
-              `Extracting ZIP: ${stagedFile.originalName}...`
+              `Extracting ZIP: ${stagedFile.originalName}...`,
             );
+
+            // sketch_layers.zip: same bundle as session restore — do not extract as generic GIS
+            if (
+              fileBasenameLower(stagedFile.originalName) === "sketch_layers.zip"
+            ) {
+              try {
+                const { importSketchLayersFromSketchZipBlob } =
+                  await import("@/lib/autosave");
+                const sketchLayers =
+                  await importSketchLayersFromSketchZipBlob(file);
+                const existingIds = new Set(layers.map((l) => l.id));
+                let added = 0;
+                for (const sl of sketchLayers) {
+                  if (!existingIds.has(sl.id)) {
+                    addLayer(sl);
+                    existingIds.add(sl.id);
+                    added++;
+                  }
+                }
+                if (added > 0) {
+                  toast.dismiss(extractToastId);
+                  toast.success(`Loaded ${added} sketch layer(s)`);
+                  hasValidFiles = true;
+                } else {
+                  toast.update(
+                    extractToastId,
+                    "No new sketch layers to add (empty file or duplicates skipped)",
+                    "notification",
+                  );
+                }
+              } catch (sketchErr) {
+                toast.update(
+                  extractToastId,
+                  `Sketch ZIP: ${
+                    sketchErr instanceof Error
+                      ? sketchErr.message
+                      : "Unknown error"
+                  }`,
+                  "error",
+                );
+              }
+              try {
+                await NativeUploader.deleteFile({
+                  absolutePath: stagedFile.absolutePath,
+                });
+              } catch {
+                /* ignore */
+              }
+              continue;
+            }
 
             try {
               // Use native plugin to extract ZIP recursively
               const extractResult = await ZipFolder.extractZipRecursive({
                 zipPath: stagedFile.absolutePath,
-                outputDir: HSC_FILES_DIR,
+                outputDir: getHscFilesDir(),
               });
 
-            
               if (extractResult.files.length === 0) {
                 toast.dismiss(extractToastId);
                 toast.update(
                   extractToastId,
                   "ZIP file is empty or contains no valid files. Only GIS-related files are allowed.",
-                  "error"
+                  "error",
                 );
                 // Don't mark as valid - continue to next file
                 continue; // Skip this ZIP file
@@ -807,11 +2633,12 @@ const MapComponent = ({
               toast.update(
                 extractToastId,
                 `Found ${extractResult.files.length} file(s), processing...`,
-                "loading"
+                "loading",
               );
 
               // Track if any valid files were found in ZIP
               let hasValidFilesInZip = false;
+              const sketchImportExistingIds = new Set(layers.map((l) => l.id));
 
               // Process each extracted file sequentially
               for (
@@ -822,12 +2649,69 @@ const MapComponent = ({
                 const extractedFile = extractResult.files[zipFileIdx];
                 const zipFileNum = zipFileIdx + 1;
 
+                if (
+                  fileBasenameLower(extractedFile.name) === "sketch_layers.zip"
+                ) {
+                  const sketchToastId = toast.loading(
+                    `Loading sketch layers (${extractedFile.name})...`,
+                  );
+                  try {
+                    const sketchFile = await stagedPathToFile({
+                      absolutePath: extractedFile.absolutePath,
+                      originalName: extractedFile.name,
+                      mimeType: "application/zip",
+                    });
+                    const { importSketchLayersFromSketchZipBlob } =
+                      await import("@/lib/autosave");
+                    const sketchLayers =
+                      await importSketchLayersFromSketchZipBlob(sketchFile);
+                    let added = 0;
+                    for (const sl of sketchLayers) {
+                      if (!sketchImportExistingIds.has(sl.id)) {
+                        addLayer(sl);
+                        sketchImportExistingIds.add(sl.id);
+                        added++;
+                      }
+                    }
+                    if (added > 0) {
+                      toast.dismiss(sketchToastId);
+                      toast.success(
+                        `Loaded ${added} sketch layer(s) from ${extractedFile.name}`,
+                      );
+                      hasValidFilesInZip = true;
+                      hasValidFiles = true;
+                    } else {
+                      toast.update(
+                        sketchToastId,
+                        "No new sketch layers (empty or duplicates)",
+                        "notification",
+                      );
+                    }
+                  } catch (nestedSketchErr) {
+                    toast.update(
+                      sketchToastId,
+                      `Sketch ZIP ${extractedFile.name}: ${
+                        nestedSketchErr instanceof Error
+                          ? nestedSketchErr.message
+                          : "Unknown error"
+                      }`,
+                      "error",
+                    );
+                  }
+                  try {
+                    await NativeUploader.deleteFile({
+                      absolutePath: extractedFile.absolutePath,
+                    });
+                  } catch {
+                    /* ignore */
+                  }
+                  continue;
+                }
+
                 // Check if extracted file extension is allowed
-                const { isFileExtensionAllowed } = await import(
-                  "@/lib/allowed-file-extensions"
-                );
+                const { isFileExtensionAllowed } =
+                  await import("@/lib/allowed-file-extensions");
                 if (!isFileExtensionAllowed(extractedFile.name)) {
-            
                   // Delete the extracted file since we don't want to store it
                   try {
                     await NativeUploader.deleteFile({
@@ -836,7 +2720,7 @@ const MapComponent = ({
                   } catch (deleteError) {
                     console.warn(
                       `[FileUpload] Failed to delete blocked file: ${extractedFile.name}`,
-                      deleteError
+                      deleteError,
                     );
                   }
                   continue; // Skip this file
@@ -851,7 +2735,7 @@ const MapComponent = ({
                   await upsertManifestEntry({
                     layerId: layerId,
                     layerName: layerName,
-                    path: `DOCUMENTS/${HSC_FILES_DIR}/${extractedFile.name}`,
+                    path: `DOCUMENTS/${getHscFilesDir()}/${extractedFile.name}`,
                     absolutePath: extractedFile.absolutePath,
                     originalName: extractedFile.name,
                     size: extractedFile.size,
@@ -862,55 +2746,131 @@ const MapComponent = ({
 
                   // Create progress toast for this file
                   const progressToastId = toast.loading(
-                    `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name}...`
+                    `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name}...`,
                   );
 
-                  // Convert absolute path to File object for parsing
-                  const file = await stagedPathToFile({
-                    absolutePath: extractedFile.absolutePath,
-                    originalName: extractedFile.name,
-                    mimeType:
-                      extractedFile.type === "tiff"
-                        ? "image/tiff"
-                        : "application/octet-stream",
-                  });
+                  // Defer stagedPathToFile() until we know we actually need
+                  // the File object — for the tiling path we only need the
+                  // absolute path. stagedPathToFile() on Electron calls
+                  // fs.readFileBinary() which fails with ERR_FS_FILE_TOO_LARGE
+                  // for files >2 GB (e.g. WB_2G_P1_2024_BestServerSS_GSM_M.tif
+                  // at 3.4 GB). The tiling pipeline opens the file via GDAL
+                  // mmap in the worker, so it doesn't need the bytes loaded.
+                  const willTile =
+                    extractedFile.type === "tiff" &&
+                    shouldTile(extractedFile.size);
+                  const file: File | null = willTile
+                    ? null
+                    : await stagedPathToFile({
+                        absolutePath: extractedFile.absolutePath,
+                        originalName: extractedFile.name,
+                        mimeType:
+                          extractedFile.type === "tiff"
+                            ? "image/tiff"
+                            : "application/octet-stream",
+                      });
 
                   if (extractedFile.type === "tiff") {
-                    // Process DEM file
-                    const demResult = await parseDemFile(file, {
-                      layerId: layerId,
-                      layerName: layerName,
-                      onProgress: (percent) => {
-                        toast.update(
-                          progressToastId,
-                          `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
-                          "loading"
+                    if (shouldTile(extractedFile.size)) {
+                      // Large raster from ZIP → on-demand tiling.
+                      toast.update(
+                        progressToastId,
+                        `Tiling ${extractedFile.name}…`,
+                        "loading",
+                      );
+                      const newLayer = await runTilingUpload(
+                        {
+                          layerId,
+                          layerName,
+                          absolutePath: extractedFile.absolutePath,
+                        },
+                        {
+                          onPhase: (phase) => {
+                            const msg =
+                              phase === "probing"
+                                ? `Probing ${extractedFile.name}…`
+                                : phase === "optimizing"
+                                  ? `Optimizing ${extractedFile.name} (one-time, may take a few minutes)…`
+                                  : `Tiling ${extractedFile.name}…`;
+                            toast.update(progressToastId, msg, "loading");
+                          },
+                        },
+                      );
+                      addLayer(startHiddenOnImport(newLayer));
+                      const { updateManifestColor, upsertTempManifestEntry } =
+                        await import("@/sessions/manifestStore");
+                      await updateManifestColor(layerId, newLayer.color);
+                      await upsertTempManifestEntry({
+                        layerId,
+                        layerName,
+                        path: `DOCUMENTS/${getHscFilesDir()}/${extractedFile.name}`,
+                        absolutePath: extractedFile.absolutePath,
+                        originalName: extractedFile.name,
+                        size: extractedFile.size,
+                        status: "staged",
+                        type: "tiff",
+                        createdAt: Date.now(),
+                        tileSourcePath: extractedFile.absolutePath,
+                        tileMinZoom: newLayer.tileMinZoom,
+                        tileMaxZoom: newLayer.tileMaxZoom,
+                        tileBoundsWgs84: newLayer.tileBoundsWgs84,
+                        sourceCrs: newLayer.sourceCrs,
+                        sourceDtype: newLayer.sourceDtype,
+                      });
+                      // Don't claim "tiled" yet — wait for actual tiles to
+                      // hit the canvas before flipping the toast to success.
+                      waitAndAckTiledLayer(
+                        layerId,
+                        extractedFile.name,
+                        progressToastId,
+                        newLayer.visible === false,
+                      );
+                    } else {
+                      // Process DEM file (small TIFF — file was loaded above
+                      // because willTile is false in this branch).
+                      if (!file)
+                        throw new Error(
+                          "Internal: file not loaded for DEM path",
                         );
-                      },
-                    });
+                      const demResult = await parseDemFile(file, {
+                        layerId: layerId,
+                        layerName: layerName,
+                        onProgress: (percent) => {
+                          toast.update(
+                            progressToastId,
+                            `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
+                            "loading",
+                          );
+                        },
+                      });
 
-                    const newLayer = createDemLayer(demResult, {
-                      layerId: layerId,
-                      layerName: layerName,
-                    });
-                    addLayer(newLayer);
-                    // Update manifest with layer color
-                    const { updateManifestColor } = await import(
-                      "@/sessions/manifestStore"
-                    );
-                    await updateManifestColor(layerId, newLayer.color);
+                      const newLayer = createDemLayer(demResult, {
+                        layerId: layerId,
+                        layerName: layerName,
+                      });
+                      addLayer(startHiddenOnImport(newLayer));
+                      // Update manifest with layer color
+                      const { updateManifestColor } =
+                        await import("@/sessions/manifestStore");
+                      await updateManifestColor(layerId, newLayer.color);
 
-                    toast.update(
-                      progressToastId,
-                      `DEM: ${extractedFile.name}`,
-                      "success"
-                    );
+                      toast.update(
+                        progressToastId,
+                        `DEM: ${extractedFile.name}`,
+                        "success",
+                      );
+                    }
                     hasValidFiles = true; // Mark that we have at least one valid file overall
                   } else if (
                     extractedFile.type === "vector" ||
                     extractedFile.type === "shapefile"
                   ) {
-                    // Process vector file
+                    // Process vector file (file was loaded above because
+                    // willTile is only true for the tiff branch).
+                    if (!file)
+                      throw new Error(
+                        "Internal: file not loaded for vector path",
+                      );
                     const vectorResult = await parseVectorFile(file, {
                       layerId: layerId,
                       layerName: layerName,
@@ -919,7 +2879,7 @@ const MapComponent = ({
                         toast.update(
                           progressToastId,
                           `Processing ${zipFileNum}/${extractResult.files.length}: ${extractedFile.name} (${percent}%)`,
-                          "loading"
+                          "loading",
                         );
                       },
                     });
@@ -929,17 +2889,16 @@ const MapComponent = ({
                       layerName: layerName,
                       generateRandomColor,
                     });
-                    addLayer(newLayer);
+                    addLayer(startHiddenOnImport(newLayer));
                     // Update manifest with layer color
-                    const { updateManifestColor } = await import(
-                      "@/sessions/manifestStore"
-                    );
+                    const { updateManifestColor } =
+                      await import("@/sessions/manifestStore");
                     await updateManifestColor(layerId, newLayer.color);
 
                     toast.update(
                       progressToastId,
                       `Vector: ${extractedFile.name}`,
-                      "success"
+                      "success",
                     );
                     hasValidFiles = true; // Mark that we have at least one valid file overall
                   }
@@ -949,14 +2908,14 @@ const MapComponent = ({
                 } catch (fileError) {
                   console.error(
                     `[FileUpload] Error processing extracted file ${extractedFile.name}:`,
-                    fileError
+                    fileError,
                   );
                   toast.error(
                     `Error processing ${extractedFile.name}: ${
                       fileError instanceof Error
                         ? fileError.message
                         : "Unknown error"
-                    }`
+                    }`,
                   );
                 }
               }
@@ -967,7 +2926,7 @@ const MapComponent = ({
                 toast.update(
                   extractToastId,
                   "ZIP file contains no valid files. Only GIS-related files are allowed.",
-                  "error"
+                  "error",
                 );
                 continue; // Skip to next file
               }
@@ -976,7 +2935,7 @@ const MapComponent = ({
               if (hasValidFilesInZip) {
                 toast.dismiss(extractToastId);
                 toast.success(
-                  `Successfully processed files from ZIP: ${stagedFile.originalName}`
+                  `Successfully processed files from ZIP: ${stagedFile.originalName}`,
                 );
               }
 
@@ -985,17 +2944,16 @@ const MapComponent = ({
                 await NativeUploader.deleteFile({
                   absolutePath: stagedFile.absolutePath,
                 });
-  
               } catch (deleteError) {
                 console.warn(
                   `[FileUpload] Failed to delete original ZIP file:`,
-                  deleteError
+                  deleteError,
                 );
               }
             } catch (zipError) {
               console.error(
                 `[FileUpload] Error extracting ZIP file:`,
-                zipError
+                zipError,
               );
               toast.dismiss(extractToastId);
               toast.update(
@@ -1003,7 +2961,7 @@ const MapComponent = ({
                 `Error extracting ZIP: ${
                   zipError instanceof Error ? zipError.message : "Unknown error"
                 }`,
-                "error"
+                "error",
               );
               // Don't mark as valid - continue to next file
               continue; // Skip this ZIP file on error
@@ -1026,13 +2984,12 @@ const MapComponent = ({
               createdAt: Date.now(),
             };
 
-
             try {
               await upsertManifestEntry(manifestEntry);
             } catch (manifestError) {
               console.error(
                 `[FileUpload] Error adding to manifest:`,
-                manifestError
+                manifestError,
               );
               toast.update(
                 toastId,
@@ -1041,7 +2998,7 @@ const MapComponent = ({
                     ? manifestError.message
                     : "Unknown error"
                 }`,
-                "error"
+                "error",
               );
               // Continue - still try to render the file even if manifest fails
             }
@@ -1075,39 +3032,100 @@ const MapComponent = ({
             const isVector = vectorExtensions.includes(ext);
 
             if (!isRaster && !isVector) {
-              console.error(`[FileUpload] Unsupported file type: ${ext}`);
-              toast.update(toastId, `Unsupported file type: ${ext}`, "error");
+              const msg = `Unsupported file type: ${ext}`;
+              console.error(`[FileUpload] ${msg}`);
+              lastRejectionMessage = msg;
+              toast.update(toastId, msg, "error");
               continue;
             }
 
             const renderToastId = toast.loading(
-              `Rendering File ${fileNum} (${stagedFile.originalName}): 0/100 %`
+              `Rendering File ${fileNum} (${stagedFile.originalName}): 0/100 %`,
             );
+            // The tiled-raster path hands this toast to `waitAndAckTiledLayer`,
+            // which keeps it in "Tiling…" until mapbox has actually drawn tiles.
+            // The success/dismiss tail below must then NOT touch it, or it
+            // overwrites and dismisses the toast a second owner is still driving —
+            // which is why large rasters showed no progress at all: the phase
+            // messages were replaced by "File Rendered Successfully" and gone 1 s
+            // later, while the tiles were still rendering.
+            let toastOwnedByTiling = false;
 
             try {
-
               if (isRaster) {
-                const demResult = await parseDemFile(file, {
-                  layerId,
-                  layerName,
-                  onProgress: (percent) => {
-                    toast.update(
-                      renderToastId,
-                      `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
-                      "loading"
-                    );
-                  },
-                });
-                const newLayer = createDemLayer(demResult, {
-                  layerId,
-                  layerName,
-                });
-                addLayer(newLayer);
-                // Update manifest with layer color
-                const { updateManifestColor } = await import(
-                  "@/sessions/manifestStore"
-                );
-                await updateManifestColor(layerId, newLayer.color);
+                if (shouldTile(stagedFile.size)) {
+                  // Large raster (>300 MB) → on-demand tiling via gdal-async
+                  // child worker. parseDemFile is skipped entirely; the layer
+                  // gets a `tilesUrl` instead of a bitmap.
+                  toast.update(
+                    renderToastId,
+                    `Tiling ${stagedFile.originalName}…`,
+                    "loading",
+                  );
+                  const newLayer = await runTilingUpload(
+                    {
+                      layerId,
+                      layerName,
+                      absolutePath: stagedFile.absolutePath,
+                    },
+                    {
+                      onPhase: (phase) => {
+                        const msg =
+                          phase === "probing"
+                            ? `Probing ${stagedFile.originalName}…`
+                            : phase === "optimizing"
+                              ? `Optimizing ${stagedFile.originalName} (one-time, may take a few minutes)…`
+                              : `Tiling ${stagedFile.originalName}…`;
+                        toast.update(renderToastId, msg, "loading");
+                      },
+                    },
+                  );
+                  addLayer(startHiddenOnImport(newLayer));
+                  const { updateManifestColor, upsertTempManifestEntry } =
+                    await import("@/sessions/manifestStore");
+                  await updateManifestColor(layerId, newLayer.color);
+                  await upsertTempManifestEntry({
+                    ...manifestEntry,
+                    type: "tiff",
+                    tileSourcePath: stagedFile.absolutePath,
+                    tileMinZoom: newLayer.tileMinZoom,
+                    tileMaxZoom: newLayer.tileMaxZoom,
+                    tileBoundsWgs84: newLayer.tileBoundsWgs84,
+                    sourceCrs: newLayer.sourceCrs,
+                    sourceDtype: newLayer.sourceDtype,
+                  });
+                  // Don't claim success yet — keep the toast in "Tiling…"
+                  // state until Mapbox has actually drawn the visible tiles.
+                  // Deliberately not awaited; it owns the toast from here on.
+                  toastOwnedByTiling = true;
+                  waitAndAckTiledLayer(
+                    layerId,
+                    stagedFile.originalName,
+                    renderToastId,
+                    newLayer.visible === false,
+                  );
+                } else {
+                  const demResult = await parseDemFile(file, {
+                    layerId,
+                    layerName,
+                    onProgress: (percent) => {
+                      toast.update(
+                        renderToastId,
+                        `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
+                        "loading",
+                      );
+                    },
+                  });
+                  const newLayer = createDemLayer(demResult, {
+                    layerId,
+                    layerName,
+                  });
+                  addLayer(startHiddenOnImport(newLayer));
+                  // Update manifest with layer color
+                  const { updateManifestColor } =
+                    await import("@/sessions/manifestStore");
+                  await updateManifestColor(layerId, newLayer.color);
+                }
               } else {
                 const featureCollection = await parseVectorFile(file, {
                   layerId,
@@ -1117,7 +3135,7 @@ const MapComponent = ({
                     toast.update(
                       renderToastId,
                       `Rendering File ${fileNum} (${stagedFile.originalName}): ${percent}/100 %`,
-                      "loading"
+                      "loading",
                     );
                   },
                 });
@@ -1126,58 +3144,62 @@ const MapComponent = ({
                   layerName,
                   generateRandomColor,
                 });
-                addLayer(newLayer);
+                addLayer(startHiddenOnImport(newLayer));
                 // Update manifest with layer color
-                const { updateManifestColor } = await import(
-                  "@/sessions/manifestStore"
-                );
+                const { updateManifestColor } =
+                  await import("@/sessions/manifestStore");
                 await updateManifestColor(layerId, newLayer.color);
               }
 
-              toast.update(
-                renderToastId,
-                "File Rendered Successfully",
-                "success"
-              );
               hasValidFiles = true; // Mark that we have at least one valid file
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-              toast.dismiss(renderToastId);
+              // Leave the toast alone when the tiling path owns it — otherwise
+              // this relabels "Tiling…"/"Optimizing…" to success and dismisses it
+              // 1 s later, while the tiles are still being rendered.
+              if (!toastOwnedByTiling) {
+                toast.update(
+                  renderToastId,
+                  "File Rendered Successfully",
+                  "success",
+                );
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                toast.dismiss(renderToastId);
+              }
             } catch (renderError) {
               console.error("[FileUpload] Error rendering file:", renderError);
-              toast.update(
-                renderToastId,
-                `Error rendering: ${
-                  renderError instanceof Error
-                    ? renderError.message
-                    : "Unknown error"
-                }`,
-                "error"
-              );
+              const renderMsg = `Error rendering ${stagedFile.originalName}: ${
+                renderError instanceof Error
+                  ? renderError.message
+                  : "Unknown error"
+              }`;
+              lastRejectionMessage = renderMsg;
+              toast.update(renderToastId, renderMsg, "error");
               // Don't throw - continue with next file
             }
           }
         } catch (fileError) {
           console.error(
             `[FileUpload] Error processing file ${fileNum}:`,
-            fileError
+            fileError,
           );
-          toast.update(
-            toastId,
-            `Error processing file ${fileNum}: ${
-              fileError instanceof Error ? fileError.message : "Unknown error"
-            }`,
-            "error"
-          );
+          const procMsg = `Error processing file ${fileNum}: ${
+            fileError instanceof Error ? fileError.message : "Unknown error"
+          }`;
+          lastRejectionMessage = procMsg;
+          toast.update(toastId, procMsg, "error");
           // Continue with next file
         }
       }
 
-      // Check if any files were actually valid
+      // Check if any files were actually valid. If not, surface the most
+      // recent specific rejection reason (size cap, blocked extension, etc.)
+      // so the user understands why — the generic "only GIS files allowed"
+      // message was misleading when a valid TIFF was rejected for size.
       if (!hasValidFiles) {
         toast.update(
           toastId,
-          "No valid files found. Only GIS-related files are allowed.",
-          "error"
+          lastRejectionMessage ??
+            "No valid files found. Only GIS-related files are allowed.",
+          "error",
         );
         return;
       }
@@ -1185,13 +3207,13 @@ const MapComponent = ({
       toast.update(
         toastId,
         `Successfully uploaded and rendered file(s)`,
-        "success"
+        "success",
       );
     } catch (error) {
       console.error("[FileUpload] Error:", error);
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
-      
+
       // Check if user cancelled - show notification toast instead of error
       if (
         errorMessage.toLowerCase().includes("user cancelled") ||
@@ -1212,11 +3234,20 @@ const MapComponent = ({
       if (progressListener) {
         try {
           progressListener.remove();
-
         } catch (removeError) {
           console.warn(
             "[FileUpload] Error removing progress listener in finally:",
-            removeError
+            removeError,
+          );
+        }
+      }
+      if (pickerClosedListener) {
+        try {
+          pickerClosedListener.remove();
+        } catch (removeError) {
+          console.warn(
+            "[FileUpload] Error removing pickerClosed listener in finally:",
+            removeError,
           );
         }
       }
@@ -1234,7 +3265,7 @@ const MapComponent = ({
       const { getTempManifest } = await import("@/sessions/manifestStore");
       const tempManifest = getTempManifest();
       const filesToExport = tempManifest.filter(
-        (entry) => entry.status === "staged" || entry.status === "saved"
+        (entry) => entry.status === "staged" || entry.status === "saved",
       );
 
       // Check if there's anything to export
@@ -1252,8 +3283,6 @@ const MapComponent = ({
         size: entry.size,
       }));
 
-
-
       // Call Android plugin to create ZIP
       const { ZipFolder } = await import("@/plugins/zip-folder");
       const result = await ZipFolder.zipManifestFiles({
@@ -1263,7 +3292,7 @@ const MapComponent = ({
       toast.update(
         toastId,
         `GIS data exported to Documents: ${result.fileName}`,
-        "success"
+        "success",
       );
     } catch (error) {
       const errorMessage =
@@ -1283,10 +3312,8 @@ const MapComponent = ({
   const handleSaveSession = async () => {
     const toastId = toast.loading("Saving session...");
     try {
-
       // Early validation: Check if there's anything to save
       const { getTempManifest } = await import("@/sessions/manifestStore");
-      const { isSketchLayer } = await import("@/lib/sketch-layers");
 
       const tempManifest = getTempManifest();
       const sketchLayers = layers.filter(isSketchLayer);
@@ -1301,37 +3328,31 @@ const MapComponent = ({
       // const { loadManifest } = await import("@/sessions/manifestStore");
       // const beforeManifest = await loadManifest();
 
-
       // Step 7 & 8: Finalize manifest according to system design:
-      // - Sort all layers in manifest by size (increasing order)
+      // - Sort manifest by upload time (createdAt, oldest first)
       // - Upgrade "staged" files to "saved" status
       // - Delete "staged_delete" files from files folder
       // - Remove "staged_delete" entries from manifest
       const finalizedEntries = await finalizeSaveManifest();
- 
+
       // Save sketch layers as ZIP file in HSC-SESSIONS/FILES folder
       // Note: sketchLayers already filtered above in early validation
-      const { HSC_FILES_DIR } = await import("@/sessions/constants");
+      const { getHscFilesDir, HSC_DIRECTORY } =
+        await import("@/sessions/constants");
       const { Filesystem } = await import("@capacitor/filesystem");
-      const sketchLayersPath = `${HSC_FILES_DIR}/sketch_layers.zip`;
+      const sketchLayersPath = `${getHscFilesDir()}/sketch_layers.zip`;
 
       if (sketchLayers.length > 0) {
-
         const { saveLayers } = await import("@/lib/autosave");
-        const { Directory } = await import("@capacitor/filesystem");
-        await saveLayers(sketchLayers, sketchLayersPath, Directory.Documents);
+        await saveLayers(sketchLayers, sketchLayersPath, HSC_DIRECTORY);
       } else {
-        // Delete sketch_layers.zip if no sketch layers exist (clear old sketch layers)
         try {
-          const { Directory } = await import("@capacitor/filesystem");
           await Filesystem.deleteFile({
             path: sketchLayersPath,
-            directory: Directory.Documents,
+            directory: HSC_DIRECTORY,
           });
-    
         } catch (error) {
           // File might not exist, which is fine
-        
         }
       }
 
@@ -1347,7 +3368,7 @@ const MapComponent = ({
         `Failed to save session: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
-        "error"
+        "error",
       );
     }
   };
@@ -1371,12 +3392,11 @@ const MapComponent = ({
 
       // Filter to only "saved" entries for rendering
       const savedEntries = mergedEntries.filter((x) => x.status === "saved");
-  
 
       // Clear ALL current layers from UI - complete reset to saved state
       // Don't call deleteLayer() as it would delete "staged" files immediately
       // Just clear the UI - we'll restore everything from saved manifest
-   
+
       setLayers([]); // Clear everything - complete reset
 
       // No existing layers after reset - all will be restored fresh
@@ -1390,19 +3410,16 @@ const MapComponent = ({
 
         // Skip if layer_id already exists (prevent duplicates)
         if (existingLayerIds.has(entry.layerId)) {
-       
           continue;
         }
 
         const progressToastId = toast.loading(
           `Restoring File ${i + 1}/${savedEntries.length}: ${
             entry.originalName
-          }`
+          }`,
         );
 
         try {
-      
-
           // Check if this is a shapefile ZIP (stored as ZIP with type="shapefile")
           // Regular ZIP files should have been extracted, but shapefile ZIPs are stored as-is
           const isShapefileZip =
@@ -1414,32 +3431,53 @@ const MapComponent = ({
             entry.originalName.toLowerCase().endsWith(".zip") &&
             !isShapefileZip
           ) {
-         
             toast.dismiss(progressToastId);
             continue;
           }
 
-          // Convert absolute path to File object
-          let file: File;
-          try {
-            file = await stagedPathToFile({
-              absolutePath: entry.absolutePath,
-              originalName: entry.originalName,
-              mimeType: entry.mimeType || "application/octet-stream",
-            });
-          } catch (fileError) {
-            // File doesn't exist (404) - skip it
-            console.warn(
-              `[SessionRestore] File not found (may have been deleted): ${entry.originalName} at ${entry.absolutePath}`
-            );
-            toast.update(
-              progressToastId,
-              `Skipping ${entry.originalName} (file not found)`,
-              "error"
-            );
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            toast.dismiss(progressToastId);
-            continue;
+          // Convert absolute path to File object — but skip the binary
+          // read when this entry will go through the tiling path (the
+          // gdal-async worker reads the file by absolute path, and Node's
+          // fs:readFileBinary blows up on files >2 GB with
+          // ERR_FS_FILE_TOO_LARGE — that's why the WB_2G 3.4 GB file was
+          // being "skipped" during restore).
+          const restoreNameLower = entry.originalName.toLowerCase();
+          const restoreIsTiff =
+            restoreNameLower.endsWith(".tif") ||
+            restoreNameLower.endsWith(".tiff");
+          const restoreWillTile =
+            restoreIsTiff &&
+            (entry.tileSourcePath !== undefined ||
+              (typeof entry.size === "number" && shouldTile(entry.size)));
+
+          let file: File = null as unknown as File;
+          if (!restoreWillTile) {
+            try {
+              file = await stagedPathToFile({
+                absolutePath: entry.absolutePath,
+                originalName: entry.originalName,
+                mimeType: entry.mimeType || "application/octet-stream",
+              });
+            } catch (fileError) {
+              // Distinguish "missing" from "too large" so the user knows
+              // why a particular entry got dropped.
+              const reason =
+                fileError instanceof Error &&
+                /ERR_FS_FILE_TOO_LARGE/.test(fileError.message)
+                  ? "file too large for this code path (>2 GB)"
+                  : "file not found";
+              console.warn(
+                `[SessionRestore] Skipping ${entry.originalName} — ${reason} at ${entry.absolutePath}`,
+              );
+              toast.update(
+                progressToastId,
+                `Skipping ${entry.originalName} (${reason})`,
+                "error",
+              );
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+              toast.dismiss(progressToastId);
+              continue;
+            }
           }
 
           // Determine file type
@@ -1477,43 +3515,72 @@ const MapComponent = ({
             entry.type === "vector" || vectorExtensions.includes(ext);
 
           if (isRaster) {
-            const demResult = await parseDemFile(file, {
-              layerId: entry.layerId,
-              layerName: entry.layerName,
-              onProgress: (percent) => {
-                toast.update(
-                  progressToastId,
-                  `Restoring File ${i + 1}/${
-                    savedEntries.length
-                  }: ${percent}/100 %`,
-                  "loading"
-                );
-              },
-            });
-            const newLayer = createDemLayer(demResult, {
-              layerId: entry.layerId,
-              layerName: entry.layerName,
-            });
-            // Use createdAt from manifest instead of current time
-            if (entry.createdAt) {
-              (newLayer as any).uploadedAt = entry.createdAt;
+            // Tiled (large) rasters: re-register with the tile server +
+            // probe to rebuild the LayerProps. The original .tif on disk
+            // is still there; we don't re-decode anything.
+            if (
+              entry.tileSourcePath ||
+              (typeof entry.size === "number" && shouldTile(entry.size))
+            ) {
+              toast.update(
+                progressToastId,
+                `Restoring tiled raster ${i + 1}/${savedEntries.length}: ${entry.originalName}`,
+                "loading",
+              );
+              const newLayer = await runTilingUpload({
+                layerId: entry.layerId,
+                layerName: entry.layerName,
+                absolutePath: entry.absolutePath,
+                color: entry.color,
+              });
+              if (entry.createdAt) {
+                (newLayer as any).uploadedAt = entry.createdAt;
+              }
+              if (entry.color) {
+                newLayer.color = entry.color;
+              }
+              addLayer(newLayer);
+              existingLayerIds.add(entry.layerId);
+              restoredFileCount++;
+            } else {
+              const demResult = await parseDemFile(file, {
+                layerId: entry.layerId,
+                layerName: entry.layerName,
+                onProgress: (percent) => {
+                  toast.update(
+                    progressToastId,
+                    `Restoring File ${i + 1}/${
+                      savedEntries.length
+                    }: ${percent}/100 %`,
+                    "loading",
+                  );
+                },
+              });
+              const newLayer = createDemLayer(demResult, {
+                layerId: entry.layerId,
+                layerName: entry.layerName,
+              });
+              // Use createdAt from manifest instead of current time
+              if (entry.createdAt) {
+                (newLayer as any).uploadedAt = entry.createdAt;
+              }
+              // Use color from manifest if available
+              if (entry.color) {
+                newLayer.color = entry.color;
+              }
+              addLayer(newLayer);
+              existingLayerIds.add(entry.layerId);
+              restoredFileCount++;
             }
-            // Use color from manifest if available
-            if (entry.color) {
-              newLayer.color = entry.color;
-            }
-            addLayer(newLayer);
-            existingLayerIds.add(entry.layerId);
-            restoredFileCount++;
           } else if (isShapefileZip) {
             // Explicitly handle shapefile ZIPs using shpToGeoJSON
-    
+
             toast.update(
               progressToastId,
               `Restoring Shapefile ${i + 1}/${savedEntries.length}: ${
                 entry.originalName
               }...`,
-              "loading"
+              "loading",
             );
             const featureCollection = await shpToGeoJSON(file);
             const newLayer = createVectorLayer(featureCollection, {
@@ -1544,7 +3611,7 @@ const MapComponent = ({
                   `Restoring File ${i + 1}/${
                     savedEntries.length
                   }: ${percent}/100 %`,
-                  "loading"
+                  "loading",
                 );
               },
             });
@@ -1569,12 +3636,12 @@ const MapComponent = ({
         } catch (error) {
           console.error(
             `[SessionRestore] Error restoring file ${entry.originalName}:`,
-            error
+            error,
           );
           toast.update(
             progressToastId,
             `Error restoring ${entry.originalName}`,
-            "error"
+            "error",
           );
         }
       }
@@ -1583,22 +3650,20 @@ const MapComponent = ({
       // Note: All layers have already been cleared above, so no need to remove existing sketch layers
 
       try {
-        const { HSC_FILES_DIR } = await import("@/sessions/constants");
-        const { Filesystem, Directory, Encoding } = await import(
-          "@capacitor/filesystem"
-        );
-        const sketchLayersPath = `${HSC_FILES_DIR}/sketch_layers.zip`;
+        const { getHscFilesDir, HSC_DIRECTORY: hscDir } =
+          await import("@/sessions/constants");
+        const { Filesystem, Encoding } = await import("@capacitor/filesystem");
+        const sketchLayersPath = `${getHscFilesDir()}/sketch_layers.zip`;
 
         try {
           const result = await Filesystem.readFile({
             path: sketchLayersPath,
-            directory: Directory.Documents,
+            directory: hscDir,
             encoding: Encoding.UTF8,
           });
 
           const content = result.data;
           if (content && typeof content === "string" && content.trim() !== "") {
-            // Convert base64 to blob
             const binaryString = atob(content);
             const bytes = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) {
@@ -1606,45 +3671,21 @@ const MapComponent = ({
             }
             const blob = new Blob([bytes], { type: "application/zip" });
 
-            // Load ZIP using JSZip
-            const JSZip = (await import("jszip")).default;
-            const zip = await JSZip.loadAsync(blob);
+            const { importSketchLayersFromSketchZipBlob } =
+              await import("@/lib/autosave");
+            const sketchLayers =
+              await importSketchLayersFromSketchZipBlob(blob);
 
-            // Read layers.json from ZIP
-            const layersFile = zip.file("layers.json");
-            if (layersFile) {
-              const layersJson = await layersFile.async("string");
-              const importData = JSON.parse(layersJson);
-
-              if (importData.version && Array.isArray(importData.layers)) {
-                // Deserialize sketch layers
-                const { deserializeLayers } = await import("@/lib/autosave");
-                const sketchLayers = await deserializeLayers(
-                  importData.layers,
-                  zip
-                );
-
-                // Use existingLayerIds that was tracking restored file layers
-                // This ensures we don't duplicate layers that were already restored
-                // existingLayerIds was populated when restoring file layers above
-
-                // Add sketch layers ensuring unique layer_id
-                for (const sketchLayer of sketchLayers) {
-                  if (!existingLayerIds.has(sketchLayer.id)) {
-                    addLayer(sketchLayer);
-                    existingLayerIds.add(sketchLayer.id);
-                    restoredSketchCount++;
-                  }
-                }
-               
+            for (const sketchLayer of sketchLayers) {
+              if (!existingLayerIds.has(sketchLayer.id)) {
+                addLayer(sketchLayer);
+                existingLayerIds.add(sketchLayer.id);
+                restoredSketchCount++;
               }
             }
           }
-        } catch (error) {
+        } catch {
           // Sketch layers file doesn't exist, which is fine
-          console.log(
-            `[SessionRestore] No sketch layers file found (this is OK)`
-          );
         }
       } catch (error) {
         console.warn(`[SessionRestore] Error restoring sketch layers:`, error);
@@ -1664,7 +3705,7 @@ const MapComponent = ({
         toast.update(
           toastId,
           `Restored ${parts.join(", ")} from session`,
-          "success"
+          "success",
         );
       }
     } catch (error) {
@@ -1674,25 +3715,122 @@ const MapComponent = ({
         `Failed to restore session: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
-        "error"
+        "error",
       );
     } finally {
       setIsProcessingFiles(false);
     }
   };
 
+  const handleFlushSession = async () => {
+    const toastId = toast.loading("Clearing all session data...");
+    try {
+      // Release every Dataset held by the tiling backend before we try to
+      // unlink the source `.tif`s. On Windows an open file handle blocks
+      // unlink with EBUSY/EPERM; on Android, holding a GDAL Dataset open
+      // pins the file descriptor in the same way.
+      try {
+        await RasterTiling.closeAll();
+      } catch (err) {
+        console.warn(
+          "[FlushSession] RasterTiling.closeAll failed (continuing):",
+          err,
+        );
+      }
+
+      const { flushAllSessionFiles } = await import("@/lib/autosave");
+
+      await flushAllSessionFiles();
+
+      // Clear in-memory temp manifest
+      const manifestStore = await import("@/sessions/manifestStore");
+      const entries = manifestStore.getTempManifest();
+      for (const e of [...entries]) {
+        manifestStore.removeFromTempManifest(e.layerId);
+      }
+
+      // Clear layers from the map
+      setLayers([]);
+      // Drop any open tooltip — the layer it points at is gone now, so
+      // without this it would linger as a floating empty tooltip.
+      setHoverInfo(undefined);
+
+      toast.update(toastId, "All session data cleared", "success");
+    } catch (error) {
+      console.error("[FlushSession] Error:", error);
+      toast.update(
+        toastId,
+        `Failed to clear session: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "error",
+      );
+    }
+  };
+
   // Reset to home view (India bounds with fixed zoom)
   const handleResetHome = () => {
+    // Geodetic (EPSG:4326) mode: the mapbox camera is covered and inert, so a
+    // map.easeTo does nothing visible. Command the OrthographicView instead (same
+    // path as focus / rubber-band).
+    if (geodeticBasemapRef.current) {
+      setGeodeticCommand({
+        center: [DEFAULT_CENTER[0], DEFAULT_CENTER[1]],
+        zoom: mapboxZoomToOrtho(DEFAULT_ZOOM),
+        nonce: (geodeticCmdNonceRef.current += 1),
+      });
+      return;
+    }
     if (mapRef.current) {
       const map = mapRef.current.getMap();
       // Reset to initial view state with fixed zoom level
       map.easeTo({
-        center: [81.5, 20.5], // Center of India
-        zoom: 3, // Fixed zoom level (same as initialViewState)
+        center: DEFAULT_CENTER,
+        zoom: DEFAULT_ZOOM,
         pitch: 0,
         bearing: 0,
         duration: 1000,
       });
+    }
+  };
+
+  // On-screen zoom +/- buttons. In geodetic (EPSG:4326) mode the mapbox camera is
+  // covered and inert (map.easeTo does nothing visible), so command the
+  // OrthographicView instead — same path as home / focus / location. Step by one
+  // mapbox-zoom level about the CURRENT geodetic centre so it matches the Mercator
+  // +/- feel; the geodetic view clamps the result to its valid range.
+  const handleZoomIn = () => {
+    if (geodeticBasemapRef.current) {
+      const gv = geodeticViewRef.current;
+      const nextZoom = Math.min(orthoZoomToMapbox(gv.zoom) + 1, MAP_MAX_ZOOM);
+      setGeodeticCommand({
+        center: gv.center,
+        zoom: mapboxZoomToOrtho(nextZoom),
+        nonce: (geodeticCmdNonceRef.current += 1),
+      });
+      return;
+    }
+    if (mapRef.current) {
+      const map = mapRef.current.getMap();
+      // Short ease so the discrete +/- step feels immediate. A longer animation
+      // renders many intermediate fractional-zoom frames — extra work that makes
+      // raster (png/jpg) basemaps feel sluggish to step through.
+      map.easeTo({ zoom: map.getZoom() + 1, duration: 150 });
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (geodeticBasemapRef.current) {
+      const gv = geodeticViewRef.current;
+      const nextZoom = Math.max(orthoZoomToMapbox(gv.zoom) - 1, MAP_MIN_ZOOM);
+      setGeodeticCommand({
+        center: gv.center,
+        zoom: mapboxZoomToOrtho(nextZoom),
+        nonce: (geodeticCmdNonceRef.current += 1),
+      });
+      return;
+    }
+    if (mapRef.current) {
+      const map = mapRef.current.getMap();
+      map.easeTo({ zoom: map.getZoom() - 1, duration: 150 });
     }
   };
 
@@ -1730,6 +3868,27 @@ const MapComponent = ({
       return;
     }
 
+    // Recenter on the location. In geodetic (EPSG:4326) mode the mapbox camera is
+    // covered and inert, so command the OrthographicView instead (like home/focus).
+    const zoomToLocation = (lng: number, lat: number) => {
+      if (geodeticBasemapRef.current) {
+        setGeodeticCommand({
+          center: [lng, lat],
+          zoom: mapboxZoomToOrtho(GEOLOCATION_ZOOM),
+          nonce: (geodeticCmdNonceRef.current += 1),
+        });
+        return;
+      }
+      const map = mapRef.current?.getMap();
+      if (map) {
+        map.easeTo({
+          center: [lng, lat],
+          zoom: GEOLOCATION_ZOOM,
+          duration: 1500,
+        });
+      }
+    };
+
     let toastId: string | null = null;
 
     try {
@@ -1746,9 +3905,21 @@ const MapComponent = ({
           return;
         }
 
-        // Get current position
+        // Get current position.
+        //
+        // `maximumAge` matters on a device that has been offline: the plugin
+        // defaults it to 0, which REFUSES any cached fix and demands a brand new
+        // one. Accepting a fix from the last two minutes is what makes this
+        // succeed instantly when the GPS already had a lock — after a data clear
+        // there is nothing cached, so this costs nothing and can only help.
+        //
+        // `timeout` is documented as IGNORED on Android for getCurrentPosition
+        // (@capacitor/geolocation 5.x), so it cannot bound this call; the wait is
+        // bounded by the native fused-provider instead, which resolves with null
+        // and surfaces as "location unavailable" (see the catch below).
         const position = await Geolocation.getCurrentPosition({
           enableHighAccuracy: true,
+          maximumAge: 120000,
         });
 
         if (position?.coords) {
@@ -1764,14 +3935,7 @@ const MapComponent = ({
           await new Promise((resolve) => setTimeout(resolve, 100));
 
           // Zoom to location with smooth animation
-          if (mapRef.current) {
-            const map = mapRef.current.getMap();
-            map.easeTo({
-              center: [location.lng, location.lat],
-              zoom: 14, // Fixed zoom level for better view
-              duration: 1500, // Smooth animation over 1.5 seconds
-            });
-          }
+          zoomToLocation(location.lng, location.lat);
 
           // Dismiss loading toast and show success
           if (toastId) {
@@ -1780,22 +3944,84 @@ const MapComponent = ({
         }
       } else {
         // We already have location, just zoom to it smoothly
-        if (mapRef.current) {
-          const map = mapRef.current.getMap();
-          map.easeTo({
-            center: [userLocation.lng, userLocation.lat],
-            zoom: 14, // Fixed zoom level for better view
-            duration: 1500, // Smooth animation over 1.5 seconds
-          });
-        }
+        zoomToLocation(userLocation.lng, userLocation.lat);
       }
     } catch (error: any) {
       console.error("Location error:", error);
+      const message = String(error?.message ?? "");
+
+      // ── A cold GPS is NOT a failure — it is a wait ────────────────────────────
+      //
+      // getCurrentPosition is ONE SHOT. Natively it calls
+      // FusedLocationProviderClient.getCurrentLocation(priority, null) and, when
+      // that resolves with null, reports "location unavailable"
+      // (@capacitor/geolocation android/.../Geolocation.java). That is exactly the
+      // reported sequence — network off, app data cleared, location just switched
+      // on — because there is no cached fix, no A-GPS almanac to download, and a
+      // cold GPS lock takes tens of seconds outdoors.
+      //
+      // The old code treated that as fatal and called setShowUserLocation(false),
+      // which ALSO tore down the watch in OfflineLocationTracker (its effect is
+      // keyed on showUserLocation). So the app stopped listening at the precise
+      // moment it should have been waiting, and no later fix could ever arrive —
+      // pressing the button again just repeated the same one-shot failure.
+      //
+      // Keep tracking on instead: watchPosition goes through
+      // requestLocationUpdates, which keeps listening and delivers the fix as soon
+      // as the receiver locks. `pendingLocationRecenterRef` makes that first fix
+      // recentre the map, which is what the user pressed the button for.
+      // TERMINAL first, and checked before the "still acquiring" test, because the
+      // native strings overlap: "Google Play Services not available" would match a
+      // loose /not available/ and leave the app waiting forever for a fix that can
+      // never arrive — the exact case on a de-Googled or rugged offline tablet,
+      // which is the hardware this ships to. The strings come from
+      // @capacitor/geolocation android/.../Geolocation.java: "location disabled",
+      // "Google Play Services not available", "location unavailable".
+      const terminal =
+        /play services|location disabled|denied|permission/i.test(message);
+      const stillAcquiring =
+        !terminal && (!message || /unavailable|timeout|timed out/i.test(message));
+
       if (toastId) toast.dismiss(toastId);
-      toast.error(error.message || "Failed to get location");
+
+      if (stillAcquiring) {
+        pendingLocationRecenterRef.current = true;
+        toast.notification(
+          "Searching for GPS — this can take a minute outdoors on first use",
+        );
+        // Deliberately NOT turning the toggle off: the watch must stay alive.
+        return;
+      }
+
+      // A real, terminal error (location services off, permission revoked,
+      // Play Services missing) — nothing to wait for, so stop tracking.
+      toast.error(message || "Failed to get location");
       setShowUserLocation(false);
     }
   };
+
+  // Recentre on the FIRST fix that arrives after a cold start. The one-shot
+  // getCurrentPosition above may give up before the receiver has locked; when the
+  // watch in OfflineLocationTracker finally produces a position, honour the button
+  // press that is still outstanding.
+  useEffect(() => {
+    if (!pendingLocationRecenterRef.current) return;
+    if (!showUserLocation || !userLocation) return;
+    pendingLocationRecenterRef.current = false;
+    if (geodeticBasemapRef.current) {
+      setGeodeticCommand({
+        center: [userLocation.lng, userLocation.lat],
+        zoom: mapboxZoomToOrtho(GEOLOCATION_ZOOM),
+        nonce: (geodeticCmdNonceRef.current += 1),
+      });
+      return;
+    }
+    mapRef.current?.getMap()?.easeTo({
+      center: [userLocation.lng, userLocation.lat],
+      zoom: GEOLOCATION_ZOOM,
+      duration: 1500,
+    });
+  }, [userLocation, showUserLocation]);
 
   const measurementPreview = useMemo(() => {
     if (!isDrawing) return null;
@@ -1814,12 +4040,13 @@ const MapComponent = ({
           lengthKm: dist,
         }))
         .filter(
-          (segment) => segment.lengthKm > 0 && Number.isFinite(segment.lengthKm)
+          (segment) =>
+            segment.lengthKm > 0 && Number.isFinite(segment.lengthKm),
         );
 
       const totalKm = validSegments.reduce(
         (sum, segment) => sum + segment.lengthKm,
-        0
+        0,
       );
 
       return {
@@ -1901,10 +4128,6 @@ const MapComponent = ({
   //       // Store all coordinates for each node
   //       if (coordinates.length === 8) {
   //         setNodeCoordinatesData(coordinates);
-  //         console.log(
-  //           "Loaded coordinates from JSON files:",
-  //           coordinates.map((tab, idx) => `Node ${idx + 1}: ${tab.length} rows`)
-  //         );
   //       } else {
   //         console.warn("Expected 8 node files, found:", coordinates.length);
   //         if (coordinates.length > 0) {
@@ -1920,6 +4143,7 @@ const MapComponent = ({
   //   loadNodeData();
   // }, []);
 
+  /** Returns the new layer's id so a caller can focus it (existing callers ignore it). */
   const createPointLayer = (position: [number, number]) => {
     const newLayer: LayerProps = {
       type: "point",
@@ -1933,7 +4157,51 @@ const MapComponent = ({
     addLayer(newLayer);
     lastLayerCreationTimeRef.current = Date.now();
     setHoverInfo(undefined); // Clear tooltip when creating a layer
+    return newLayer.id;
   };
+
+  /**
+   * Plot a sketch point from typed coordinates, then focus it.
+   *
+   * Exists because the poles are effectively untappable: at 90°N there is nothing
+   * to aim at, and on a Web-Mercator base map latitudes past ±85.0511° cannot be
+   * displayed at all. Typing the numbers is the only way to place a point there.
+   *
+   * The latitude limit is PROJECTION-DEPENDENT and mirrors the map-click guard
+   * exactly (see handleMapClick): ±90° while a 4326 / plate-carrée base map is
+   * active, ±85.0511° on Mercator. Returning a message instead of a boolean lets
+   * the dialog explain WHY a value was refused rather than just rejecting it.
+   */
+  const plotPointFromCoordinates = useCallback(
+    (latitude: number, longitude: number): string | null => {
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return "Enter a valid latitude and longitude.";
+      }
+      const isGeodetic = !!geodeticBasemapRef.current;
+      const maxLat = isGeodetic ? 90 : MAX_MERCATOR_LATITUDE;
+      if (Math.abs(latitude) > maxLat) {
+        return isGeodetic
+          ? "Latitude must be between -90° and 90°."
+          : `This base map is Web Mercator, which cannot show beyond ±${MAX_MERCATOR_LATITUDE.toFixed(
+              4,
+            )}°. Switch to an EPSG:4326 base map to plot nearer the poles.`;
+      }
+      if (Math.abs(longitude) > 180) {
+        return "Longitude must be between -180° and 180°.";
+      }
+      const id = createPointLayer([longitude, latitude]);
+      // Focus through the shared request so it works on BOTH renderers — mapbox
+      // flyTo and the geodetic OrthographicView — and honours the layer's zoom band.
+      try {
+        focusLayer(id);
+      } catch {
+        /* a point always has bounds; ignore a focus failure rather than lose the point */
+      }
+      return null;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layers, addLayer, focusLayer],
+  );
 
   const closeRing = (path: [number, number][]) => {
     if (!path.length) return path;
@@ -1956,8 +4224,8 @@ const MapComponent = ({
         .filter((f) => f.geometry && f.geometry.type === "Polygon")
         .flatMap((f) =>
           (f.geometry as any).coordinates.map((coords: [number, number][]) =>
-            closeRing(coords)
-          )
+            closeRing(coords),
+          ),
         );
     } catch {
       return [ring];
@@ -1965,11 +4233,12 @@ const MapComponent = ({
   };
 
   const handlePolygonDrawing = (point: [number, number]) => {
-    //
-
     if (!isDrawing) {
       setCurrentPath([point]);
       setPendingPolygonPoints([point]);
+      // Collapse the preview edge onto the placed point: touch / the geodetic view
+      // have no pre-tap hover, so a stale mousePosition would draw a stray edge.
+      setMousePosition(point);
       setIsDrawing(true);
       return;
     }
@@ -1977,9 +4246,16 @@ const MapComponent = ({
     const updatedPath = [...pendingPolygonPoints, point];
     setPendingPolygonPoints(updatedPath);
     setCurrentPath(updatedPath);
+    setMousePosition(point);
 
-    // Get zoom-based threshold for closing polygon (optimized for zoom 18)
-    const closeThreshold = getPolygonCloseThreshold(mapZoom);
+    // Zoom-based close threshold. In geodetic mode `mapZoom` is the covered mapbox
+    // map's STALE zoom, so use the OrthographicView's own zoom (converted to the
+    // equivalent mapbox zoom) — otherwise the "tap near the first point to close"
+    // distance is wrong and the polygon won't close (or closes too early).
+    const effectiveZoom = geodeticBasemapRef.current
+      ? orthoZoomToMapbox(geodeticViewRef.current.zoom)
+      : mapZoom;
+    const closeThreshold = getPolygonCloseThreshold(effectiveZoom);
 
     if (
       updatedPath.length >= 3 &&
@@ -2016,7 +4292,7 @@ const MapComponent = ({
     const segmentDistancesKm = computeSegmentDistancesKm(path);
     const totalDistanceKm = segmentDistancesKm.reduce(
       (sum, dist) => sum + dist,
-      0
+      0,
     );
 
     const newLayer: LayerProps = {
@@ -2024,7 +4300,7 @@ const MapComponent = ({
       id: generateLayerId(),
       name: `Path ${
         layers.filter(
-          (l) => l.type === "line" && !(l.name || "").includes("Connection")
+          (l) => l.type === "line" && !(l.name || "").includes("Connection"),
         ).length + 1
       }`,
       path,
@@ -2054,6 +4330,10 @@ const MapComponent = ({
     (point: [number, number]) => {
       if (!isDrawing) {
         setCurrentPath([point]);
+        // Collapse the preview segment onto the placed point (see the azimuthal
+        // handler): stops a stale mousePosition drawing a random segment on the
+        // first tap on the geodetic view / touch.
+        setMousePosition(point);
         setIsDrawing(true);
         return;
       }
@@ -2069,20 +4349,27 @@ const MapComponent = ({
       }
 
       setCurrentPath([...currentPath, point]);
+      setMousePosition(point); // keep the next segment collapsed until the cursor moves
     },
     [
       isDrawing,
       currentPath,
       setCurrentPath,
+      setMousePosition,
       setIsDrawing,
       arePointsClose,
       finalizePolyline,
-    ]
+    ],
   );
 
   const handleAzimuthalDrawing = (point: [number, number]) => {
     if (!isDrawing) {
       setCurrentPath([point]);
+      // Collapse the preview onto the just-placed center so a STALE mousePosition
+      // (left over from a previous draw) can't flash a random north/azimuth line
+      // for a frame. The geodetic view and touch have no pre-tap hover to refresh
+      // it, unlike the mapbox mousemove handler — hence the blink was 4326-only.
+      setMousePosition(point);
       setIsDrawing(true);
       return;
     }
@@ -2098,7 +4385,7 @@ const MapComponent = ({
     const distanceMeters = calculateDistanceMeters(center, target);
     const azimuthAngle = calculateBearingDegrees(center, target);
     const referenceDistance = Math.max(distanceMeters, 1000);
-    const northPoint = destinationPoint(center, referenceDistance, 0);
+    const northPoint = northReferencePoint(center, referenceDistance);
 
     const azimuthCount = layers.filter((l) => l.type === "azimuth").length;
     const newLayer: LayerProps = {
@@ -2220,6 +4507,73 @@ const MapComponent = ({
     isDrawing,
   ]);
 
+  /** Shared by per-layer `onHover` and map `click` pick (touch tap-to-inspect). */
+  const commitDeckPickToHover = useCallback(
+    (info: PickingInfo<unknown> | null | undefined) => {
+      // While the Route Finder is waiting for an A/B point, the map is a picker —
+      // every tap means "put the endpoint here". Opening a feature tooltip on those
+      // taps (or on the hover that precedes them) fights the placement and leaves a
+      // panel covering the very spot being aimed at. `handleMapClick` already
+      // returns early for the placement itself, but deck's per-layer onHover fires
+      // independently, which is how a tooltip still appeared while marking A.
+      // Same treatment `drawingMode` already gets.
+      if (routePickActiveRef.current) {
+        setHoverInfo(undefined);
+        return;
+      }
+
+      // Prevent tooltip from showing immediately after layer creation (especially on tablets)
+      const timeSinceLastCreation =
+        Date.now() - lastLayerCreationTimeRef.current;
+      if (timeSinceLastCreation < 500) {
+        setHoverInfo(undefined);
+        return;
+      }
+
+      if (!info) {
+        setHoverInfo(undefined);
+        return;
+      }
+
+      const deckLayerId = (info.layer as any)?.id as string | undefined;
+
+      // Special handling for DEM BitmapLayers (.tif, .tiff, .dett, .hgt)
+      // BitmapLayer hover info often has no `object`, but we still want a tooltip
+      let isDemHover = false;
+      if (deckLayerId) {
+        const baseId = deckLayerId
+          .replace(/-icon-layer$/, "")
+          .replace(/-signal-overlay$/, "")
+          .replace(/-bitmap$/, "")
+          .replace(/-mesh$/, "");
+
+        const matchingLayer = layers.find((l) => l.id === baseId);
+        if (matchingLayer?.type === "dem") {
+          isDemHover = true;
+        }
+      }
+
+      if (info.object || (isDemHover && info.coordinate)) {
+        // In geodetic mode the pick comes from the OrthographicView; tag it so the
+        // tooltip positions from the deck screen x/y instead of mapbox.project.
+        if (geodeticBasemapRef.current) {
+          (info as { __geodetic?: boolean }).__geodetic = true;
+        }
+        setHoverInfo(info);
+      } else {
+        setHoverInfo(undefined);
+      }
+    },
+    [setHoverInfo, layers],
+  );
+
+  const handleLayerHover = useCallback(
+    (info: PickingInfo<unknown>) => {
+      commitDeckPickToHover(info);
+    },
+    [commitDeckPickToHover],
+  );
+
   const handleClick = (event: any) => {
     if (!drawingMode) {
       return;
@@ -2261,6 +4615,18 @@ const MapComponent = ({
       return;
     }
 
+    // Reject clicks that resolve outside the valid Web Mercator world. When the map is
+    // rotated/pitched, screen pixels in the surrounding whitespace void still unproject to
+    // coordinates (latitudes up to ±90°, longitudes past ±180°); placing vertices there draws
+    // off-world features. Keep drawing confined to the real map extent.
+    // In geodetic (plate-carrée) mode the map reaches ±90°; only Mercator is
+    // clipped at ±85.0511°.
+    const drawMaxLat = geodeticBasemapRef.current ? 90 : MAX_MERCATOR_LATITUDE;
+    if (Math.abs(latitude) > drawMaxLat || Math.abs(longitude) > 180) {
+      toast.error("Can't draw outside the map area");
+      return;
+    }
+
     const clickPoint: [number, number] = [longitude, latitude];
 
     switch (drawingMode) {
@@ -2282,15 +4648,220 @@ const MapComponent = ({
   const handleMapClick = (event: any) => {
     const { object } = event;
 
+    // Tooltip-on-leave fix for tiled rasters. deck.gl's per-layer onHover
+    // doesn't fire on Android touch when the user taps OFF the layer, so a
+    // stale hoverInfo from the previous tap on the raster keeps painting
+    // an empty tooltip. react-map-gl's onClick fires on every tap (mouse
+    // and touch), so it's the reliable hook to clear it.
+    {
+      const b = hoveredRasterBoundsRef.current;
+      if (b) {
+        const ll = event?.lngLat;
+        const lng = Array.isArray(ll) ? ll[0] : ll?.lng;
+        const lat = Array.isArray(ll) ? ll[1] : ll?.lat;
+        if (
+          typeof lng === "number" &&
+          typeof lat === "number" &&
+          (lng < b[0] || lng > b[2] || lat < b[1] || lat > b[3])
+        ) {
+          setHoverInfo(undefined);
+        }
+      }
+    }
+
+    // Route point placement takes priority when panel is open
+    if (isRoutePanelOpen && routeState.graphReady && routeState.pickMode) {
+      const lngLat = event.lngLat || event.coordinate;
+      if (lngLat) {
+        const lon = Array.isArray(lngLat)
+          ? lngLat[0]
+          : (lngLat.lng ?? lngLat[0]);
+        const lat = Array.isArray(lngLat)
+          ? lngLat[1]
+          : (lngLat.lat ?? lngLat[1]);
+        const coord: [number, number] = [lon, lat];
+
+        if (routeState.pickMode === "A") {
+          setRouteState((prev) => ({
+            ...prev,
+            pointA: coord,
+            snappedA: null, // stale until the worker snaps the new A
+            // Placing a NEW start point begins a NEW route, so the old end point
+            // must go with it. This line already sets pickMode "B" — "now waiting
+            // for B" — but it used to leave the previous pointB in place, and the
+            // auto-run effect in route-box.tsx only checks
+            //   pointA && pointB && key !== previous key
+            // so the instant the new A landed it routed straight to the OLD B,
+            // never giving the user a chance to place the new one. Clearing it here
+            // makes the state agree with the pickMode it is already setting.
+            pointB: null,
+            snappedB: null,
+            pathResult: null,
+            error: null,
+            pickMode: "B",
+          }));
+          dijkstraWorkerRef.current?.postMessage({
+            type: "snap-point",
+            lonLat: coord,
+            tag: "A",
+          });
+        } else {
+          setRouteState((prev) => ({
+            ...prev,
+            pointB: coord,
+            snappedB: null, // stale until the worker snaps the new B
+            pathResult: null,
+            error: null,
+            pickMode: null,
+          }));
+          dijkstraWorkerRef.current?.postMessage({
+            type: "snap-point",
+            lonLat: coord,
+            tag: "B",
+          });
+        }
+        return;
+      }
+    }
+
     // If clicking on empty space, close any open dialogs
     if (selectedNodeForIcon && !object) {
       setSelectedNodeForIcon(null);
     }
 
-    // Close tooltip when clicking anywhere on the map
-    setHoverInfo(undefined);
+    // While drawing, keep clearing hover so tooltips don't fight with placement.
+    if (drawingMode) {
+      setHoverInfo(undefined);
+      handleClick(event);
+      return;
+    }
 
-    // For other clicks, use the default handler
+    // In geodetic (EPSG:4326) mode the OrthographicView already resolved the pick
+    // and passed the feature (+ layer) and the CORRECT lng/lat in the event. Its
+    // camera differs from the covered, inert mapbox map, so the mapbox-overlay
+    // re-pick below would sample the wrong pixel — anchoring the tooltip to the
+    // wrong point (so it won't follow the feature) or missing entirely. Resolve
+    // EVERYTHING from the geodetic pick here, for both vector features and rasters.
+    if (geodeticBasemapRef.current) {
+      const gx = event.point?.x ?? 0;
+      const gy = event.point?.y ?? 0;
+      const gLng = event.coordinate?.[0];
+      const gLat = event.coordinate?.[1];
+      if (object) {
+        commitDeckPickToHover({
+          object,
+          layer: event.layer,
+          coordinate: event.coordinate,
+          x: gx,
+          y: gy,
+        } as unknown as PickingInfo<unknown>);
+      } else if (typeof gLng === "number" && typeof gLat === "number") {
+        // No vector object under the tap (e.g. a raster/DEM). Resolve the topmost
+        // DEM by lng/lat — camera-independent, so it anchors to the right place and
+        // the shared Tooltip then tracks it via the geodetic projection on pan/zoom.
+        const topDem = resolveTopmostDemUnderLngLat(
+          layers,
+          getZoomVisibility,
+          gLng,
+          gLat,
+        );
+        if (topDem) {
+          commitDeckPickToHover(
+            syntheticDemPickingInfo(topDem, gLng, gLat, gx, gy),
+          );
+        } else {
+          setHoverInfo(undefined);
+        }
+      } else {
+        setHoverInfo(undefined);
+      }
+      return;
+    }
+
+    // Tap / click: Deck pick with DEM proxies temporarily removed from the picking
+    // pass (hundreds of zip-imported rasters otherwise each participate in GPU pick).
+    // If a vector/point wins, use it; else resolve the topmost DEM under lng/lat by bounds.
+    try {
+      const pt = event?.point;
+      let px: number | undefined;
+      let py: number | undefined;
+      if (pt && typeof pt.x === "number" && typeof pt.y === "number") {
+        px = pt.x;
+        py = pt.y;
+      } else if (Array.isArray(pt) && pt.length >= 2) {
+        px = pt[0] as number;
+        py = pt[1] as number;
+      }
+      let lng: number | undefined;
+      let lat: number | undefined;
+      const ll = event?.lngLat;
+      if (ll && typeof ll.lng === "number" && typeof ll.lat === "number") {
+        lng = ll.lng;
+        lat = ll.lat;
+      } else if (mapRef.current && pt) {
+        try {
+          const c = mapRef.current.getMap().unproject(pt);
+          lng = c.lng;
+          lat = c.lat;
+        } catch {
+          /* ignore */
+        }
+      }
+      const overlay = deckOverlayRef.current;
+      if (
+        overlay &&
+        px !== undefined &&
+        py !== undefined &&
+        Number.isFinite(px) &&
+        Number.isFinite(py)
+      ) {
+        const coarse =
+          typeof window !== "undefined" &&
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(pointer: coarse)").matches;
+        demRasterPickSuppressRef.current = true;
+        let picked: PickingInfo<unknown> | null = null;
+        try {
+          picked = overlay.pickObject({
+            x: px,
+            y: py,
+            radius: coarse ? 28 : 12,
+          });
+        } finally {
+          demRasterPickSuppressRef.current = false;
+        }
+        if (picked) {
+          commitDeckPickToHover(picked);
+        } else if (
+          typeof lng === "number" &&
+          typeof lat === "number" &&
+          Number.isFinite(lng) &&
+          Number.isFinite(lat)
+        ) {
+          const topDem = resolveTopmostDemUnderLngLat(
+            layers,
+            getZoomVisibility,
+            lng,
+            lat,
+          );
+          if (topDem) {
+            commitDeckPickToHover(
+              syntheticDemPickingInfo(topDem, lng, lat, px, py),
+            );
+          } else {
+            setHoverInfo(undefined);
+          }
+        } else {
+          setHoverInfo(undefined);
+        }
+      } else {
+        setHoverInfo(undefined);
+      }
+    } catch {
+      demRasterPickSuppressRef.current = false;
+      setHoverInfo(undefined);
+    }
+
     handleClick(event);
   };
   useEffect(() => {
@@ -2301,6 +4872,53 @@ const MapComponent = ({
     const map = mapRef.current.getMap();
     let [minLng, minLat, maxLng, maxLat] = focusLayerRequest.bounds;
     const { center, isSinglePoint } = focusLayerRequest;
+
+    // ── Focus must land where the layer is actually VISIBLE ────────────────────
+    //
+    // The zoom below is chosen purely from the bounding-box span (the bucket table
+    // further down), and used to ignore the layer's own Min/Max Zoom entirely. For
+    // anything spanning more than 10° that bucket is 5 — so focusing an azimuth
+    // whose Min Zoom is 6, 7 or 8 flew the camera to zoom 5 and getZoomVisibility
+    // then kept the layer HIDDEN. The map moved, the thing you focused never
+    // appeared, and it read as "focus not working". Measured: a 2542 km azimuth
+    // spans 22.8° → bucket 5 → hidden at Min Zoom 6/7/8; under ~1113 km it buckets
+    // to 8 and happened to work, which is why only long azimuths showed it.
+    //
+    // The same trap exists at the top end: a layer with Max Zoom 10 focused into
+    // bucket 15 would be hidden for being too far IN.
+    //
+    // So clamp the target into the band where the layer draws. This mirrors
+    // getZoomVisibility's own rules: sketches are gated only when the user set a
+    // value explicitly, uploaded layers fall back to their auto-computed range.
+    const focusTargetLayer = layers.find(
+      (l) => l.id === focusLayerRequest.layerId,
+    );
+    const visibleZoomBand = (() => {
+      const layer = focusTargetLayer;
+      if (!layer) return null;
+      if (isSketchLayer(layer)) {
+        if (layer.minzoom === undefined && layer.maxzoom === undefined) {
+          return null; // never zoom-gated
+        }
+        return {
+          min: layer.minzoom ?? 0,
+          max: layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM,
+        };
+      }
+      if (layer.minzoom !== undefined) {
+        return {
+          min: layer.minzoom,
+          max: layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM,
+        };
+      }
+      const auto = calculateLayerZoomRange(layer);
+      return auto ? { min: auto.minZoom, max: auto.maxZoom } : null;
+    })();
+    /** Pull a candidate zoom into the layer's visible band (mapbox zoom units). */
+    const clampToVisible = (zoom: number) =>
+      visibleZoomBand
+        ? Math.min(Math.max(zoom, visibleZoomBand.min), visibleZoomBand.max)
+        : zoom;
 
     // Validate and clamp bounds to valid ranges
     const clampLng = (lng: number) => {
@@ -2316,6 +4934,59 @@ const MapComponent = ({
       // Clamp latitude to [-90, 90]
       return Math.max(-90, Math.min(90, lat));
     };
+
+    // Geodetic (EPSG:4326) mode: the visible surface is the deck OrthographicView;
+    // the mapbox map underneath is covered and inert. Driving it (fitBounds/flyTo)
+    // does nothing visible AND makes the hidden map fetch pbf tiles as it pans, so
+    // command the geodetic view directly instead.
+    if (geodeticBasemapRef.current) {
+      let orthoZoom: number;
+      let cLng: number;
+      let cLat: number;
+      if (isSinglePoint) {
+        cLng = clampLng(center[0]);
+        cLat = clampLat(center[1]);
+        // clampToVisible works in MAPBOX zoom units (what Min/Max Zoom and the
+        // on-screen readout use), so convert on the way out.
+        orthoZoom = mapboxZoomToOrtho(clampToVisible(12));
+      } else {
+        const bMinLng = clampLng(minLng);
+        const bMaxLng = clampLng(maxLng);
+        const bMinLat = clampLat(minLat);
+        const bMaxLat = clampLat(maxLat);
+        // Use the FEATURE centre the store published, not the bbox midpoint. For
+        // every other layer type computeLayerBounds returns exactly this midpoint,
+        // so this is an identity for them; for an azimuth it avoids the northward
+        // bias its reference tick puts on the bbox (see computeLayerBounds).
+        cLng = clampLng(center[0]);
+        cLat = clampLat(center[1]);
+        // Fit the bounds into the geodetic viewport (deck canvas ≈ map container).
+        const el = map.getContainer?.();
+        const W = Math.max(1, el?.clientWidth ?? 1);
+        const H = Math.max(1, el?.clientHeight ?? 1);
+        const lngSpan = Math.max(Math.abs(bMaxLng - bMinLng), 1e-4);
+        const latSpan = Math.max(Math.abs(bMaxLat - bMinLat), 1e-4);
+        const pad = 1.3; // leave a margin, approximating fitBounds padding
+        orthoZoom = Math.min(
+          Math.log2(W / (lngSpan * pad)),
+          Math.log2(H / (latSpan * pad)),
+          // MAP_MAX_ZOOM, not a bare 20: this is the same ceiling the mapbox
+          // camera and the +/- buttons use, so focus and rubber band cannot
+          // overshoot the configured maximum.
+          mapboxZoomToOrtho(MAP_MAX_ZOOM),
+        );
+        // Same clamp as the mapbox branch, converted through mapbox zoom units so
+        // the layer's Min/Max Zoom means the same thing on both renderers.
+        orthoZoom = mapboxZoomToOrtho(clampToVisible(orthoZoomToMapbox(orthoZoom)));
+      }
+      setGeodeticCommand({
+        center: [cLng, cLat],
+        zoom: orthoZoom,
+        nonce: (geodeticCmdNonceRef.current += 1),
+      });
+      setFocusLayerRequest(null);
+      return;
+    }
 
     minLng = clampLng(minLng);
     maxLng = clampLng(maxLng);
@@ -2357,12 +5028,12 @@ const MapComponent = ({
       // Check if we're already focused on this location (within small threshold)
       const centerDistance = Math.sqrt(
         Math.pow(currentCenter.lng - centerLng, 2) +
-          Math.pow(currentCenter.lat - centerLat, 2)
+          Math.pow(currentCenter.lat - centerLat, 2),
       );
 
       if (isSinglePoint) {
         // For single point, check if already focused
-        const targetZoom = Math.min(Math.max(currentZoom, 12), 12);
+        const targetZoom = clampToVisible(Math.min(Math.max(currentZoom, 12), 12));
         const zoomDiff = Math.abs(currentZoom - targetZoom);
         const isAlreadyFocused = centerDistance < 0.001 && zoomDiff < 0.5;
 
@@ -2388,13 +5059,13 @@ const MapComponent = ({
           currentBounds.getEast() >= maxLng &&
           currentBounds.getSouth() <= minLat &&
           currentBounds.getNorth() >= maxLat;
-        
+
         // Calculate zoom based on bounding box size
         // Smaller bounding box = higher zoom, larger bounding box = lower zoom
         const lngSpan = maxLng - minLng;
         const latSpan = maxLat - minLat;
         const maxSpan = Math.max(lngSpan, latSpan);
-        
+
         // Calculate appropriate maxZoom based on bounding box size
         // Formula: smaller span = higher zoom (up to 20), larger span = lower zoom (down to 3)
         let calculatedMaxZoom: number;
@@ -2417,8 +5088,13 @@ const MapComponent = ({
           // Extremely large area - very low zoom
           calculatedMaxZoom = 5;
         }
-        
-        const zoomDiff = Math.abs(currentZoom - calculatedMaxZoom);
+
+        // Compare against the zoom this focus will ACTUALLY settle at, not the raw
+        // bucket. Otherwise a layer whose Min Zoom pulls the target up to 8 would be
+        // judged "already focused" at zoom 5 (|5-5| < 1) and the click would be
+        // swallowed — the same do-nothing symptom, one level up.
+        const settleZoom = clampToVisible(calculatedMaxZoom);
+        const zoomDiff = Math.abs(currentZoom - settleZoom);
         const isAlreadyFocused = boundsContained && zoomDiff < 1;
 
         if (isAlreadyFocused) {
@@ -2429,18 +5105,72 @@ const MapComponent = ({
         // Use fitBounds with smooth animation to show the entire bounding box
         // Stop any ongoing animations first to prevent jitter
         map.stop();
-        map.fitBounds(
-          [
-            [minLng, minLat],
-            [maxLng, maxLat],
-          ],
-          {
-            padding: { top: 120, bottom: 120, left: 160, right: 160 },
+        // Padding proportional to the canvas, capped at the original fixed budget.
+        // A flat 160/120 is fine on a desktop window but is 58% of the HEIGHT of a
+        // 915×412 phone canvas, which costs ~1.7-2.2 zoom levels of framing on
+        // exactly the devices this ships to — and at the extreme leaves mapbox no
+        // room at all, the failure handled just below. Identical to the old values
+        // on any canvas at or above 1067×800.
+        const containerEl = map.getContainer?.();
+        const padX = Math.min(
+          160,
+          Math.floor((containerEl?.clientWidth ?? 0) * 0.15),
+        );
+        const padY = Math.min(
+          120,
+          Math.floor((containerEl?.clientHeight ?? 0) * 0.15),
+        );
+        const padding = { top: padY, bottom: padY, left: padX, right: padX };
+        const bbox: [[number, number], [number, number]] = [
+          [minLng, minLat],
+          [maxLng, maxLat],
+        ];
+
+        // `maxZoom` on fitBounds is only a CAP — it can lower the zoom, never raise
+        // it — so it cannot pull the camera UP to the layer's Min Zoom. Ask mapbox
+        // what it would have chosen, clamp that into the visible band, and drive the
+        // camera directly only when the clamp actually changes something. When it
+        // does not (the common case) this falls through to the original fitBounds,
+        // so ordinary focus behaviour is untouched.
+        const fitCam = map.cameraForBounds(bbox, {
+          padding,
+          maxZoom: calculatedMaxZoom,
+        });
+        const fitZoom = fitCam?.zoom;
+        const wantedZoom =
+          typeof fitZoom === "number" ? clampToVisible(fitZoom) : undefined;
+
+        if (typeof fitZoom !== "number" || typeof wantedZoom !== "number") {
+          // mapbox declined the fit — when padding leaves no room it logs
+          // "Map cannot fit within canvas with the given bounds, padding, and/or
+          // offset" and returns undefined (mapbox-gl _cameraForBounds). fitBounds
+          // would then no-op for exactly the same reason, so the click would vanish
+          // with nothing but a console warning. Drive the camera directly instead.
+          map.easeTo({
+            center: [clampLng(center[0]), clampLat(center[1])],
+            zoom: clampToVisible(calculatedMaxZoom),
+            duration: 2000,
+            essential: true,
+          });
+        } else if (Math.abs(wantedZoom - fitZoom) > 0.01) {
+          // Zooming to the layer's own limit means the whole feature may no longer
+          // fit on screen — but the user set that limit, and a focus that leaves the
+          // target invisible is worse than one that shows part of it. Centre on the
+          // feature so what IS on screen is the middle of it.
+          map.easeTo({
+            center: [clampLng(center[0]), clampLat(center[1])],
+            zoom: wantedZoom,
+            duration: 2000,
+            essential: true,
+          });
+        } else {
+          map.fitBounds(bbox, {
+            padding,
             duration: 2000, // Smooth, slower duration
             maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
             linear: false, // Use default easing (smooth)
-          }
-        );
+          });
+        }
       }
     } catch (error) {
       console.error("Failed to focus layer:", error);
@@ -2458,58 +5188,83 @@ const MapComponent = ({
     } finally {
       setFocusLayerRequest(null);
     }
-  }, [focusLayerRequest]);
+    // `layers` is read to look up the focused layer's Min/Max Zoom. Including it is
+    // safe: the effect no-ops immediately unless there is a pending request, and the
+    // request is cleared at the end of every run.
+  }, [focusLayerRequest, layers, setFocusLayerRequest]);
 
-  // Close tooltip when the hovered layer becomes hidden
+  // Close a UDP tooltip as soon as its subject stops arriving from the feed.
+  //
+  // Tap-to-inspect gets no deck onHover-leave event when an icon simply vanishes,
+  // so the tooltip would otherwise sit there describing a plane that is no longer
+  // being reported — with stale coordinates, and with no way to dismiss it except
+  // tapping elsewhere.
+  //
+  // This used to cover ONLY `udp-topology-nodes-layer`, so network members
+  // (planes), targets and topology links all kept their tooltips after the server
+  // stopped sending them. Each UDP layer is checked against the live store slice
+  // that feeds it. Being store-driven, this is basemap-independent — it behaves the
+  // same on the default, custom-mercator and geodetic basemaps.
   useEffect(() => {
-    if (!hoverInfo || !hoverInfo.object) {
-      return;
-    }
+    const obj = hoverInfo?.object as
+      | { globalId?: number; connectionKey?: string }
+      | null
+      | undefined;
+    if (!obj) return;
+    const layerId = hoverInfo?.layer?.id;
+    if (typeof layerId !== "string" || !layerId.startsWith("udp-")) return;
 
-    // Check if hovered layer is a UDP layer (by checking layer ID)
-    const hoveredLayerId = hoverInfo.layer?.id;
-    if (
-      hoveredLayerId &&
-      (hoveredLayerId.includes("udp-") ||
-        hoveredLayerId.includes("network-members") ||
-        hoveredLayerId.includes("targets"))
-    ) {
-      // If UDP layers are hidden, clear the tooltip
-      if (!networkLayersVisible) {
-        setHoverInfo(undefined);
-        return;
+    const stillPresent = (): boolean => {
+      switch (layerId) {
+        case "udp-topology-nodes-layer":
+          return obj.globalId !== undefined && topologyNodes.has(obj.globalId);
+        case "udp-topology-connections-layer":
+          // Keyed by the connection id when we have one; otherwise fall back to
+          // "are both endpoint nodes still live?".
+          if (obj.connectionKey !== undefined) {
+            return topologyConnections.has(obj.connectionKey);
+          }
+          {
+            const link = obj as { fromId?: number; toId?: number };
+            return (
+              link.fromId !== undefined &&
+              link.toId !== undefined &&
+              topologyNodes.has(link.fromId) &&
+              topologyNodes.has(link.toId)
+            );
+          }
+        case "udp-network-members-layer":
+          return (
+            obj.globalId !== undefined &&
+            udpNetworkMembers.some(
+              (m: { globalId?: number }) => m?.globalId === obj.globalId,
+            )
+          );
+        case "udp-targets-layer":
+          return (
+            obj.globalId !== undefined &&
+            udpTargets.some(
+              (t: { globalId?: number }) => t?.globalId === obj.globalId,
+            )
+          );
+        default:
+          // An unrecognised udp-* layer: leave it alone rather than guess.
+          return true;
       }
-    }
+    };
 
-    // Find the layer ID from the hover info
-    const hoveredObject = hoverInfo.object;
-    let layerId: string | undefined;
-
-    if ((hoveredObject as any)?.layerId) {
-      layerId = (hoveredObject as any).layerId;
-    } else if ((hoveredObject as any)?.id && (hoveredObject as any)?.type) {
-      layerId = (hoveredObject as any).id;
-    } else if (hoverInfo.layer?.id) {
-      const deckLayerId = hoverInfo.layer.id;
-      const matchingLayer = layers.find((l) => l.id === deckLayerId);
-      layerId = matchingLayer?.id;
-      if (!layerId) {
-        const baseId = deckLayerId
-          .replace(/-icon-layer$/, "")
-          .replace(/-signal-overlay$/, "")
-          .replace(/-bitmap$/, "");
-        layerId = layers.find((l) => l.id === baseId)?.id;
-      }
+    if (!stillPresent()) {
+      setHoverInfo(undefined);
     }
+  }, [
+    hoverInfo,
+    topologyNodes,
+    topologyConnections,
+    udpNetworkMembers,
+    udpTargets,
+    setHoverInfo,
+  ]);
 
-    // Check if the hovered layer is now hidden or deleted
-    if (layerId) {
-      const hoveredLayer = layers.find((l) => l.id === layerId);
-      if (!hoveredLayer || hoveredLayer.visible === false) {
-        setHoverInfo(undefined);
-      }
-    }
-  }, [layers, hoverInfo, setHoverInfo, networkLayersVisible]);
 
   const handleMouseMove = (event: any) => {
     if (!event.lngLat) return;
@@ -2562,7 +5317,7 @@ const MapComponent = ({
         event.originalEvent.preventDefault();
       }
     },
-    [rubberBandMode, drawingMode, isDrawing]
+    [rubberBandMode, drawingMode, isDrawing],
   );
 
   // Handle mouse up for rubber band (for desktop testing)
@@ -2615,7 +5370,7 @@ const MapComponent = ({
           padding: { top: 50, bottom: 50, left: 50, right: 50 },
           duration: 500,
           maxZoom: 18,
-        }
+        },
       );
     }
   }, [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId]);
@@ -2649,7 +5404,7 @@ const MapComponent = ({
         event.nativeEvent.preventDefault();
       }
     },
-    [isAndroidTablet, rubberBandMode, drawingMode, isDrawing]
+    [isAndroidTablet, rubberBandMode, drawingMode, isDrawing],
   );
 
   const handleTouchMove = useCallback(
@@ -2669,7 +5424,7 @@ const MapComponent = ({
         event.nativeEvent.preventDefault();
       }
     },
-    [isRubberBandDrawing, rubberBandStart]
+    [isRubberBandDrawing, rubberBandStart],
   );
 
   const handleTouchEnd = useCallback(
@@ -2722,7 +5477,7 @@ const MapComponent = ({
             padding: { top: 50, bottom: 50, left: 50, right: 50 },
             duration: 500,
             maxZoom: 18,
-          }
+          },
         );
       }
 
@@ -2733,7 +5488,7 @@ const MapComponent = ({
         event.nativeEvent.preventDefault();
       }
     },
-    [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId]
+    [isRubberBandDrawing, rubberBandStart, rubberBandEnd, rubberBandToastId],
   );
 
   // Show notification toast when rubber band mode is enabled
@@ -2811,51 +5566,8 @@ const MapComponent = ({
     return null;
   };
 
-  const handleLayerHover = useCallback(
-    (info: PickingInfo<unknown>) => {
-      // Prevent tooltip from showing immediately after layer creation (especially on tablets)
-      const timeSinceLastCreation =
-        Date.now() - lastLayerCreationTimeRef.current;
-      if (timeSinceLastCreation < 500) {
-        // Don't show tooltip if layer was created less than 500ms ago
-        setHoverInfo(undefined);
-        return;
-      }
-
-      if (!info) {
-        setHoverInfo(undefined);
-        return;
-      }
-
-      const deckLayerId = (info.layer as any)?.id as string | undefined;
-
-      // Special handling for DEM BitmapLayers (.tif, .tiff, .dett, .hgt)
-      // BitmapLayer hover info often has no `object`, but we still want a tooltip
-      let isDemHover = false;
-      if (deckLayerId) {
-        const baseId = deckLayerId
-          .replace(/-icon-layer$/, "")
-          .replace(/-signal-overlay$/, "")
-          .replace(/-bitmap$/, "")
-          .replace(/-mesh$/, "");
-
-        const matchingLayer = layers.find((l) => l.id === baseId);
-        if (matchingLayer?.type === "dem") {
-          isDemHover = true;
-        }
-      }
-
-      if (info.object || (isDemHover && info.coordinate)) {
-        setHoverInfo(info);
-      } else {
-        setHoverInfo(undefined);
-      }
-    },
-    [setHoverInfo, layers]
-  );
-
   // UDP layers from separate component
-  const { udpLayers, connectionError, noDataWarning, isConnected } =
+  const { udpLayers, connectionError, noDataWarning } =
     useUdpLayers(handleLayerHover);
 
   // Rubber band overlay layers
@@ -2866,33 +5578,29 @@ const MapComponent = ({
     end: rubberBandEnd,
   });
 
-
-
   const rubberBandOverlay = useRubberBandOverlay({
     isZooming: isRubberBandZooming,
     start: rubberBandStart,
     end: rubberBandEnd,
   });
 
-  const notificationsActive =
-    networkLayersVisible && (connectionError || noDataWarning);
   // UDP config store removed - port is now fixed at 40074
 
   // Debounced zoom: only updates 1 second after user stops zooming
   // This prevents visibility updates during active zooming
   const [debouncedZoom, setDebouncedZoom] = useState(mapZoom);
-  
+
   useEffect(() => {
     // Clear any existing debounce timeout
     if (zoomDebounceTimeoutRef.current) {
       clearTimeout(zoomDebounceTimeoutRef.current);
     }
-    
+
     // Set new timeout to update debouncedZoom after 1 second of no zoom changes
     zoomDebounceTimeoutRef.current = setTimeout(() => {
       setDebouncedZoom(mapZoom);
     }, 1000); // 1 second debounce
-    
+
     // Cleanup on unmount or when mapZoom changes
     return () => {
       if (zoomDebounceTimeoutRef.current) {
@@ -2909,26 +5617,167 @@ const MapComponent = ({
 
   // Helper to compute zoom-based visibility (cheap check, no side effects)
   // Uses roundedZoom (from debouncedZoom) to only update after user stops zooming
-  const getZoomVisibility = useCallback((layer: LayerProps): boolean => {
-    let minZoom: number | undefined = layer.minzoom;
-    let maxZoom = layer.maxzoom ?? 20;
-    
-    if (minZoom === undefined) {
-      const zoomRange = calculateLayerZoomRange(layer);
-      if (zoomRange) {
-        minZoom = zoomRange.minZoom;
-        maxZoom = zoomRange.maxZoom;
-      } else {
-        return true; // Show if can't calculate
+  const getZoomVisibility = useCallback(
+    (layer: LayerProps): boolean => {
+      // Hand-drawn sketches (lines/polygons/points/azimuths) are never AUTO
+      // zoom-gated — the store deliberately never stamps a computed minzoom on them
+      // (that would hide a small drawing at low zoom, making the visibility toggle
+      // look broken). BUT if the user has EXPLICITLY set a Min/Max Zoom in layer
+      // settings, honour it: hide the sketch when the map is outside that range.
+      // (For sketches, minzoom/maxzoom are only ever present when user-configured.)
+      if (isSketchLayer(layer)) {
+        if (layer.minzoom === undefined && layer.maxzoom === undefined) {
+          return true;
+        }
+        // Compare the zoom rounded to the SAME 2 decimals the on-screen readout
+        // shows — NOT roundedZoom (nearest 0.5, which turns 4.96 into 5.0 and would
+        // wrongly show a min-zoom-5 sketch below zoom 5), and NOT the raw float
+        // (which is often 6.9997 when the readout says "7.00", so a strict `>= 7`
+        // would wrongly HIDE it at its own min zoom). Rounding to 2 dp makes Min
+        // Zoom INCLUSIVE at exactly the value the user sees: readout ≥ Min → shown.
+        const z = Math.round(debouncedZoom * 100) / 100;
+        return (
+          z >= (layer.minzoom ?? 0) &&
+          z <= (layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM)
+        );
+      }
+
+      let minZoom: number | undefined = layer.minzoom;
+      let maxZoom = layer.maxzoom ?? DEFAULT_LAYER_MAX_ZOOM;
+
+      if (minZoom === undefined) {
+        const zoomRange = calculateLayerZoomRange(layer);
+        if (zoomRange) {
+          minZoom = zoomRange.minZoom;
+          maxZoom = zoomRange.maxZoom;
+        } else {
+          return true; // Show if can't calculate
+        }
+      }
+
+      // Compare against the zoom rounded to the SAME 2 decimals the on-screen
+      // readout shows — identical to the sketch branch above, so "Min Zoom 9" means
+      // the same thing for an uploaded layer as for a drawn one.
+      //
+      // This used to be `Math.floor(roundedZoom)`, and `roundedZoom` is the zoom
+      // rounded to the nearest 0.5. That rounds UP: at a readout of 8.97,
+      // Math.round(8.97*2)/2 = 9.0, floor = 9, and 9 >= 9 passes — so an uploaded
+      // layer with Min Zoom 9 stayed visible from 8.75 upward, a quarter of a level
+      // before the readout ever reached its minimum. Flooring was chosen for the
+      // integer auto-computed ranges, but it silently applied to explicit user
+      // values too, which is what made the slider disagree with the readout.
+      const z2dp = Math.round(debouncedZoom * 100) / 100;
+      return z2dp >= minZoom && z2dp <= maxZoom;
+    },
+    [debouncedZoom],
+  );
+  // Keep the ref the once-attached mapbox pick handlers read in sync.
+  getZoomVisibilityRef.current = getZoomVisibility;
+
+  // Close tooltip when the hovered layer becomes hidden
+  useEffect(() => {
+    // NOTE: deliberately NOT gated on `hoverInfo.object`. Raster/DEM picks are
+    // synthesised with `object: null` (see handleRasterPick and
+    // syntheticDemPickingInfo), so an `!hoverInfo.object` guard here skipped every
+    // raster — which is why a raster's tooltip stayed on screen after the layer
+    // itself had been zoom-hidden. Those picks still carry `layer.id`, which is all
+    // the resolution below needs.
+    if (!hoverInfo) {
+      return;
+    }
+
+    const hoveredLayerId = hoverInfo.layer?.id;
+
+    // The user-location marker has no entry in `layers`, so the store-layer
+    // resolution further down (and with it the shared zoom/visibility gate) can
+    // never reach it — its tooltip outlived the thing it described. Close it on
+    // exactly the condition that builds the marker: the deck layer list creates it
+    // only while `userLocation && showUserLocation`, so switching the location
+    // button off, or losing the fix, now takes the tooltip with it.
+    //
+    // NOTE: there is deliberately no Min/Max Zoom test here, because this layer has
+    // no such setting — it is synthesised from live GPS rather than being a store
+    // layer with a settings panel. If one is ever added, gate it through
+    // `getZoomVisibility` like every other layer rather than hardcoding a level.
+    if (hoveredLayerId === "user-location-layer") {
+      if (!showUserLocation || !userLocation) {
+        setHoverInfo(undefined);
+        return;
       }
     }
-    
-    // minZoom is guaranteed to be defined here
-    // Use roundedZoom (from debouncedZoom) to reduce update frequency
-    return roundedZoom >= minZoom && roundedZoom <= maxZoom;
-  }, [roundedZoom]);
 
+    // Check if hovered layer is a UDP layer (by checking layer ID)
+    if (
+      hoveredLayerId &&
+      (hoveredLayerId.includes("udp-") ||
+        hoveredLayerId.includes("network-members") ||
+        hoveredLayerId.includes("targets"))
+    ) {
+      // If UDP layers are hidden, clear the tooltip
+      if (!networkLayersVisible) {
+        setHoverInfo(undefined);
+        return;
+      }
+    }
 
+    // Find the layer ID from the hover info
+    const hoveredObject = hoverInfo.object;
+    let layerId: string | undefined;
+
+    if ((hoveredObject as any)?.layerId) {
+      layerId = (hoveredObject as any).layerId;
+    } else if (isStoreLayerPickObject(hoveredObject)) {
+      // Only when the picked item IS a store layer. A GeoJSON feature with a
+      // top-level `id` (QGIS/ogr write one) also has `id` + `type`, and used to
+      // land here — resolving to no layer, so the branch below concluded the
+      // hovered layer was deleted and cleared the tooltip on every hover/tap.
+      layerId = (hoveredObject as any).id;
+    } else if (hoverInfo.layer?.id) {
+      const deckLayerId = hoverInfo.layer.id;
+      const matchingLayer = layers.find((l) => l.id === deckLayerId);
+      layerId = matchingLayer?.id;
+      if (!layerId) {
+        const baseId = deckLayerId
+          .replace(/-icon-layer$/, "")
+          .replace(/-signal-overlay$/, "")
+          .replace(/-bitmap$/, "")
+          .replace(/-mesh$/, "");
+        layerId = layers.find((l) => l.id === baseId)?.id;
+      }
+    }
+
+    // Check if the hovered layer is now hidden or deleted
+    if (layerId) {
+      const hoveredLayer = layers.find((l) => l.id === layerId);
+      if (!hoveredLayer || hoveredLayer.visible === false) {
+        setHoverInfo(undefined);
+        return;
+      }
+      // Close the tooltip when the layer is zoom-hidden, asking the SAME predicate
+      // the renderer uses rather than re-deriving the range here.
+      //
+      // This used to compare `Math.floor(mapZoom)` (the LIVE zoom) against a locally
+      // recomputed min/max, while the layer's actual on-screen visibility comes from
+      // `getZoomVisibility` (debounced zoom, rounded to 0.5, with sketches exempt
+      // unless explicitly configured). The two desynced mid-zoom in both directions:
+      // a tooltip could vanish for a feature still being drawn, or — as reported —
+      // survive after its layer had gone. Sharing the predicate makes tooltip and
+      // layer agree by construction.
+      if (!getZoomVisibility(hoveredLayer)) {
+        setHoverInfo(undefined);
+      }
+    }
+  }, [
+    layers,
+    hoverInfo,
+    setHoverInfo,
+    networkLayersVisible,
+    getZoomVisibility,
+    // Toggling the location button off must close its tooltip in the same pass
+    // that stops drawing the marker.
+    showUserLocation,
+    userLocation,
+  ]);
 
   const deckGlLayers = useMemo(() => {
     const isLayerVisible = (layer: LayerProps) => {
@@ -2947,28 +5796,50 @@ const MapComponent = ({
     const guardColor = (color: number[] = [0, 0, 0]) =>
       color.length === 4 ? color : [...color, 255];
 
-
     // Don't filter by zoom here - we'll use Deck.gl's visible prop instead
     // This prevents layer recreation on zoom changes
     const visibleLayers = layers
       .filter(isLayerVisible)
       .filter(
         (layer) =>
-          !(layer.type === "point" && layer.name?.startsWith("Polygon Point"))
+          !(layer.type === "point" && layer.name?.startsWith("Polygon Point")),
       );
+    // Sketch types (point / line / polygon / azimuth) are each rendered as ONE
+    // combined deck layer holding every layer of that type. That means the zoom
+    // gate has to be applied PER LAYER when building the data — not as a single
+    // `visible` flag on the combined layer.
+    //
+    // It used to be `someLayers.some(l => visible && getZoomVisibility(l))`, i.e.
+    // "is ANY layer of this type visible?", while the data still contained ALL of
+    // them. So with two or more layers of the same type, setting Min Zoom on one
+    // did nothing: a sibling kept the combined layer visible and the out-of-range
+    // layer carried on drawing. It only appeared to work when you happened to have
+    // exactly one layer of that type, which is why it looked erratic.
+    //
+    // Filtering the source arrays here fixes every combined layer at once, and
+    // matches what `point-layer` was already doing correctly.
+    const passesZoom = (l: LayerProps) =>
+      l.visible !== false && getZoomVisibility(l);
+
     const pointLayers = visibleLayers.filter((l) => l.type === "point");
-    const lineLayers = visibleLayers.filter(
-      (l) => l.type === "line" && !(l.name || "").includes("Connection")
-    );
-    const connectionLayers = visibleLayers.filter(
-      (l) => l.type === "line" && (l.name || "").includes("Connection")
-    );
-    const polygonLayers = visibleLayers.filter((l) => l.type === "polygon");
-    const azimuthLayers = visibleLayers.filter((l) => l.type === "azimuth");
+    const lineLayers = visibleLayers
+      .filter(
+        (l) => l.type === "line" && !(l.name || "").includes("Connection"),
+      )
+      .filter(passesZoom);
+    const connectionLayers = visibleLayers
+      .filter((l) => l.type === "line" && (l.name || "").includes("Connection"))
+      .filter(passesZoom);
+    const polygonLayers = visibleLayers
+      .filter((l) => l.type === "polygon")
+      .filter(passesZoom);
+    const azimuthLayers = visibleLayers
+      .filter((l) => l.type === "azimuth")
+      .filter(passesZoom);
     const geoJsonLayers = visibleLayers.filter((l) => l.type === "geojson");
     const demLayers = visibleLayers.filter((l) => l.type === "dem");
     const annotationLayers = visibleLayers.filter(
-      (l) => l.type === "annotation"
+      (l) => l.type === "annotation",
     );
 
     const deckLayers: any[] = [];
@@ -3004,6 +5875,42 @@ const MapComponent = ({
       const [minLng, minLat] = layer.bounds[0];
       const [maxLng, maxLat] = layer.bounds[1];
 
+      const isVisible = layer.visible !== false && getZoomVisibility(layer);
+
+      // Tiled rasters: pixels come from a Mapbox raster source added in a
+      // separate effect. We push an invisible SolidPolygonLayer over the
+      // bounds so deck.gl picking still fires `handleLayerHover` (which
+      // resolves to a tile-server sampleAt for the precise value).
+      //
+      // Why SolidPolygonLayer and not BitmapLayer:
+      //   BitmapLayer's fragment shader writes fragColor.a = texAlpha *
+      //   layer.opacity, and the picking pass uses that same alpha. With
+      //   opacity 0 (or a transparent texture) the picking framebuffer
+      //   pixel becomes alpha-0, which deck.gl reads as "no pick" — so
+      //   hover events stop firing. SolidPolygonLayer's picking pass
+      //   writes its picking color independently of the visible
+      //   fillColor's alpha, so a fully transparent fillColor still
+      //   picks reliably.
+      if (layer.tilesUrl) {
+        // Tiled rasters render entirely through Mapbox (raster source +
+        // raster layer set up in addOrUpdateTiledRaster). The previous
+        // SolidPolygonLayer was a picking proxy with alpha-0 fill — it
+        // contributed nothing visually and is no longer picked (we use
+        // JS rect-pick in handleRasterPick now). Skipping the push
+        // eliminates 153 wasted draw calls per frame at N=153 tiled
+        // rasters, which is the dominant deck.gl per-frame cost during
+        // pan/zoom.
+        //
+        // Zoom-range enforcement is unaffected: addOrUpdateTiledRaster
+        // calls map.setLayerZoomRange(...) on the Mapbox raster layer
+        // using resolveLayerZoomRange(layer), which honours
+        // layer.minzoom / layer.maxzoom. Viewport culling
+        // (applyTiledRasterViewportCulling) toggles visibility on the
+        // same Mapbox layer. Neither path went through the deck.gl
+        // SolidPolygonLayer — so removing it changes nothing visible.
+        return;
+      }
+
       // Ensure we hand BitmapLayer a canvas (avoid createImageBitmap on blobs)
       const image =
         ensureCanvasImage(layer.bitmap) ||
@@ -3011,43 +5918,50 @@ const MapComponent = ({
         null;
 
       if (!image) {
-
         return;
       }
 
-      const isVisible = layer.visible !== false && getZoomVisibility(layer);
-      
       deckLayers.push(
         new BitmapLayer({
           id: `${layer.id}-bitmap`,
           image,
           bounds: [minLng, minLat, maxLng, maxLat],
-          pickable: true,
+          // pickable: false — non-tiled DEM rasters now picked via the
+          // same JS rect-test handler used for tiled rasters
+          // (handleRasterPick walks layer.bounds for these). Removes
+          // the deck.gl GPU picking pass cost when many BitmapLayer
+          // rasters are loaded AND lifts the 255-pickable cap.
+          // BitmapLayer's image still renders normally (unlike the
+          // tiled SolidPolygonLayer which was an invisible proxy and
+          // got removed entirely).
+          pickable: false,
           visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
-          onHover: handleLayerHover,
           updateTriggers: {
             visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
           },
-        })
+        }),
       );
     });
 
     if (pointLayers.length) {
+      // Filter per point so each point's own minzoom/maxzoom is honoured.
+      // The previous `some()` made one layer's zoom apply to ALL points
+      // (a single ScatterplotLayer with the full pointLayers array as data
+      // — if any point passed, every point rendered).
+      const visiblePointLayers = pointLayers.filter(
+        (l) => l.visible !== false && getZoomVisibility(l),
+      );
+
       // Create a unique key based on all radius values to force update
-      const radiusKey = pointLayers
+      const radiusKey = visiblePointLayers
         .map((l) => `${l.id}:${l.radius ?? 5}`)
         .join("|");
 
-      // Compute visibility: layer must be visible AND pass zoom check
-      const isVisible = pointLayers.some(l => 
-        l.visible !== false && getZoomVisibility(l)
-      );
-      
       deckLayers.push(
         new ScatterplotLayer({
           id: "point-layer",
-          data: pointLayers,
-          visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
+          data: visiblePointLayers,
+          visible: visiblePointLayers.length > 0,
           getPosition: (d: LayerProps) => d.position!,
           getRadius: (d: LayerProps) => d.radius ?? 5, // Use radius for point layers
           radiusUnits: "pixels", // Use pixels instead of meters
@@ -3057,7 +5971,7 @@ const MapComponent = ({
               number,
               number,
               number,
-              number
+              number,
             ];
           },
           getLineColor: (d: LayerProps) => {
@@ -3065,24 +5979,44 @@ const MapComponent = ({
             return color.map((c) => Math.max(0, c - 40)) as [
               number,
               number,
-              number
+              number,
             ];
           },
           getLineWidth: 1,
+          // Pixel units for the stroke. The geodetic (EPSG:4326) OrthographicView
+          // has no projection to convert meters against, so a meter-based stroke
+          // (deck's default) blows up into a huge pale ring around the point — the
+          // "concentric circle" artifact. Pixels render identically on mercator and
+          // geodetic.
+          lineWidthUnits: "pixels",
           stroked: true,
           pickable: true,
           pickingRadius: 20, // Larger picking radius for touch devices
-          radiusMinPixels: 1,
+          // Floor at 3px so a point set to the slider minimum (1px) stays visible
+          // and clickable — matches the earlier "perfect" behaviour that 6d2e26c5
+          // regressed to 1.
+          radiusMinPixels: 3,
           radiusMaxPixels: 50,
           onHover: handleLayerHover,
           updateTriggers: {
             getRadius: [radiusKey], // Update when any radius changes
             getFillColor: [
-              pointLayers.map((l) => l.color?.join(",")).join("|"),
+              visiblePointLayers.map((l) => l.color?.join(",")).join("|"),
             ],
-            visible: [roundedZoom, pointLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            // Recompute the data array when zoom crosses a 0.5 step, when
+            // any layer's per-point minzoom/maxzoom changes, or when
+            // visibility toggles.
+            data: [
+              roundedZoom,
+              pointLayers
+                .map(
+                  (l) =>
+                    `${l.id}:${l.visible}:${l.minzoom ?? ""}:${l.maxzoom ?? ""}`,
+                )
+                .join("|"),
+            ],
           },
-        })
+        }),
       );
     }
 
@@ -3120,9 +6054,9 @@ const MapComponent = ({
 
       if (pathData.length > 0) {
         // Compute visibility: at least one layer must be visible AND pass zoom check
-        const isVisible = lineLayers.some(
-          (l) => l.visible !== false && getZoomVisibility(l)
-        );
+        // The array is pre-filtered to zoom-visible layers (see `passesZoom`),
+        // so this is now just "is there anything left to draw?".
+        const isVisible = lineLayers.length > 0;
 
         deckLayers.push(
           new PathLayer({
@@ -3134,9 +6068,9 @@ const MapComponent = ({
               const color = d.color || [0, 0, 0]; // Black default
               return color.length === 3 ? [...color, 255] : color;
             },
-            getWidth: (d: any) => Math.max(1, d.width), // Minimum width of 1
+            getWidth: (d: any) => Math.max(3, d.width), // Minimum width of 3
             widthUnits: "pixels", // Use pixels instead of meters
-            widthMinPixels: 1, // Minimum width of 1 pixel
+            widthMinPixels: 3, // Minimum width of 3 pixels
             widthMaxPixels: 50, // Maximum width of 50 pixels
             pickable: true,
             pickingRadius: 20, // Larger picking radius for touch devices
@@ -3147,7 +6081,7 @@ const MapComponent = ({
                 lineLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
               ], // Update visibility on zoom
             },
-          })
+          }),
         );
       }
     }
@@ -3190,10 +6124,10 @@ const MapComponent = ({
 
       if (connectionPathData.length > 0) {
         // Compute visibility: at least one layer must be visible AND pass zoom check
-        const isVisible = connectionLayers.some(l => 
-          l.visible !== false && getZoomVisibility(l)
-        );
-        
+        // The array is pre-filtered to zoom-visible layers (see `passesZoom`),
+        // so this is now just "is there anything left to draw?".
+        const isVisible = connectionLayers.length > 0;
+
         deckLayers.push(
           new LineLayer({
             id: "connection-line-layer",
@@ -3202,17 +6136,20 @@ const MapComponent = ({
             getSourcePosition: (d: any) => d.sourcePosition,
             getTargetPosition: (d: any) => d.targetPosition,
             getColor: (d: any) => d.color,
-            getWidth: (d: any) => Math.max(1, d.width), // Minimum width of 1
+            getWidth: (d: any) => Math.max(3, d.width), // Minimum width of 3
             widthUnits: "pixels", // Use pixels instead of meters
-            widthMinPixels: 1, // Minimum width of 1 pixel
+            widthMinPixels: 3, // Minimum width of 3 pixels
             widthMaxPixels: 50, // Maximum width of 50 pixels
             pickable: true,
             pickingRadius: 20, // Larger picking radius for touch devices
             onHover: handleLayerHover,
             updateTriggers: {
-              visible: [roundedZoom, connectionLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                connectionLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
       }
     }
@@ -3233,6 +6170,15 @@ const MapComponent = ({
           return Math.max(0, outer.length - (closed ? 1 : 0));
         })();
         return rings.map((ring) => ({
+          // `layerId` is what the close-on-zoom-hidden effect resolves a pick back
+          // to a store layer with. Without it a polygon pick resolved to nothing:
+          // the object carries no string `id` (so isStoreLayerPickObject is false)
+          // and hoverInfo.layer.id is the COMBINED "polygon-layer", which matches
+          // no store layer — so `layerId` stayed undefined, the whole zoom check
+          // was skipped, and the tooltip survived after Min Zoom had hidden the
+          // polygon. Every other combined builder (line, azimuth, vertices)
+          // already carries it; polygon was the one that did not.
+          layerId: layer.id,
           layer,
           ring,
           areaMeters,
@@ -3242,10 +6188,10 @@ const MapComponent = ({
       });
 
       // Compute visibility: at least one layer must be visible AND pass zoom check
-      const isVisible = polygonLayers.some(l => 
-        l.visible !== false && getZoomVisibility(l)
-      );
-      
+      // The array is pre-filtered to zoom-visible layers (see `passesZoom`),
+      // so this is now just "is there anything left to draw?".
+      const isVisible = polygonLayers.length > 0;
+
       deckLayers.push(
         new PolygonLayer({
           id: "polygon-layer",
@@ -3270,9 +6216,12 @@ const MapComponent = ({
           pickingRadius: 20, // Larger picking radius for touch devices
           onHover: handleLayerHover,
           updateTriggers: {
-            visible: [roundedZoom, polygonLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+            visible: [
+              roundedZoom,
+              polygonLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+            ], // Update visibility on zoom (at 0.5 intervals)
           },
-        })
+        }),
       );
 
       const polygonOutlines = polygonData.map((item) => ({
@@ -3285,10 +6234,10 @@ const MapComponent = ({
 
       if (polygonOutlines.length) {
         // Use same visibility as polygon layer
-        const isVisible = polygonLayers.some(l => 
-          l.visible !== false && getZoomVisibility(l)
-        );
-        
+        // The array is pre-filtered to zoom-visible layers (see `passesZoom`),
+        // so this is now just "is there anything left to draw?".
+        const isVisible = polygonLayers.length > 0;
+
         deckLayers.push(
           new PathLayer({
             id: "polygon-outline-layer",
@@ -3298,16 +6247,122 @@ const MapComponent = ({
             getColor: (d: any) => d.color,
             getWidth: (d: any) => d.width,
             widthUnits: "pixels",
-            widthMinPixels: 1,
+            widthMinPixels: 3,
             widthMaxPixels: 50,
             parameters: { depthTest: false, depthMask: false },
             pickable: true,
             pickingRadius: 20,
             onHover: handleLayerHover,
             updateTriggers: {
-              visible: [roundedZoom, polygonLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                polygonLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
+          }),
+        );
+      }
+
+      // Vertex handles for drawn polygons, hoverable for their coordinates.
+      //
+      // Sketch layers only: `polygonLayers` is filtered to `type === "polygon"`,
+      // which is the drawn-sketch type — an uploaded layer is geojson/dem/etc. and
+      // never appears here. It is also already filtered by `visibleLayers` and
+      // `passesZoom`, so a hidden polygon contributes no vertices at all and there
+      // is nothing left to hover (the tooltip's own `layerInfo.visible === false`
+      // guard is the second line of defence).
+      //
+      // Built from `layer.polygon` — the rings AS DRAWN — not the unkinked rings
+      // the fill uses. Unkinking a self-intersecting polygon splits it and invents
+      // crossing points, which are not vertices anybody placed.
+      const polygonVertexData: PolygonVertexDatum[] = polygonLayers.flatMap((layer) => {
+        const outer = layer.polygon?.[0] ?? [];
+        // Drop the closing repeat, or the first vertex gets two handles stacked on
+        // it and reports "1 of 5" twice. Same test as `vertexCount` above.
+        let count = outer.length;
+        if (
+          count > 1 &&
+          outer[0] &&
+          outer[count - 1] &&
+          Math.abs(outer[0][0] - outer[count - 1][0]) < 1e-10 &&
+          Math.abs(outer[0][1] - outer[count - 1][1]) < 1e-10
+        ) {
+          count -= 1;
+        }
+        return outer
+          .slice(0, count)
+          // Annotated so the colour literals below are contextually typed as
+          // tuples rather than widening to number[], which is what lets the deck
+          // accessors stay typed instead of falling back to `any`.
+          .map((point, index): PolygonVertexDatum | null => {
+            if (
+              !Array.isArray(point) ||
+              point.length < 2 ||
+              typeof point[0] !== "number" ||
+              typeof point[1] !== "number" ||
+              isNaN(point[0]) ||
+              isNaN(point[1])
+            ) {
+              return null;
+            }
+            return {
+              position: point,
+              // Same palette as the line vertex handles below, so a sketch vertex
+              // looks like a sketch vertex whatever it belongs to.
+              color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
+              radius: index === 0 ? 8 : 6,
+              // How the tooltip finds the layer (and so how a hidden layer
+              // suppresses the tooltip) — see the layerId lookup in tooltip.tsx.
+              layerId: layer.id,
+              polygonVertex: true,
+              vertexIndex: index + 1,
+              vertexTotal: count,
+            };
           })
+          .filter((item): item is PolygonVertexDatum => item !== null);
+      });
+
+      if (polygonVertexData.length > 0) {
+        deckLayers.push(
+          // Accessors are `(d: any)` to match every other deck layer in this file,
+          // including `line-vertex-layer` below. Naming the datum type here instead
+          // makes TS strict-check the whole props object, and it then rejects
+          // `parameters: { depthTest: false }` — which deck 9.2 omits from its
+          // Parameters type but still honours at runtime through its legacy
+          // GL-parameter table. The data itself is typed at the builder above,
+          // which is where the shape actually needs guarding.
+          new ScatterplotLayer({
+            id: "polygon-vertex-layer",
+            data: polygonVertexData,
+            visible: polygonLayers.length > 0,
+            getPosition: (d: any) => d.position,
+            getRadius: (d: any) => d.radius,
+            // Pixel units for the same reason as `line-vertex-layer` below: the
+            // geodetic (EPSG:4326) base map renders through a cartesian
+            // OrthographicView where deck.gl has no projection to convert meters
+            // against, so meter radii blow up into huge pale rings.
+            radiusUnits: "pixels",
+            getFillColor: (d: any) => d.color,
+            getLineColor: [255, 255, 255, 200],
+            getLineWidth: 2,
+            lineWidthUnits: "pixels",
+            stroked: true,
+            // The one difference from the line handles: these are pickable, which
+            // is the whole feature. Pushed after the fill and outline so it sits on
+            // top and wins the pick, giving the vertex tooltip rather than the
+            // polygon one.
+            pickable: true,
+            onHover: handleLayerHover,
+            radiusMinPixels: 4,
+            radiusMaxPixels: 10,
+            parameters: { depthTest: false },
+            updateTriggers: {
+              visible: [
+                roundedZoom,
+                polygonLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ],
+            },
+          }),
         );
       }
 
@@ -3357,10 +6412,10 @@ const MapComponent = ({
 
       if (pathData.length > 0) {
         // Compute visibility: at least one layer must be visible AND pass zoom check
-        const isVisible = lineLayers.some(l => 
-          l.visible !== false && getZoomVisibility(l)
-        );
-        
+        // The array is pre-filtered to zoom-visible layers (see `passesZoom`),
+        // so this is now just "is there anything left to draw?".
+        const isVisible = lineLayers.length > 0;
+
         deckLayers.push(
           new LineLayer({
             id: "line-layer-vertices",
@@ -3372,9 +6427,9 @@ const MapComponent = ({
               const color = d.color || [0, 0, 0];
               return color.length === 3 ? [...color, 255] : color;
             },
-            getWidth: (d: any) => Math.max(1, d.width),
+            getWidth: (d: any) => Math.max(3, d.width),
             widthUnits: "pixels",
-            widthMinPixels: 1,
+            widthMinPixels: 3,
             widthMaxPixels: 50,
             pickable: true,
             pickingRadius: 20,
@@ -3383,9 +6438,12 @@ const MapComponent = ({
             jointRounded: true,
             parameters: { depthTest: false },
             updateTriggers: {
-              visible: [roundedZoom, lineLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                lineLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
 
         const vertexData = lineLayers.flatMap((layer) => {
@@ -3407,7 +6465,7 @@ const MapComponent = ({
               return {
                 position: point,
                 color: index === 0 ? [255, 213, 79, 255] : [236, 72, 153, 255],
-                radius: index === 0 ? 8 : 6, // Smaller radius in meters that scales with zoom
+                radius: index === 0 ? 8 : 6, // Fixed-pixel handles (start vertex slightly larger)
               };
             })
             .filter((item): item is NonNullable<typeof item> => item !== null);
@@ -3415,10 +6473,10 @@ const MapComponent = ({
 
         if (vertexData.length > 0) {
           // Use same visibility as line layer
-          const isVisible = lineLayers.some(l => 
-            l.visible !== false && getZoomVisibility(l)
-          );
-          
+          // The array is pre-filtered to zoom-visible layers (see `passesZoom`),
+          // so this is now just "is there anything left to draw?".
+          const isVisible = lineLayers.length > 0;
+
           deckLayers.push(
             new ScatterplotLayer({
               id: "line-vertex-layer",
@@ -3426,19 +6484,29 @@ const MapComponent = ({
               visible: isVisible, // Use Deck.gl's visible prop - handled on GPU
               getPosition: (d: any) => d.position,
               getRadius: (d: any) => d.radius,
-              radiusUnits: "meters",
+              // Size vertex handles in PIXELS, not meters. The geodetic (EPSG:4326)
+              // base map renders through a cartesian OrthographicView where deck.gl
+              // has no projection to convert meters against, so meter-based radius
+              // and — worse — the meter-based stroke below blow up into huge pale
+              // rings. Pixel units render identically on both mapbox (mercator) and
+              // the geodetic view.
+              radiusUnits: "pixels",
               getFillColor: (d: any) => d.color,
               getLineColor: [255, 255, 255, 200],
               getLineWidth: 2,
+              lineWidthUnits: "pixels",
               stroked: true,
               pickable: false,
               radiusMinPixels: 4,
               radiusMaxPixels: 10,
               parameters: { depthTest: false },
               updateTriggers: {
-                visible: [roundedZoom, lineLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+                visible: [
+                  roundedZoom,
+                  lineLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+                ], // Update visibility on zoom (at 0.5 intervals)
               },
-            })
+            }),
           );
         }
       }
@@ -3490,20 +6558,22 @@ const MapComponent = ({
           const [tLng, tLat] = layer.azimuthTarget;
           const labelLng = cLng + (tLng - cLng) * 0.4;
           const labelLat = cLat + (tLat - cLat) * 0.4;
-          let signedAngle = normalizeAngleSigned(layer.azimuthAngleDeg);
-          if (signedAngle === -180) signedAngle = 180;
+          const signedAngle = azimuthDisplayAngle(layer.azimuthAngleDeg);
           return {
             position: [labelLng, labelLat] as [number, number],
             text: `${signedAngle.toFixed(1)}°`,
+            // Carry the layer id so tapping the angle LABEL (not just the line)
+            // still resolves the layer name in the tooltip.
+            layerId: layer.id,
           };
         })
         .filter(Boolean);
 
       // Compute visibility: at least one layer must be visible AND pass zoom check
-      const isAzimuthVisible = azimuthLayers.some(l => 
-        l.visible !== false && getZoomVisibility(l)
-      );
-      
+      // The array is pre-filtered to zoom-visible layers (see `passesZoom`),
+      // so this is now just "is there anything left to draw?".
+      const isAzimuthVisible = azimuthLayers.length > 0;
+
       if (azimuthLineData.length) {
         deckLayers.push(
           new LineLayer({
@@ -3520,9 +6590,12 @@ const MapComponent = ({
             getDashArray: (d: any) => d.dashArray ?? [0, 0],
             dashJustified: true,
             updateTriggers: {
-              visible: [roundedZoom, azimuthLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                azimuthLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
       }
 
@@ -3548,9 +6621,12 @@ const MapComponent = ({
             padding: [2, 4],
             characterSet: measurementCharacterSet,
             updateTriggers: {
-              visible: [roundedZoom, azimuthLayers.map(l => `${l.id}:${l.visible}`).join("|")], // Update visibility on zoom (at 0.5 intervals)
+              visible: [
+                roundedZoom,
+                azimuthLayers.map((l) => `${l.id}:${l.visible}`).join("|"),
+              ], // Update visibility on zoom (at 0.5 intervals)
             },
-          })
+          }),
         );
       }
     }
@@ -3559,7 +6635,7 @@ const MapComponent = ({
       if (!layer.geojson) return;
       const lineWidth = layer.lineWidth ?? 5;
       const isVisible = layer.visible !== false && getZoomVisibility(layer);
-      
+
       deckLayers.push(
         new GeoJsonLayer({
           id: layer.id,
@@ -3573,15 +6649,36 @@ const MapComponent = ({
           filled: true,
           pointRadiusUnits: "pixels", // Use pixels for point radius
           lineWidthUnits: "pixels", // Use pixels for line width
+          // Floor at 3px so an uploaded layer set to the slider minimum (1px) stays
+          // visible and clickable (same minimum as drawn points/lines).
+          pointRadiusMinPixels: 3,
+          pointRadiusMaxPixels: 50,
+          lineWidthMinPixels: 3,
+          lineWidthMaxPixels: 50,
           getFillColor: (f: any) =>
             f.properties?.color ?? [...(layer.color ?? [0, 150, 255]), 120],
           getLineColor: (f: any) =>
-            f.properties?.lineColor ?? guardColor(layer.color ?? [0, 150, 255]),
+            // Shortest-route features bake an amber `properties.lineColor` at
+            // creation, which would otherwise always win and make the Settings
+            // color picker do nothing. Detect the route by its baked
+            // `properties.shortestRoute` flag (survives a rename) and honour the
+            // store `layer.color` (what the picker updates) instead of the baked value.
+            f.properties?.shortestRoute
+              ? guardColor(layer.color ?? [0, 150, 255])
+              : (f.properties?.lineColor ??
+                guardColor(layer.color ?? [0, 150, 255])),
           getPointRadius: (f: any) =>
-            f.geometry?.type === "Point" ? layer.pointRadius ?? 5 : 0,
+            f.geometry?.type === "Point" ? (layer.pointRadius ?? 5) : 0,
           getLineWidth: (f: any) => {
             const type = f.geometry?.type;
-            if (type === "LineString" || type === "MultiLineString") {
+            // GeometryCollection features (e.g. highway networks) carry their lines
+            // inside `geometries`, so the feature's own type is "GeometryCollection"
+            // — include it or the slider can't change their width (drew at 2 always).
+            if (
+              type === "LineString" ||
+              type === "MultiLineString" ||
+              type === "GeometryCollection"
+            ) {
               return lineWidth;
             }
             return 2;
@@ -3594,14 +6691,14 @@ const MapComponent = ({
             visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
           },
           onHover: handleLayerHover,
-        })
+        }),
       );
     });
 
     annotationLayers.forEach((layer) => {
       if (!layer.annotations?.length) return;
       const isVisible = layer.visible !== false && getZoomVisibility(layer);
-      
+
       deckLayers.push(
         new TextLayer({
           id: layer.id,
@@ -3623,10 +6720,9 @@ const MapComponent = ({
           updateTriggers: {
             visible: [roundedZoom, layer.visible], // Update visibility on zoom (at 0.5 intervals)
           },
-        })
+        }),
       );
     });
-
 
     // --- Preview layers ---
     const previewLayers: any[] = [];
@@ -3659,7 +6755,7 @@ const MapComponent = ({
             getColor: (d: any) => d.color,
             getWidth: (d: any) => d.width,
             pickable: false,
-          })
+          }),
         );
       } else {
         const previewPath = closeRing([...currentPath, mousePosition]);
@@ -3675,7 +6771,7 @@ const MapComponent = ({
             getLineWidth: 1,
             stroked: false,
             pickable: false,
-          })
+          }),
         );
         previewLayers.push(
           new PathLayer({
@@ -3685,10 +6781,10 @@ const MapComponent = ({
             getColor: [32, 32, 32],
             getWidth: 2,
             widthUnits: "pixels",
-            widthMinPixels: 1,
+            widthMinPixels: 3,
             parameters: { depthTest: false, depthMask: false },
             pickable: false,
-          })
+          }),
         );
 
         if (
@@ -3712,7 +6808,7 @@ const MapComponent = ({
               getColor: (d: any) => d.color,
               getWidth: (d: any) => d.width,
               pickable: false,
-            })
+            }),
           );
         }
       }
@@ -3739,7 +6835,7 @@ const MapComponent = ({
             getColor: (d: any) => d.color,
             getWidth: (d: any) => d.width,
             pickable: false,
-          })
+          }),
         );
       }
 
@@ -3761,7 +6857,7 @@ const MapComponent = ({
             getColor: (d: any) => d.color,
             getWidth: (d: any) => d.width,
             pickable: false,
-          })
+          }),
         );
       }
     }
@@ -3775,7 +6871,7 @@ const MapComponent = ({
       const center = currentPath[0];
       const distanceMeters = calculateDistanceMeters(center, mousePosition);
       const referenceDistance = Math.max(distanceMeters, 1000);
-      const northPoint = destinationPoint(center, referenceDistance, 0);
+      const northPoint = northReferencePoint(center, referenceDistance);
       const angleDeg = calculateBearingDegrees(center, mousePosition);
       const labelLng = center[0] + (mousePosition[0] - center[0]) * 0.4;
       const labelLat = center[1] + (mousePosition[1] - center[1]) * 0.4;
@@ -3805,11 +6901,10 @@ const MapComponent = ({
           getDashArray: (d: any) => d.dashArray ?? [0, 0],
           dashJustified: true,
           pickable: false,
-        })
+        }),
       );
       if (distanceMeters > 5) {
-        let signedPreviewAngle = normalizeAngleSigned(angleDeg);
-        if (signedPreviewAngle === -180) signedPreviewAngle = 180;
+        const signedPreviewAngle = azimuthDisplayAngle(angleDeg);
         previewLayers.push(
           new TextLayer({
             id: "preview-azimuth-angle-label",
@@ -3831,7 +6926,7 @@ const MapComponent = ({
             getBackgroundColor: [255, 255, 255, 220],
             padding: [2, 4],
             characterSet: measurementCharacterSet,
-          })
+          }),
         );
       }
     }
@@ -3839,7 +6934,7 @@ const MapComponent = ({
     if (isDrawing && currentPath.length > 0) {
       const previewPointData = currentPath.map((point, index) => ({
         position: point,
-        radius: index === 0 ? 8 : 6, // Smaller radius in meters that scales with zoom
+        radius: index === 0 ? 6 : 5, // pixels — see radiusUnits note below
         color: index === 0 ? [255, 255, 0] : [255, 0, 255],
       }));
       previewLayers.push(
@@ -3848,17 +6943,97 @@ const MapComponent = ({
           data: previewPointData,
           getPosition: (d: any) => d.position,
           getRadius: (d: any) => d.radius,
-          radiusUnits: "meters",
+          // Pixels, NOT meters: on the geodetic OrthographicView world units are
+          // degrees, so a "meters" radius blows up and pins to radiusMaxPixels
+          // (~10px) — the oversized dots. Mapbox meanwhile pinned to the 4px min,
+          // so the two views disagreed. Fixed pixels keeps a small, identical dot
+          // on every projection, matching the pbf/mercator feel.
+          radiusUnits: "pixels",
           getFillColor: (d: any) => d.color,
           pickable: false,
-          radiusMinPixels: 4,
-          radiusMaxPixels: 10,
-        })
+          radiusMinPixels: 3,
+          radiusMaxPixels: 8,
+        }),
       );
     }
 
+    // ── Route finder layers ─────────────────────────────────────────────────
+    const routeLayers: any[] = [];
+    if (isRoutePanelOpen) {
+      const routeSelectedLayer = routeState.selectedLayerId
+        ? layers.find((l) => l.id === routeState.selectedLayerId)
+        : null;
+      const routeLayerVisible =
+        !routeSelectedLayer ||
+        (routeSelectedLayer.visible !== false &&
+          getZoomVisibility(routeSelectedLayer));
+      const markerData: {
+        position: [number, number];
+        color: [number, number, number];
+        label: string;
+      }[] = [];
+      if (routeState.snappedA) {
+        markerData.push({
+          position: routeState.snappedA,
+          color: [34, 197, 94],
+          label: "A",
+        });
+      }
+      if (routeState.snappedB) {
+        markerData.push({
+          position: routeState.snappedB,
+          color: [239, 68, 68],
+          label: "B",
+        });
+      }
+      if (markerData.length > 0 && routeLayerVisible) {
+        routeLayers.push(
+          new ScatterplotLayer({
+            id: "route-markers-outer",
+            data: markerData,
+            getPosition: (d: any) => d.position,
+            getRadius: 14,
+            radiusUnits: "pixels",
+            getFillColor: (d: any) =>
+              [d.color[0], d.color[1], d.color[2], 50] as [
+                number,
+                number,
+                number,
+                number,
+              ],
+            pickable: false,
+          }),
+        );
+        routeLayers.push(
+          new ScatterplotLayer({
+            id: "route-markers-inner",
+            data: markerData,
+            getPosition: (d: any) => d.position,
+            getRadius: 8,
+            radiusUnits: "pixels",
+            getFillColor: (d: any) => d.color,
+            pickable: false,
+          }),
+        );
+        routeLayers.push(
+          new TextLayer({
+            id: "route-markers-labels",
+            data: markerData,
+            getPosition: (d: any) => d.position,
+            getText: (d: any) => d.label,
+            getSize: 12,
+            getColor: [255, 255, 255, 255],
+            getTextAnchor: "middle",
+            getAlignmentBaseline: "center",
+            fontWeight: 700,
+            pickable: false,
+          }),
+        );
+      }
+    }
+
     // Return layers (user location will be added separately after default layers)
-    return [...deckLayers, ...previewLayers];
+    return [...deckLayers, ...previewLayers, ...routeLayers];
   }, [
     layers,
     networkLayersVisible,
@@ -3872,7 +7047,45 @@ const MapComponent = ({
     closeRing,
     roundedZoom, // Use roundedZoom (0.5 intervals) to reduce update frequency
     getZoomVisibility, // Include zoom visibility helper
+    isRoutePanelOpen,
+    routeState.pathResult,
+    routeState.snappedA,
+    routeState.snappedB,
+    routeState.selectedLayerId,
   ]);
+
+  // The user-location marker for the geodetic view. The mapbox overlay builds its
+  // own (below), but deckGlLayers deliberately excludes it — so the OrthographicView
+  // never got the "Your location" pin. The IconLayer is pixel-sized, so it renders
+  // identically here. Both paths now draw the marker ALONE: the accuracy ring the
+  // mapbox path used to add was removed on request.
+  const geodeticUserLocationLayers = useMemo(() => {
+    if (!userLocation || !showUserLocation) return [];
+    return [
+      new IconLayer({
+        id: "user-location-layer",
+        data: [{ position: [userLocation.lng, userLocation.lat] }],
+        getIcon: () => ({
+          url: USER_LOCATION_ICON_URL,
+          width: 24,
+          height: 24,
+          anchorY: 24,
+        }),
+        getPosition: (d: any) => d.position,
+        sizeScale: 1,
+        sizeMinPixels: 24,
+        sizeMaxPixels: 48,
+        pickable: true,
+        pickingRadius: 20,
+        onHover: handleLayerHover,
+      }),
+    ];
+  }, [userLocation, showUserLocation, handleLayerHover]);
+
+  const geodeticLayers = useMemo(
+    () => [...deckGlLayers, ...geodeticUserLocationLayers],
+    [deckGlLayers, geodeticUserLocationLayers],
+  );
 
   return (
     <div
@@ -3890,8 +7103,8 @@ const MapComponent = ({
 
       {measurementPreview && (
         <div
-          className="absolute right-4 z-40 w-64 rounded-lg border border-black/10 bg-white shadow-xl p-3 space-y-2"
-          style={{ top: notificationsActive ? 40 : 16 }}
+          className="absolute right-2 z-40 w-64 rounded-lg border border-black/10 bg-white shadow-xl p-3 space-y-2"
+          style={{ top: 54 }}
         >
           <div className="flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide">
             <span>Drawing Measurements</span>
@@ -3916,7 +7129,7 @@ const MapComponent = ({
               {measurementPreview.segments.length > 0 && (
                 <>
                   <div className="text-xs text-gray-500">Segments</div>
-                  <div className="space-y-1 max-h-64 overflow-y-auto text-sm text-gray-700">
+                  <div className="measurement-scrollbar space-y-1 max-h-38 overflow-y-auto pr-1 text-sm text-gray-700">
                     {measurementPreview.segments.map((segment, idx) => (
                       <div
                         key={`${segment.label}-${idx}`}
@@ -3981,9 +7194,7 @@ const MapComponent = ({
               </div>
               <div className="text-xs space-y-1 text-gray-700">
                 <div>Failed to connect to UDP server</div>
-                <div className="text-gray-600">
-                  Port: 40074 (fixed)
-                </div>
+                <div className="text-gray-600">Port: {UDP_PORT} (fixed)</div>
                 <div className="text-gray-500 text-[10px] mt-1">
                   {connectionError.includes("Error:")
                     ? connectionError.split("Error:")[1]?.trim()
@@ -4024,9 +7235,7 @@ const MapComponent = ({
               </div>
               <div className="text-xs space-y-1 text-gray-700">
                 <div>{noDataWarning}</div>
-                <div className="text-gray-600">
-                  Port: 40074 (fixed)
-                </div>
+                <div className="text-gray-600">Port: {UDP_PORT} (fixed)</div>
               </div>
             </div>
             <button
@@ -4052,25 +7261,6 @@ const MapComponent = ({
         </div>
       )}
 
-      {/* UDP Connection Status Indicator */}
-      {networkLayersVisible && isConnected && !connectionError && (
-        <div
-          className="absolute bottom-4 left-4 z-50 rounded-sm shadow-lg px-2 py-1 flex items-center gap-2"
-          style={{
-            background: "rgba(0, 0, 0, 0.4)",
-            pointerEvents: "none",
-          }}
-        >
-          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-          <span
-            className="text-[10px] md:text-xs font-mono text-gray-700 font-bold capitalize "
-            style={{ color: "rgb(255, 255, 255)", letterSpacing: "0.08em" }}
-          >
-            UDP:40074
-          </span>
-        </div>
-      )}
-
       {isMeasurementBoxOpen && (
         <MeasurementBox onClose={() => setIsMeasurementBoxOpen(false)} />
       )}
@@ -4079,10 +7269,20 @@ const MapComponent = ({
         <NetworkBox onClose={() => setIsNetworkBoxOpen(false)} />
       )}
 
+      {isRoutePanelOpen && (
+        <RouteBox
+          onClose={closeRoutePanel}
+          routeState={routeState}
+          setRouteState={setRouteState}
+          workerRef={dijkstraWorkerRef}
+          mapZoom={mapZoom}
+        />
+      )}
+
       <Map
         ref={mapRef}
         style={{ width: "100%", height: "100%" }}
-        mapboxAccessToken="pk.eyJ1IjoibmlraGlsc2FyYWYiLCJhIjoiY2xlc296YjRjMDA5dDNzcXphZjlzamFmeSJ9.7ZDaMZKecY3-70p9pX9-GQ"
+        mapboxAccessToken={MAPBOX_ACCESS_TOKEN}
         mapStyle={undefined}
         // Don't use mapStyle prop - we load style manually after modifying tile URLs
         renderWorldCopies={false}
@@ -4091,15 +7291,15 @@ const MapComponent = ({
         dragRotate={true}
         pitchWithRotate={true}
         initialViewState={{
-          longitude: tileServerUrl ? 81.5 : 81.5, // World center (0) when using tile server, India center (home view) otherwise
-          latitude: tileServerUrl ? 81.5 : 20.5, // Equator (0) when using tile server, India center (home view) otherwise
-          zoom: tileServerUrl ? 3 : 3, // World view (zoom 2) when using tile server, India view (zoom 3 - home view) otherwise
+          longitude: DEFAULT_CENTER[0],
+          latitude: DEFAULT_CENTER[1],
+          zoom: DEFAULT_ZOOM,
           pitch: pitch,
           bearing: 0,
         }}
-        minZoom={0}
-        maxZoom={18}
-        maxPitch={85}
+        minZoom={MAP_MIN_ZOOM}
+        maxZoom={MAP_MAX_ZOOM}
+        maxPitch={MAP_MAX_PITCH}
         onLoad={async (map: any) => {
           const mapInstance = map.target;
 
@@ -4140,7 +7340,7 @@ const MapComponent = ({
 
               if (!response.ok) {
                 throw new Error(
-                  `Failed to fetch style.json: ${response.status}`
+                  `Failed to fetch style.json: ${response.status}`,
                 );
               }
 
@@ -4151,7 +7351,6 @@ const MapComponent = ({
                 Object.keys(styleJson.sources).forEach((sourceKey) => {
                   const source = styleJson.sources[sourceKey];
                   if (source.type === "vector" && source.tiles) {
-                   
                     source.tiles = source.tiles.map((tileUrl: string) => {
                       // Extract the tile path (e.g., /3/5/3.pbf from any URL format)
                       let tilePath = tileUrl;
@@ -4185,10 +7384,16 @@ const MapComponent = ({
 
                       // Always use tile server URL
                       const finalUrl = `${serverUrl}${tilePath}`;
-                    
+
                       return finalUrl;
                     });
-                   
+                    // PRESERVE the tileset's own maxzoom (built-in style declares 14)
+                    // so mapbox OVERZOOMS beyond it instead of 404-ing the missing
+                    // higher zooms and blanking the map. The old code overwrote it
+                    // with the camera max — that was the bug. Fall back only if absent.
+                    source.minzoom = MAP_MIN_ZOOM;
+                    source.maxzoom =
+                      source.maxzoom ?? TILE_SOURCE_MAX_NATIVE_ZOOM;
                   }
                 });
               }
@@ -4201,33 +7406,42 @@ const MapComponent = ({
               } else if (
                 styleJson.layers &&
                 styleJson.layers.some(
-                  (layer: any) => layer.layout && layer.layout["text-field"]
+                  (layer: any) => layer.layout && layer.layout["text-field"],
                 )
               ) {
                 // If glyphs is missing but text layers exist, set default glyphs path
                 styleJson.glyphs = `${serverUrl}/fonts/{fontstack}/{range}.pbf`;
-               
               }
 
               // Set up style.load handler BEFORE applying style
               mapInstance.once("style.load", () => {
-
-                // Double-check and force update tile URLs after style loads
                 const currentStyle = mapInstance.getStyle();
+                // A real style WITH sources loaded → the tiles are present, so clear
+                // any spurious "Map Data Not Found" error (e.g. a transient
+                // style.error fired during startup). The genuine no-data case takes
+                // the catch below and applies an EMPTY style (no sources), so this
+                // never clears it. Fixes the dialog appearing over a working map on
+                // relaunch.
+                if (
+                  currentStyle?.sources &&
+                  Object.keys(currentStyle.sources).length > 0
+                ) {
+                  setTileDataError(null);
+                }
+                // Double-check and force update tile URLs after style loads
                 if (currentStyle && currentStyle.sources) {
                   Object.keys(currentStyle.sources).forEach((sourceKey) => {
                     const source = mapInstance.getSource(sourceKey);
                     if (source) {
                       const sourceData = source as any;
                       if (sourceData.type === "vector" && sourceData.tiles) {
-                        
                         // Check if any tile URL doesn't start with serverUrl
                         const needsUpdate = sourceData.tiles.some(
-                          (url: string) => !url.startsWith(serverUrl)
+                          (url: string) => !url.startsWith(serverUrl),
                         );
                         if (needsUpdate) {
                           console.warn(
-                            `[Map] Source ${sourceKey} has incorrect tile URLs, updating...`
+                            `[Map] Source ${sourceKey} has incorrect tile URLs, updating...`,
                           );
                           const updatedTiles = sourceData.tiles.map(
                             (tileUrl: string) => {
@@ -4248,22 +7462,22 @@ const MapComponent = ({
                               if (!tilePath.startsWith("/"))
                                 tilePath = "/" + tilePath;
                               return `${serverUrl}${tilePath}`;
-                            }
+                            },
                           );
                           try {
                             mapInstance.removeSource(sourceKey);
                             mapInstance.addSource(sourceKey, {
                               type: "vector",
                               tiles: updatedTiles,
-                              minzoom: 0,
-                              maxzoom: 18,
-                              maxNativeZoom: 14,
+                              minzoom: MAP_MIN_ZOOM,
+                              // Native max: mapbox overzooms beyond it instead of
+                              // 404-ing the missing higher zooms. See constants.
+                              maxzoom: TILE_SOURCE_MAX_NATIVE_ZOOM,
                             });
-                           
                           } catch (e) {
                             console.error(
                               `[Map] Failed to correct source ${sourceKey}:`,
-                              e
+                              e,
                             );
                           }
                         }
@@ -4273,13 +7487,17 @@ const MapComponent = ({
                 }
               });
 
-              // Apply the modified style
-             
-             
-              mapInstance.setStyle(styleJson);
+              // Apply the modified style. `{ diff: false }` so the
+              // once("style.load") handler registered above actually fires —
+              // mapbox only emits that event on the full-load path, and the
+              // default diff path would silently skip it (see the detailed note
+              // on the other setStyle call).
+              mapInstance.setStyle(styleJson, { diff: false });
             } catch (error) {
               console.error("[Map] Failed to fetch and apply style:", error);
-              // Fallback: use a minimal style if tile server fails
+              showTileDataError(
+                `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
+              );
               mapInstance.setStyle({
                 version: 8,
                 sources: {},
@@ -4287,15 +7505,51 @@ const MapComponent = ({
               });
             }
           } else {
-            // No tile server - use default Mapbox style
-            mapInstance.setStyle("mapbox://styles/mapbox/streets-v12");
+            // No tile server available — show empty map and prompt user
+            mapInstance.setStyle({
+              version: 8,
+              sources: {},
+              layers: [],
+            });
+            showTileDataError(
+              `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`,
+            );
           }
 
           mapInstance.once("style.error", (e: any) => {
             console.error("[Map] Style loading error:", e);
+            // Ignored if the map already has a working style — a later single-resource
+            // 404 (glyph/sprite/tile, often transient on relaunch) is not "not found".
+            showTileDataError(
+              "Failed to load map style. The tile data may be missing or corrupted at the expected location.",
+            );
           });
 
           mapInstance.setMaxBounds(null);
+
+          // `mapHasTiles` (which gates the "not found" dialog) is driven ONLY by
+          // ACTUAL tile loads, never by the mapbox style's source list: a covered
+          // mapbox map can hold a style with sources while rendering nothing (in
+          // geodetic mode the visible map is the deck view, not mapbox), so a
+          // sources-based check would false-positive and hide the dialog over a
+          // blank map. Two real-load signals feed it — the fetch interceptor (any
+          // tile URL that returns OK, which covers the deck geodetic view) and this
+          // mapbox `data` listener (a mapbox tile reaching state "loaded"):
+          const onTileData = (e: any) => {
+            if (
+              e?.dataType === "source" &&
+              e?.tile &&
+              e.tile.state === "loaded"
+            ) {
+              setMapHasTiles(true);
+            }
+          };
+          mapInstance.on("data", onTileData);
+
+          // The mapbox instance is ready. Let the custom-basemap apply effect
+          // re-run so a basemap restored from a previous session actually gets
+          // applied (its first run may have bailed on a not-yet-created map).
+          setMapLoaded(true);
         }}
         onClick={handleMapClick}
         onMouseMove={handleMouseMove}
@@ -4307,8 +7561,8 @@ const MapComponent = ({
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        dragPan={!isRubberBandDrawing}
-        touchZoomRotate={!isRubberBandDrawing}
+        dragPan={!rubberBandMode && !isRubberBandDrawing}
+        touchZoomRotate={!rubberBandMode && !isRubberBandDrawing}
         onMoveEnd={(e: any) => {
           if (e && e.viewState) {
             // Throttle updates to reduce re-renders during map operations
@@ -4327,62 +7581,58 @@ const MapComponent = ({
         }}
       >
         <DeckGLOverlay
-          layers={[
-            ...deckGlLayers,
-            // Rubber band overlay layers (render on top)
-            ...(rubberBandRectangle
-              ? Array.isArray(rubberBandRectangle)
-                ? rubberBandRectangle
-                : [rubberBandRectangle]
-              : []),
-            ...(rubberBandOverlay ? [rubberBandOverlay] : []),
+          overlayRef={deckOverlayRef}
+          demRasterPickSuppressRef={demRasterPickSuppressRef}
+          // In geodetic mode the geodetic DeckGL owns these layer instances; feed
+          // the covered mapbox overlay an empty list so deck.gl doesn't mutate the
+          // same instances from two Deck renderers.
+          layers={
+            geodeticBasemap
+              ? []
+              : [
+                  ...deckGlLayers,
+                  // Rubber band overlay layers (render on top)
+                  ...(rubberBandRectangle
+                    ? Array.isArray(rubberBandRectangle)
+                      ? rubberBandRectangle
+                      : [rubberBandRectangle]
+                    : []),
+                  ...(rubberBandOverlay ? [rubberBandOverlay] : []),
 
-            // Add user location layers LAST so they render on top of everything
-            ...(userLocation && showUserLocation
-              ? [
-                  // Add accuracy circle (in meters)
-                  ...(userLocation.accuracy > 0
+                  // Add user location layers LAST so they render on top of everything
+                  ...(userLocation && showUserLocation
                     ? [
-                        new ScatterplotLayer({
-                          id: "user-location-accuracy",
+                        // NOTE: no accuracy ring. It was a ScatterplotLayer with
+                        // radiusUnits "meters" and getRadius = userLocation.accuracy
+                        // — the receiver's own confidence estimate, which changes
+                        // with every fix (~every 5-10 s), so the circle visibly
+                        // breathed and read as the map glitching rather than as
+                        // information. Removed on request, along with the Accuracy
+                        // row in the tooltip. The geodetic view never drew one.
+                        // Add user location marker using IconLayer with proper location icon
+                        new IconLayer({
+                          id: "user-location-layer",
                           data: [
                             { position: [userLocation.lng, userLocation.lat] },
                           ],
+                          getIcon: () => ({
+                            url: USER_LOCATION_ICON_URL,
+                            width: 24,
+                            height: 24,
+                            anchorY: 24,
+                          }),
                           getPosition: (d: any) => d.position,
-                          getRadius: userLocation.accuracy,
-                          radiusUnits: "meters",
-                          getFillColor: [59, 130, 246, 20], // Light blue with transparency
-                          getLineColor: [59, 130, 246, 100], // Blue border
-                          getLineWidth: 1,
-                          stroked: true,
-                          filled: true,
-                          pickable: false,
-                          radiusMinPixels: 0,
-                          radiusMaxPixels: 1000,
+                          sizeScale: 1,
+                          sizeMinPixels: 24,
+                          sizeMaxPixels: 48,
+                          pickable: true,
+                          pickingRadius: 20,
+                          onHover: handleLayerHover,
                         }),
                       ]
                     : []),
-                  // Add user location marker using IconLayer with proper location icon
-                  new IconLayer({
-                    id: "user-location-layer",
-                    data: [{ position: [userLocation.lng, userLocation.lat] }],
-                    getIcon: () => ({
-                      url: "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJDNy41ODIgMiA0IDUuNTgyIDQgMTBDNCAxNi4wODggMTIgMjIgMTIgMjJDMTIgMjIgMjAgMTYuMDg4IDIwIDEwQzIwIDUuNTgyIDE2LjQxOCAyIDEyIDJaIiBmaWxsPSIjM0I4MkY2IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiLz4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMCIgcj0iMyIgZmlsbD0id2hpdGUiLz4KPC9zdmc+",
-                      width: 24,
-                      height: 24,
-                      anchorY: 24,
-                    }),
-                    getPosition: (d: any) => d.position,
-                    sizeScale: 1,
-                    sizeMinPixels: 24,
-                    sizeMaxPixels: 48,
-                    pickable: true,
-                    pickingRadius: 20,
-                    onHover: handleLayerHover,
-                  }),
                 ]
-              : []),
-          ]}
+          }
         />
         <NavigationControl
           position="bottom-right"
@@ -4391,9 +7641,89 @@ const MapComponent = ({
         />
       </Map>
 
+      {/* EPSG:4326 plate-carrée surface — mounts above the (covered) mapbox map
+          only while a 4326 base map is active, so it reaches the full ±90°. */}
+      {geodeticBasemap && (
+        // No z-index: sits above the (covered) mapbox map by DOM order but stays
+        // BELOW the tooltip (zIndex 5) and UI panels (z-50), which must show over it.
+        <div className="absolute inset-0">
+          <GeodeticBasemapView
+            baseUrl={geodeticBasemap.baseUrl}
+            config={geodeticBasemap.config}
+            cacheKey={basemapActiveId ?? "default"}
+            layers={geodeticLayers}
+            rasterLayers={geodeticRasterLayers}
+            initialCenter={geodeticInitRef.current.center}
+            initialZoom={geodeticInitRef.current.zoom}
+            // ORTHO units. Without these the view fell back to its own defaults
+            // and pinch/touch could reach an ortho 20, which the readout showed as
+            // 19.49 — past MAP_MAX_ZOOM (18). The +/- buttons already clamped to
+            // MAP_MAX_ZOOM, which is why only touch and rubber band overshot.
+            // Only maxZoom: the lower bound is governed by fillMinZoom (the zoom at
+            // which the world still covers the viewport), which handleViewStateChange
+            // recomputes and returns on every change, so a minZoom prop would be
+            // overridden anyway — and on a small canvas fillMinZoom can be BELOW
+            // mapboxZoomToOrtho(0), so passing it could wrongly raise the floor.
+            maxZoom={mapboxZoomToOrtho(MAP_MAX_ZOOM)}
+            commandView={geodeticCommand}
+            onViewStateChange={(center, zoom) => {
+              geodeticViewRef.current = { center, zoom };
+              // Keep the on-screen zoom readout (mapZoom → the "6.13" display, and
+              // zoom-dependent layer visibility) in sync with the live geodetic
+              // zoom. Throttled via the same ref the mapbox path uses so the
+              // deck-managed (uncontrolled) camera stays smooth on low-end
+              // devices — no per-frame parent re-render.
+              if (zoomUpdateTimeoutRef.current) {
+                clearTimeout(zoomUpdateTimeoutRef.current);
+              }
+              zoomUpdateTimeoutRef.current = setTimeout(() => {
+                setMapZoom(orthoZoomToMapbox(zoom));
+              }, 100);
+            }}
+            onMapClick={(pick) =>
+              // Route through the same handler mapbox uses so Route Finder A/B
+              // placement, drawing, and tap-to-inspect all work in geodetic mode.
+              handleMapClick({
+                lngLat: { lng: pick.coordinate[0], lat: pick.coordinate[1] },
+                coordinate: pick.coordinate,
+                point: { x: pick.x, y: pick.y },
+                object: pick.object,
+                layer: pick.layer,
+              })
+            }
+            onHover={(info) => {
+              const i = info as PickingInfo<unknown>;
+              if (drawingMode && i?.coordinate) {
+                // Keep the drawing preview segment following the cursor; otherwise
+                // its endpoint stays stale and draws a stray line to a random point.
+                setMousePosition([i.coordinate[0], i.coordinate[1]]);
+                return;
+              }
+              // On TOUCH there is no real hover: after a tap opens a tooltip, deck
+              // still emits a hover with no object here, which would instantly close
+              // it (the "opens then closes" on Android). Taps drive the tooltip via
+              // onMapClick, so ignore hover on coarse pointers — use it only for a
+              // desktop mouse, where hovering on/off a feature is the intended way to
+              // open/close the tooltip.
+              const coarsePointer =
+                typeof window !== "undefined" &&
+                typeof window.matchMedia === "function" &&
+                window.matchMedia("(pointer: coarse)").matches;
+              if (coarsePointer) return;
+              commitDeckPickToHover(i);
+            }}
+            // Rubber-band zoom lives inside the geodetic view (the mapbox-based one
+            // can't reach this covered surface). Exit the mode after one zoom, to
+            // match the mercator behaviour.
+            rubberBandMode={rubberBandMode && !drawingMode && !isDrawing}
+            onRubberBandComplete={() => setRubberBandMode(false)}
+          />
+        </div>
+      )}
+
       <Tooltip />
       {/* Settings Button with Paths Info */}
-      <SettingsButton />
+      <SettingsButton tileServerUrl={tileServerUrl} />
       {/* COMMENTED OUT: HTML file input - using NativeUploader directly to avoid double picker */}
       <ZoomControls
         mapRef={mapRef}
@@ -4401,10 +7731,10 @@ const MapComponent = ({
         bearing={mapBearing}
         onToggleLayersBox={() => {
           const willBeOpen = !(isLayersBoxOpen ?? false);
-          // If opening layers box, close other panels
           if (willBeOpen) {
             setIsMeasurementBoxOpen(false);
             setIsNetworkBoxOpen(false);
+            setIsRoutePanelOpen(false);
           }
           onToggleLayersBox?.();
         }}
@@ -4413,28 +7743,37 @@ const MapComponent = ({
         isNetworkBoxOpen={isNetworkBoxOpen}
         onToggleMeasurementBox={() => {
           const willBeOpen = !isMeasurementBoxOpen;
-          // If opening measurement box, close other panels
           if (willBeOpen) {
             onCloseLayersBox?.();
             setIsNetworkBoxOpen(false);
+            setIsRoutePanelOpen(false);
           }
           setIsMeasurementBoxOpen((prev) => !prev);
         }}
         onToggleNetworkBox={() => {
           const willBeOpen = !isNetworkBoxOpen;
-          // If opening network box, close other panels
           if (willBeOpen) {
             onCloseLayersBox?.();
             setIsMeasurementBoxOpen(false);
+            setIsRoutePanelOpen(false);
           }
           setIsNetworkBoxOpen((prev) => !prev);
         }}
         onUpload={handleUpload}
         onExportLayers={handleExportLayers}
         onSaveSession={handleSaveSession}
+        onFlushSession={handleFlushSession}
         onRestoreSession={handleRestoreSession}
         onToggleUserLocation={handleToggleUserLocation}
         onResetHome={handleResetHome}
+        onZoomIn={handleZoomIn}
+        onZoomOut={handleZoomOut}
+        onPlotCoordinate={plotPointFromCoordinates}
+        // The displayable latitude depends on the ACTIVE projection: a 4326 /
+        // plate-carrée base map reaches the poles, Web Mercator stops at
+        // ±85.0511°. Passing it lets the dialog state the limit up front and
+        // validate against the right one.
+        maxLatitude={geodeticBasemap ? 90 : MAX_MERCATOR_LATITUDE}
         onCaptureScreenshot={handleCaptureScreenshot}
         showUserLocation={showUserLocation}
         isProcessingFiles={isProcessingFiles}
@@ -4447,13 +7786,17 @@ const MapComponent = ({
           onCreatePoint: createPointLayer,
         }}
         alertButtonProps={{
-          visible: Boolean(
-            networkLayersVisible && (connectionError || noDataWarning)
+          visible: !(
+            layers.some(
+              (l) =>
+                l.type === "nodes" ||
+                (l.name || "").includes("Network") ||
+                (l.name || "").includes("Connection"),
+            ) ||
+            (udpLayers != null && udpLayers.length > 0)
           ),
-          severity: connectionError ? "error" : "warning",
-          title: connectionError
-            ? "Connection Error - Click to view details"
-            : "No Data Warning - Click to view details",
+          severity: "warning",
+          title: "No network layers on map",
           onClick: () => setShowConnectionError((prev) => !prev),
         }}
         igrsToggleProps={{
@@ -4462,9 +7805,93 @@ const MapComponent = ({
         }}
         rubberBandMode={rubberBandMode}
         onToggleRubberBand={() => setRubberBandMode((prev) => !prev)}
+        isRoutePanelOpen={isRoutePanelOpen}
+        onToggleRoutePanel={() => {
+          const willBeOpen = !isRoutePanelOpen;
+          if (willBeOpen) {
+            onCloseLayersBox?.();
+            setIsMeasurementBoxOpen(false);
+            setIsNetworkBoxOpen(false);
+            lastPersistedRouteKeyRef.current = null;
+          }
+          if (willBeOpen) {
+            setIsRoutePanelOpen(true);
+          } else {
+            closeRoutePanel();
+          }
+        }}
+        onCloseRoutePanel={closeRoutePanel}
       />
 
       {/* UDP Config Dialog removed - port is now fixed at 40074, data arrives automatically */}
+
+      <Dialog
+        // Fires when the map is genuinely blank — see the effect driving
+        // `tileDataErrorConfirmed` (grace period + `!mapHasTiles`). Dismissing sets
+        // `tileErrorDismissed` so it can't re-pop over a still-blank map.
+        open={tileDataErrorConfirmed}
+        onOpenChange={(open) => {
+          if (!open) {
+            setTileDataError(null);
+            setTileErrorDismissed(true);
+          }
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Map Data Not Found</DialogTitle>
+            <DialogDescription>
+              {activeBasemapForError
+                ? `Couldn't load map tiles for the selected basemap${activeBasemapForError.label ? ` "${activeBasemapForError.label}"` : ""}. No tiles were found at its saved location below.`
+                : (tileDataError ??
+                  `Map tile data not found at the expected location. Please ensure the ${TILES_FOLDER_NAME} folder is present in Documents/${TILES_FOLDER_NAME} on this device.`)}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground space-y-1">
+            <p className="font-medium text-foreground">Expected location:</p>
+            <p className="font-mono text-xs break-all">{missingTilesPath}</p>
+            <p className="mt-2">
+              {activeBasemapForError
+                ? "Verify the tiles exist at the above location, or pick another basemap folder from Storage Paths."
+                : "Copy the map tiles folder to the above location and restart the application."}
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setTileErrorDismissed(true)}
+            >
+              Dismiss
+            </Button>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                // Re-evaluate from scratch: clear the dismissal and the tile latch,
+                // re-init the server, and let the blank-map effect decide again.
+                setTileDataError(null);
+                setTileErrorDismissed(false);
+                setMapHasTiles(false);
+                const url = await initializeTileServer(true);
+                if (url) {
+                  setTileServerUrl(url);
+                } else {
+                  setTileDataError(
+                    "Still unable to find map tile data. Please verify the tiles folder exists at the expected location.",
+                  );
+                }
+              }}
+            >
+              Retry
+            </Button>
+            <Button
+              onClick={handleChangeBasemapFolder}
+              disabled={pickingBasemapFolder}
+            >
+              {pickingBasemapFolder ? "Opening…" : "Change folder"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

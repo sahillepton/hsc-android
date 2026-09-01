@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>HSC EXE Packaging Guide</title>
+    <style>
+        body {
+            font-family: 'Calibri', 'Arial', sans-serif;
+            line-height: 1.6;
+            max-width: 920px;
+            margin: 40px auto;
+            padding: 20px;
+            color: #333;
+        }
+
+        h1 {
+            color: #0066cc;
+            border-bottom: 3px solid #0066cc;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            color: #0066cc;
+            margin-top: 30px;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 5px;
+        }
+
+        h3 {
+            color: #0088cc;
+            margin-top: 20px;
+        }
+
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.92em;
+        }
+
+        pre {
+            background-color: #f4f4f4;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            overflow-x: auto;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.9em;
+            line-height: 1.45;
+        }
+
+        .note {
+            background-color: #fff9e6;
+            border-left: 4px solid #ffcc00;
+            padding: 10px;
+            margin: 15px 0;
+        }
+
+        .warning {
+            background-color: #ffe6e6;
+            border-left: 4px solid #ff0000;
+            padding: 10px;
+            margin: 15px 0;
+        }
+
+        .success {
+            background-color: #e6ffe6;
+            border-left: 4px solid #00aa00;
+            padding: 10px;
+            margin: 15px 0;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>HSC EXE Packaging Guide</h1>
+    <p>Step-by-step guide to build and package the Windows installer EXE for the desktop GIS app.</p>
+
+    <h2>IT Whitelist URLs (before setup)</h2>
+    <p>Ask client IT team to allow outbound access to these domains before running <code>yarn install</code> and
+        <code>yarn package</code>:</p>
+    <pre>https://registry.npmjs.org
+https://registry.yarnpkg.com
+https://yarnpkg.com
+https://classic.yarnpkg.com
+https://github.com
+https://api.github.com
+https://objects.githubusercontent.com
+https://github-releases.githubusercontent.com
+https://release-assets.githubusercontent.com
+https://electronjs.org
+https://www.electronjs.org
+https://github.com/electron/electron/releases
+https://github.com/electron-userland/electron-builder-binaries/releases</pre>
+    <div class="note">
+        <strong>Why needed:</strong> package install/downloads use npm/yarn registries, and Electron/electron-builder
+        binaries are commonly downloaded from GitHub release/CDN endpoints.
+    </div>
+    <div class="note">
+        <strong>Optional (only if client also performs Android build/sync steps):</strong>
+        whitelist these repositories too:
+        <code>https://maven.google.com/</code>,
+        <code>https://repo1.maven.org/maven2/</code>,
+        <code>https://services.gradle.org/</code>.
+    </div>
+
+    <h2>Build Environment Prerequisites</h2>
+    <ul>
+        <li><strong>Node.js:</strong> <code>22.12.0</code></li>
+        <li><strong>Yarn:</strong> <code>1.22.22</code></li>
+        <li><strong>Other package versions:</strong> from <code>package.json</code></li>
+    </ul>
+    <pre># Verify versions
+node -v
+yarn -v
+
+# Install yarn globally if missing
+npm install -g yarn</pre>
+    <div class="note">
+        <strong>TLS/HTTPS requirement:</strong> secure HTTPS traffic must be allowed by client IT/network policy, or
+        dependency/package downloads can fail.
+    </div>
+
+    <div class="note">
+        <strong>Root naming requirement:</strong> In this document, root is referred to as
+        <code>mcsa-gis-android</code> (as requested), even though desktop packaging commands run from the desktop project
+        folder.
+    </div>
+
+    <h2>Project Structure Assumed</h2>
+    <pre>mcsa-gis-android/                          &lt;- shared package root sent to client
+├── package.json
+├── electron/
+├── src/
+└── ... (rest of desktop project files)</pre>
+
+    <div class="note">
+        <strong>Important:</strong> Client receives only this desktop project folder, renamed as
+        <code>mcsa-gis-android</code>.
+    </div>
+
+    <h2>Where to place offline tiles</h2>
+    <p>The desktop app auto-reads tiles from the current Windows user's <code>Documents\tiles</code> folder.</p>
+    <pre>Default tile folder (Windows):
+C:\Users\<YourUser>\Documents\tiles
+
+Equivalent using environment variable:
+%USERPROFILE%\Documents\tiles</pre>
+    <p>Minimum expected files/folders inside <code>tiles</code>:</p>
+    <pre>tiles/
+├── style.json
+├── sprites/            (if style references sprites)
+├── fonts/              (if style references glyphs)
+└── ... tile data referenced by style.json</pre>
+    <div class="note">
+        <strong>Important:</strong> <code>style.json</code> is required at the root of
+        <code>Documents\tiles</code>. If missing, map style loading fails.
+    </div>
+
+    <h2>Step 1: Open PowerShell and go to the shared package folder</h2>
+    <pre># If you are already in the parent directory:
+cd "mcsa-gis-android"
+
+# Or use full path wherever client extracted it:
+cd "D:\any-folder\mcsa-gis-android"</pre>
+
+    <h2>Step 2: Install dependencies</h2>
+    <pre>yarn install</pre>
+
+    <h2>Step 3: Package EXE</h2>
+    <pre>yarn package</pre>
+
+    <div class="note">
+        <strong>Client flow:</strong> run <code>yarn install</code> first, then <code>yarn package</code>.
+        <code>yarn package</code> handles required build steps internally.
+    </div>
+
+    <h2>Where output EXEs are generated</h2>
+    <ul>
+        <li><strong>Installer EXE:</strong> <code>release\HSC GIS Desktop Setup 1.0.0.exe</code></li>
+        <li><strong>Unpacked EXE:</strong> <code>release\win-unpacked\HSC GIS Desktop.exe</code></li>
+    </ul>
+
+    <div class="success">
+        <strong>Success check:</strong> after packaging, installer EXE should exist in <code>release\</code> and the
+        installed app should launch without missing CSS/JS file errors.
+    </div>
+
+    <h2>Troubleshooting (cache fix for yarn package)</h2>
+    <p>If <code>yarn package</code> fails with NSIS cache/elevate errors, run:</p>
+    <pre>cd "mcsa-gis-android"
+
+Get-Process node,electron,electron-builder,signtool -ErrorAction SilentlyContinue | Stop-Process -Force
+
+Remove-Item "$env:LOCALAPPDATA\electron-builder\Cache\nsis" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:LOCALAPPDATA\electron-builder\Cache\nsis-resources" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item ".\release" -Recurse -Force -ErrorAction SilentlyContinue
+
+New-Item -ItemType Directory -Force ".\.cache\electron-builder" | Out-Null
+$env:ELECTRON_BUILDER_CACHE = (Resolve-Path ".\.cache\electron-builder").Path
+
+yarn package</pre>
+
+    <h2>.gitignore entries to add (client side)</h2>
+    <p>Ensure these entries exist in <code>.gitignore</code> to avoid committing Windows/Electron generated files:</p>
+    <pre># Electron build artifacts
+dist-electron/
+release/
+
+# Electron builder local cache
+.cache/
+
+# JVM crash/replay logs (can be generated by Gradle/Android tooling on Windows)
+android/hs_err_pid*.log
+android/replay_pid*.log</pre>
+
+</body>
+
+</html>
+

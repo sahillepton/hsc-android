@@ -12,12 +12,20 @@ import { Label } from "../ui/label";
 import {
   useNetworkLayersVisible,
   useIgrsPreference,
+  useFocusLayerRequest,
 } from "@/store/layers-store";
 import { useUdpLayers } from "@/components/map/udp-layers";
 import { useUdpDataStore } from "@/store/udp-data-store";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
 import UdpLayerConfigPopover from "./udp-layer-config-popover";
 import { calculateIgrs } from "@/lib/utils";
+
+const snrLevels = [
+  { label: "Poor", range: "0-24", color: "#DC2626" },
+  { label: "Medium", range: "25-49", color: "#F97316" },
+  { label: "Good", range: "50-74", color: "#EAB308" },
+  { label: "High", range: "75-100", color: "#16A34A" },
+] as const;
 
 // All available icons for mother node selection
 const motherNodeIcons = [
@@ -55,16 +63,30 @@ const NetworkLayersPanel = ({
     useNetworkLayersVisible();
   const { udpLayers } = useUdpLayers();
   const useIgrs = useIgrsPreference();
+  // Focus goes through the shared request so it works on BOTH renderers — the
+  // mapbox camera and the geodetic OrthographicView. See handleFocusLayer.
+  const { setFocusLayerRequest } = useFocusLayerRequest();
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const topologyData = useUdpDataStore((state) => state.udpData.topology);
-  const { motherNodeSymbol, setMotherNodeSymbol, groupSymbols, snrColors, setSnrColors, snrLineWidths, setSnrLineWidths } =
-    useUdpSymbolsStore();
+  const {
+    motherNodeSymbol,
+    setMotherNodeSymbol,
+    groupSymbols,
+    snrLineWidths,
+    setSnrLineWidths,
+  } = useUdpSymbolsStore();
+  const effectiveSnrLineWidths: [number, number, number, number] = [
+    snrLineWidths[0] ?? 1,
+    snrLineWidths[1] ?? 3,
+    snrLineWidths[2] ?? 5,
+    snrLineWidths[3] ?? 7,
+  ];
   const [showMotherIconPicker, setShowMotherIconPicker] = useState(false);
 
   // Get UDP layer data - only network members
   const networkMembersLayer = udpLayers.find(
-    (layer: any) => layer?.id === "udp-network-members-layer"
+    (layer: any) => layer?.id === "udp-network-members-layer",
   );
 
   const networkMembersData = networkMembersLayer?.props?.data || [];
@@ -120,7 +142,7 @@ const NetworkLayersPanel = ({
               const exists = groupConnections.some(
                 (c) =>
                   (c.from === smallerId && c.to === largerId) ||
-                  (c.from === largerId && c.to === smallerId)
+                  (c.from === largerId && c.to === smallerId),
               );
               if (!exists) {
                 groupConnections.push({ from: smallerId, to: largerId, snr });
@@ -159,10 +181,6 @@ const NetworkLayersPanel = ({
       return;
     }
 
-    const mapRef = (window as any).mapRef;
-    if (!mapRef?.current) return;
-
-    const map = mapRef.current.getMap();
     const data = networkMembersData;
 
     // Calculate bounds from data
@@ -186,59 +204,27 @@ const NetworkLayersPanel = ({
       minLat !== Infinity &&
       maxLat !== -Infinity
     ) {
-      const currentZoom = map.getZoom();
-      const currentBounds = map.getBounds();
-
-      // Check if current view already contains the bounds
-      const boundsContained =
-        currentBounds.getWest() <= minLng &&
-        currentBounds.getEast() >= maxLng &&
-        currentBounds.getSouth() <= minLat &&
-        currentBounds.getNorth() >= maxLat;
-      const zoomDiff = Math.abs(currentZoom - 12); // Rough check
-      const isAlreadyFocused = boundsContained && zoomDiff < 1;
-
-      if (isAlreadyFocused) {
-        // Already focused, don't animate
-        return;
-      }
-
-      // Calculate zoom based on bounding box size
-      const lngSpan = maxLng - minLng;
-      const latSpan = maxLat - minLat;
-      const maxSpan = Math.max(lngSpan, latSpan);
-      
-      // Calculate appropriate maxZoom based on bounding box size
-      let calculatedMaxZoom: number;
-      if (maxSpan < 0.001) {
-        calculatedMaxZoom = 20;
-      } else if (maxSpan < 0.01) {
-        calculatedMaxZoom = 18;
-      } else if (maxSpan < 0.1) {
-        calculatedMaxZoom = 15;
-      } else if (maxSpan < 1) {
-        calculatedMaxZoom = 12;
-      } else if (maxSpan < 10) {
-        calculatedMaxZoom = 8;
-      } else {
-        calculatedMaxZoom = 5;
-      }
-
-      // Use fitBounds with smooth animation to show the entire bounding box
-      // Stop any ongoing animations first to prevent jitter
-      map.stop();
-      map.fitBounds(
-        [
-          [minLng, minLat],
-          [maxLng, maxLat],
-        ],
-        {
-          padding: { top: 50, bottom: 50, left: 50, right: 50 },
-          duration: 2000, // Smooth, slower duration
-          maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
-          linear: false, // Use default easing (smooth)
-        }
-      );
+      // Publish a focus REQUEST instead of driving mapbox directly.
+      //
+      // This used to duplicate the main focus logic and call map.fitBounds() on the
+      // mapbox instance. In geodetic (EPSG:4326) mode that map is covered and
+      // INERT — the visible surface is the deck OrthographicView — so fitBounds
+      // moved a camera nobody can see and the Focus button appeared dead. It only
+      // ever worked on a Mercator base map.
+      //
+      // The shared effect in components/map/index.tsx already handles both
+      // renderers (mapbox fitBounds vs setGeodeticCommand), the bbox-span zoom
+      // buckets, and the Min/Max-Zoom clamp. Routing through it fixes geodetic and
+      // removes a second copy of the same maths that had already drifted (it used
+      // 50px padding and a rough `zoomDiff` against a hardcoded 12).
+      setFocusLayerRequest({
+        layerId: "udp-network-members-layer",
+        bounds: [minLng, minLat, maxLng, maxLat],
+        center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2],
+        isSinglePoint:
+          Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6,
+        timestamp: Date.now(),
+      });
     }
   };
 
@@ -249,10 +235,6 @@ const NetworkLayersPanel = ({
       return;
     }
 
-    const mapRef = (window as any).mapRef;
-    if (!mapRef?.current) return;
-
-    const map = mapRef.current.getMap();
     const nodes = Array.from(group.nodeIds)
       .map((nodeId) => topologyData.nodes.get(nodeId))
       .filter((node) => node !== undefined);
@@ -278,40 +260,16 @@ const NetworkLayersPanel = ({
       minLat !== Infinity &&
       maxLat !== -Infinity
     ) {
-      // Calculate zoom based on bounding box size
-      const lngSpan = maxLng - minLng;
-      const latSpan = maxLat - minLat;
-      const maxSpan = Math.max(lngSpan, latSpan);
-      
-      // Calculate appropriate maxZoom based on bounding box size
-      let calculatedMaxZoom: number;
-      if (maxSpan < 0.001) {
-        calculatedMaxZoom = 20;
-      } else if (maxSpan < 0.01) {
-        calculatedMaxZoom = 18;
-      } else if (maxSpan < 0.1) {
-        calculatedMaxZoom = 15;
-      } else if (maxSpan < 1) {
-        calculatedMaxZoom = 12;
-      } else if (maxSpan < 10) {
-        calculatedMaxZoom = 8;
-      } else {
-        calculatedMaxZoom = 5;
-      }
-
-      map.stop();
-      map.fitBounds(
-        [
-          [minLng, minLat],
-          [maxLng, maxLat],
-        ],
-        {
-          padding: { top: 50, bottom: 50, left: 50, right: 50 },
-          duration: 2000,
-          maxZoom: calculatedMaxZoom, // Zoom based on bounding box size
-          linear: false,
-        }
-      );
+      // Same shared focus request as the network-members button above, so a
+      // topology group focuses on BOTH renderers instead of only mapbox.
+      setFocusLayerRequest({
+        layerId: `topology-group-${group.id}`,
+        bounds: [minLng, minLat, maxLng, maxLat],
+        center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2],
+        isSinglePoint:
+          Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6,
+        timestamp: Date.now(),
+      });
     }
   };
 
@@ -320,12 +278,12 @@ const NetworkLayersPanel = ({
       // calculateIgrs expects (longitude, latitude)
       const igrs = calculateIgrs(lng, lat);
       return {
-        value: igrs || `${lat.toFixed(4)}° , ${lng.toFixed(4)}°`,
+        value: igrs || `${lat.toFixed(6)}° , ${lng.toFixed(6)}°`,
         isIgrsAvailable: igrs !== null,
       };
     }
     return {
-      value: `${lat.toFixed(4)}° , ${lng.toFixed(4)}°`,
+      value: `${lat.toFixed(6)}° , ${lng.toFixed(6)}°`,
       isIgrsAvailable: true, // Not using IGRS, so no issue
     };
   };
@@ -375,8 +333,7 @@ const NetworkLayersPanel = ({
   };
   topologyGroups.forEach((group) => {
     const key = `topology-group-${group.id}`;
-    const sym =
-      groupSymbols[key] || defaultGroupIcons[group.id] || "fighter1";
+    const sym = groupSymbols[key] || defaultGroupIcons[group.id] || "fighter1";
     activeGroupIconSet.add(sym);
   });
 
@@ -402,146 +359,97 @@ const NetworkLayersPanel = ({
             Legend
           </div>
 
-          {/* SNR Gradient */}
+          {/* SNR Legend + Width Controls (single compact section) */}
           <div className="mb-3">
-            <div className="text-[11px] font-medium text-zinc-600 mb-1.5">
-              SNR (Signal-to-Noise Ratio)
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] text-zinc-500">0</span>
-              <div
-                className="flex-1 h-3 rounded-full"
-                style={{
-                  background: `linear-gradient(to right, ${snrColors[0]}, ${snrColors[1]}, ${snrColors[2]})`,
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-[11px] font-medium text-zinc-600">
+                SNR (Signal-to-Noise Ratio)
+              </div>
+              <button
+                onClick={() => {
+                  setSnrLineWidths([1, 3, 5, 7]);
                 }}
-              />
-              <span className="text-[10px] text-zinc-500">100</span>
+                className="text-[9px] text-zinc-400 hover:text-zinc-600 px-1.5 py-1 rounded hover:bg-zinc-100 transition-colors"
+                title="Reset SNR line widths to defaults"
+              >
+                Reset Widths
+              </button>
             </div>
-            <div className="flex justify-between mt-0.5 px-5">
-              <span className="text-[9px] text-zinc-400">Poor</span>
-              <span className="text-[9px] text-zinc-400">Medium</span>
-              <span className="text-[9px] text-zinc-400">Good</span>
+            <div className="text-[9px] text-zinc-400 mb-2">
+              Colors are fixed for consistency; line width can be adjusted.
             </div>
-
-            {/* SNR Color Customization */}
-            <div className="mt-2 pt-2 border-t border-border/30">
-              <div className="flex items-center justify-between gap-2">
-                {(["Poor", "Medium", "Good"] as const).map((label, idx) => {
-                  const colorValue = snrColors[idx];
-                  return (
-                    <div
-                      key={label}
-                      className="flex flex-col items-center gap-1"
-                    >
-                      <span className="text-[9px] text-zinc-500">{label}</span>
-                      <label className="relative cursor-pointer group">
-                        <div
-                          className="w-6 h-6 rounded-md border-2 border-zinc-300 group-hover:border-zinc-500 transition-colors shadow-sm"
-                          style={{ backgroundColor: colorValue }}
-                        />
-                        <input
-                          type="color"
-                          value={colorValue}
-                          onChange={(e) => {
-                            const newColor = e.target.value.toUpperCase();
-                            // Check for duplicate colors
-                            const otherColors = snrColors.filter(
-                              (_, i) => i !== idx
-                            );
-                            if (otherColors.includes(newColor)) return;
-                            const updated = [...snrColors] as [
-                              string,
-                              string,
-                              string,
-                            ];
-                            updated[idx] = newColor;
-                            setSnrColors(updated);
-                          }}
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                          title={`Change ${label.toLowerCase()} color`}
-                        />
-                      </label>
-                    </div>
-                  );
-                })}
-
-                {/* Reset button */}
-                <div className="flex flex-col items-center gap-1">
-                  <span className="text-[9px] text-zinc-500">&nbsp;</span>
-                  <button
-                    onClick={() => {
-                      setSnrColors(["#FF0000", "#FFFF00", "#00FF00"]);
-                      setSnrLineWidths([1, 3, 5]);
-                    }}
-                    className="text-[9px] text-zinc-400 hover:text-zinc-600 px-1.5 py-1 rounded hover:bg-zinc-100 transition-colors"
-                    title="Reset colors and thickness to defaults"
+            <div className="grid grid-cols-2 gap-1.5">
+              {snrLevels.map((level, idx) => {
+                const widthValue = effectiveSnrLineWidths[idx];
+                return (
+                  <div
+                    key={level.label}
+                    className="rounded-md border border-border/40 bg-zinc-50/80 px-2 py-1.5"
                   >
-                    Reset
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* SNR Line Thickness */}
-            <div className="mt-2 pt-2 border-t border-border/30">
-              <div className="text-[10px] font-medium text-zinc-500 mb-1.5">
-                Line Thickness (px)
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                {(["Poor", "Medium", "Good"] as const).map((label, idx) => {
-                  const widthValue = snrLineWidths[idx];
-                  return (
-                    <div
-                      key={label}
-                      className="flex flex-col items-center gap-1"
-                    >
-                      <span className="text-[9px] text-zinc-500">{label}</span>
+                    <div className="flex items-center justify-between gap-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className="h-2.5 w-2.5 rounded-full border border-zinc-300 shrink-0"
+                          style={{ backgroundColor: level.color }}
+                        />
+                        <span className="text-[9px] font-semibold text-zinc-700">
+                          {level.label}
+                        </span>
+                        <span className="text-[9px] text-zinc-500 truncate">
+                          {level.range}
+                        </span>
+                      </div>
                       <div className="flex items-center gap-0.5">
                         <button
                           onClick={() => {
                             if (widthValue <= 1) return;
-                            const updated = [...snrLineWidths] as [number, number, number];
+                            const updated = [...effectiveSnrLineWidths] as [
+                              number,
+                              number,
+                              number,
+                              number,
+                            ];
                             updated[idx] = widthValue - 1;
                             setSnrLineWidths(updated);
                           }}
-                          className="w-5 h-5 flex items-center justify-center rounded border border-zinc-300 hover:bg-zinc-100 text-[10px] text-zinc-600 transition-colors"
-                          title="Decrease"
+                          className="w-5 h-5 flex items-center justify-center rounded border border-zinc-300 hover:bg-zinc-100 text-[9px] text-zinc-600 transition-colors"
+                          title="Decrease width"
                         >
                           −
                         </button>
-                        <span className="w-5 text-center text-[10px] font-mono text-zinc-700 font-semibold">
+                        <span className="w-4 text-center text-[9px] font-mono text-zinc-700 font-semibold">
                           {widthValue}
                         </span>
                         <button
                           onClick={() => {
                             if (widthValue >= 12) return;
-                            const updated = [...snrLineWidths] as [number, number, number];
+                            const updated = [...effectiveSnrLineWidths] as [
+                              number,
+                              number,
+                              number,
+                              number,
+                            ];
                             updated[idx] = widthValue + 1;
                             setSnrLineWidths(updated);
                           }}
-                          className="w-5 h-5 flex items-center justify-center rounded border border-zinc-300 hover:bg-zinc-100 text-[10px] text-zinc-600 transition-colors"
-                          title="Increase"
+                          className="w-5 h-5 flex items-center justify-center rounded border border-zinc-300 hover:bg-zinc-100 text-[9px] text-zinc-600 transition-colors"
+                          title="Increase width"
                         >
                           +
                         </button>
                       </div>
-                      {/* Preview line */}
-                      <div
-                        className="rounded-full mt-0.5"
-                        style={{
-                          width: "32px",
-                          height: `${widthValue}px`,
-                          backgroundColor: snrColors[idx],
-                        }}
-                      />
                     </div>
-                  );
-                })}
-                <div className="flex flex-col items-center gap-1">
-                  <span className="text-[9px] text-zinc-500">&nbsp;</span>
-                  <span className="text-[9px] text-zinc-400">&nbsp;</span>
-                </div>
-              </div>
+                    <div
+                      className="rounded-full mt-1"
+                      style={{
+                        width: "100%",
+                        height: `${widthValue}px`,
+                        backgroundColor: level.color,
+                      }}
+                    />
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -550,7 +458,7 @@ const NetworkLayersPanel = ({
             {/* Mother Node */}
             <div className="flex items-center gap-1.5">
               <img
-                src={`/icons/${currentMotherIcon}.svg`}
+                src={`icons/${currentMotherIcon}.svg`}
                 alt="Mother Node"
                 className="w-5 h-5"
               />
@@ -560,7 +468,7 @@ const NetworkLayersPanel = ({
             {/* Topology Node */}
             <div className="flex items-center gap-1.5">
               <img
-                src={`/icons/${sampleGroupIcon}.svg`}
+                src={`icons/${sampleGroupIcon}.svg`}
                 alt="Topology Node"
                 className="w-5 h-5"
               />
@@ -579,7 +487,7 @@ const NetworkLayersPanel = ({
                 className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-border/60 hover:bg-zinc-50 transition-colors"
               >
                 <img
-                  src={`/icons/${currentMotherIcon}.svg`}
+                  src={`icons/${currentMotherIcon}.svg`}
                   alt="Current"
                   className="w-4 h-4"
                 />
@@ -619,8 +527,8 @@ const NetworkLayersPanel = ({
                         isSelected
                           ? "border-blue-500 bg-blue-100 ring-2 ring-blue-400"
                           : isUsedByGroup && iconName !== "mother-fighter"
-                          ? "border-gray-200 bg-gray-100 opacity-40 cursor-not-allowed"
-                          : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
+                            ? "border-gray-200 bg-gray-100 opacity-40 cursor-not-allowed"
+                            : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
                       }`}
                       title={
                         isUsedByGroup && iconName !== "mother-fighter"
@@ -629,7 +537,7 @@ const NetworkLayersPanel = ({
                       }
                     >
                       <img
-                        src={`/icons/${iconName}.svg`}
+                        src={`icons/${iconName}.svg`}
                         alt={iconName}
                         className="w-4 h-4"
                       />
@@ -814,9 +722,14 @@ const NetworkLayersPanel = ({
                         style={{
                           height: `${Math.min(
                             networkMembersData.length * 48 + 2,
-                            384
+                            384,
                           )}px`,
                           width: "100% !important",
+                          // Keep rapid scrolling inside this list — no overscroll
+                          // bounce past the ends, no scroll-chaining to the map/page.
+                          // `none` not `contain`: `contain` only stops chaining and
+                          // still permits the container's own rubber-band.
+                          overscrollBehavior: "none",
                         }}
                         data={networkMembersData}
                         increaseViewportBy={200}
@@ -824,7 +737,7 @@ const NetworkLayersPanel = ({
                           const globalId = item.globalId ?? item.id ?? idx;
                           const coord = formatCoordinate(
                             item.latitude,
-                            item.longitude
+                            item.longitude,
                           );
 
                           return (
