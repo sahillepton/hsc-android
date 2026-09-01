@@ -5,7 +5,7 @@ import { SidebarGroup, SidebarGroupContent } from "../ui/sidebar";
 import { showMessage } from "@/lib/capacitor-utils";
 import { toast } from "@/lib/toast";
 import { useLayers, useNodeIconMappings } from "@/store/layers-store";
-import { generateLayerId } from "@/lib/layers";
+import { generateLayerId, startHiddenOnImport } from "@/lib/layers";
 import {
   fileToDEMRaster,
   fileToGeoJSON,
@@ -67,7 +67,7 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
         };
       }
       // Use addLayer to ensure proper state updates and prevent overwriting
-      addLayer(newLayer);
+      addLayer(startHiddenOnImport(newLayer));
 
       if (isDefaultBounds) {
         showMessage(
@@ -650,7 +650,7 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
       } as LayerProps & { uploadedAt: number };
 
       // Use addLayer to ensure proper state updates and prevent overwriting
-      addLayer(newLayer);
+      addLayer(startHiddenOnImport(newLayer));
       showMessage(
         `Successfully uploaded ${annotations.length} annotation(s) from ${file.name}`
       );
@@ -865,7 +865,7 @@ const FileSection = ({ fixedDirectory, fixedPath }: FileSectionProps = {}) => {
       } as LayerProps & { uploadedAt: number };
       // Use addLayer to ensure proper state updates and prevent overwriting
       // This prevents overwriting when importing multiple files from ZIP
-      addLayer(newLayer);
+      addLayer(startHiddenOnImport(newLayer));
       showMessage(
         `Successfully uploaded ${validFeatures.length} feature(s) from ${file.name}`
       );

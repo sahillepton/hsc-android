@@ -387,9 +387,19 @@ const Tooltip = () => {
           }
         }
 
-        // Live topology CONNECTION — anchor at the midpoint of its two nodes' LIVE
-        // positions so the tooltip tracks the moving link (not the click pixel).
-        // Falls back to the click-time snapshot endpoints if a node isn't live.
+        // Live topology CONNECTION (the SNR link) — resolve its two nodes' LIVE
+        // positions so the tooltip tracks the moving link rather than the click
+        // pixel. Falls back to the click-time snapshot endpoints if a node is not
+        // live.
+        //
+        // The ENDPOINTS are kept, not only their midpoint. The midpoint alone is
+        // the anchor of last resort: it made the tooltip open in the middle of the
+        // link instead of where the user clicked, and because that offset is a
+        // fixed GEOGRAPHIC distance, its size on screen shrank as you zoomed out —
+        // which is why zooming out looked like it "moved to the right place". The
+        // endpoints let the screen-space snap below put the anchor on the point of
+        // the link that was actually clicked, at any zoom.
+        let topologyLinkPath: [number, number][] | null = null;
         if (
           deckLayerId === "udp-topology-connections-layer" &&
           hoverInfo.object &&
@@ -407,11 +417,19 @@ const Tooltip = () => {
           const t =
             o.toId !== undefined ? topologyNodes.get(o.toId) : undefined;
           if (f && t) {
-            lng = (f.long + t.long) / 2;
-            lat = (f.lat + t.lat) / 2;
+            topologyLinkPath = [
+              [f.long, f.lat],
+              [t.long, t.lat],
+            ];
           } else if (o.from && o.to) {
-            lng = (o.from.longitude + o.to.longitude) / 2;
-            lat = (o.from.latitude + o.to.latitude) / 2;
+            topologyLinkPath = [
+              [o.from.longitude, o.from.latitude],
+              [o.to.longitude, o.to.latitude],
+            ];
+          }
+          if (topologyLinkPath) {
+            lng = (topologyLinkPath[0][0] + topologyLinkPath[1][0]) / 2;
+            lat = (topologyLinkPath[0][1] + topologyLinkPath[1][1]) / 2;
           }
         }
 
@@ -478,6 +496,10 @@ const Tooltip = () => {
         //    A midpoint/vertex is still resolved as the lng/lat fallback for when
         //    there is no pick to snap (e.g. a synthesised hover).
         const linePathsForSnap: ReadonlyArray<ReadonlyArray<number>>[] = [];
+        // A topology link resolved its lng/lat above, so it would skip the block
+        // below entirely and never offer a path to snap to. Added here instead,
+        // which leaves that midpoint in place purely as the fallback.
+        if (topologyLinkPath) linePathsForSnap.push(topologyLinkPath);
         if (lng === undefined && lat === undefined) {
           if (gType === "LineString" && isCoordPath(gCoords)) {
             linePathsForSnap.push(gCoords);

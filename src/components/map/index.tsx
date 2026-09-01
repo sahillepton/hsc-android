@@ -74,6 +74,7 @@ import {
   isPointNearFirstPoint,
   getPolygonCloseThreshold,
   azimuthDisplayAngle,
+  startHiddenOnImport,
   computePolygonAreaMeters,
   computePolygonPerimeterMeters,
   calculateLayerZoomRange,
@@ -1539,10 +1540,28 @@ const MapComponent = ({
   // flow ack'd "ready" the moment `runTilingUpload` returned — long before
   // any pixel hit the canvas.
   const waitAndAckTiledLayer = useCallback(
-    (layerId: string, displayName: string, toastId: any) => {
+    (
+      layerId: string,
+      displayName: string,
+      toastId: any,
+      startsHidden = false,
+    ) => {
       const map = mapRef.current?.getMap?.();
       if (!map) {
         toast.dismiss(toastId);
+        return;
+      }
+      // An import starts switched off (startHiddenOnImport), which means the
+      // raster sits in the style with visibility:none — mapbox never requests its
+      // tiles, so waiting for tiles to reach the canvas would always run to the
+      // timeout and then dismiss the toast with no confirmation at all. Ack now,
+      // and say where the layer went, since nothing appeared on the map.
+      if (startsHidden) {
+        toast.update(
+          toastId,
+          `${displayName} added — turn it on in the Layers panel`,
+          "success",
+        );
         return;
       }
       void waitForRasterTilesLoaded(map, layerId).then((ok) => {
@@ -2777,7 +2796,7 @@ const MapComponent = ({
                           },
                         },
                       );
-                      addLayer(newLayer);
+                      addLayer(startHiddenOnImport(newLayer));
                       const { updateManifestColor, upsertTempManifestEntry } =
                         await import("@/sessions/manifestStore");
                       await updateManifestColor(layerId, newLayer.color);
@@ -2804,6 +2823,7 @@ const MapComponent = ({
                         layerId,
                         extractedFile.name,
                         progressToastId,
+                        newLayer.visible === false,
                       );
                     } else {
                       // Process DEM file (small TIFF — file was loaded above
@@ -2828,7 +2848,7 @@ const MapComponent = ({
                         layerId: layerId,
                         layerName: layerName,
                       });
-                      addLayer(newLayer);
+                      addLayer(startHiddenOnImport(newLayer));
                       // Update manifest with layer color
                       const { updateManifestColor } =
                         await import("@/sessions/manifestStore");
@@ -2869,7 +2889,7 @@ const MapComponent = ({
                       layerName: layerName,
                       generateRandomColor,
                     });
-                    addLayer(newLayer);
+                    addLayer(startHiddenOnImport(newLayer));
                     // Update manifest with layer color
                     const { updateManifestColor } =
                       await import("@/sessions/manifestStore");
@@ -3060,7 +3080,7 @@ const MapComponent = ({
                       },
                     },
                   );
-                  addLayer(newLayer);
+                  addLayer(startHiddenOnImport(newLayer));
                   const { updateManifestColor, upsertTempManifestEntry } =
                     await import("@/sessions/manifestStore");
                   await updateManifestColor(layerId, newLayer.color);
@@ -3082,6 +3102,7 @@ const MapComponent = ({
                     layerId,
                     stagedFile.originalName,
                     renderToastId,
+                    newLayer.visible === false,
                   );
                 } else {
                   const demResult = await parseDemFile(file, {
@@ -3099,7 +3120,7 @@ const MapComponent = ({
                     layerId,
                     layerName,
                   });
-                  addLayer(newLayer);
+                  addLayer(startHiddenOnImport(newLayer));
                   // Update manifest with layer color
                   const { updateManifestColor } =
                     await import("@/sessions/manifestStore");
@@ -3123,7 +3144,7 @@ const MapComponent = ({
                   layerName,
                   generateRandomColor,
                 });
-                addLayer(newLayer);
+                addLayer(startHiddenOnImport(newLayer));
                 // Update manifest with layer color
                 const { updateManifestColor } =
                   await import("@/sessions/manifestStore");

@@ -370,6 +370,29 @@ export const northReferencePoint = (
   return [center[0], lat];
 };
 
+/**
+ * A freshly IMPORTED layer, switched off.
+ *
+ * An import can be a large file that takes a while to draw and lands on top of
+ * whatever the user was looking at, so uploads arrive hidden and the user turns on
+ * what they actually want from the Layers panel.
+ *
+ * Applied at the UPLOAD call sites, deliberately not inside `createVectorLayer` /
+ * `createDemLayer` / `runTilingUpload`: session restore builds its layers through
+ * those same factories, and a restored session has to come back the way the user
+ * left it. The manifest does not persist per-layer visibility, so a factory-level
+ * default would make every restore come back blank with no way to know better.
+ *
+ * Sets the flag in place and returns the same object, so a caller that goes on to
+ * read the layer it just added (`.color` for the manifest, `.visible` to decide
+ * whether there is anything to wait for on screen) sees the truth. Returning a
+ * copy instead left the caller's own reference claiming it was visible.
+ */
+export function startHiddenOnImport<T extends LayerProps>(layer: T): T {
+  layer.visible = false;
+  return layer;
+}
+
 export const normalizeAngleSigned = (angleDeg: number) => {
   if (!Number.isFinite(angleDeg)) return angleDeg;
   // Floor-based modulo. JS `%` keeps the sign of the DIVIDEND, so the shorter
