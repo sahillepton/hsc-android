@@ -54,9 +54,40 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
   // Scrolls INSIDE the panel (its own overflow) are ignored so every control stays
   // reachable.
   const [open, setOpen] = useState(false);
-  // Live length for the counter. Seeded from the layer so an already-long name
-  // shows its count the moment the panel opens, not only after the first keystroke.
-  const [nameLength, setNameLength] = useState(layer.name?.length ?? 0);
+  /**
+   * The name field's value, held here so the length cap is enforced by REACT.
+   *
+   * `maxLength` alone was not enough on Android. The field used to be
+   * uncontrolled with just `maxLength={MAX_LAYER_NAME_LENGTH}`, and the attribute
+   * does reach the DOM — but an Android soft keyboard commits text through IME
+   * composition rather than as plain key events, and Chromium does not reliably
+   * bound composed text by `maxlength`. So the user could keep typing past the
+   * cap; only the blur handler's slice() clamped it, i.e. after the fact and
+   * invisibly. With a controlled value the 51st character cannot survive a
+   * render whatever the keyboard does, because the state it renders from is
+   * already clamped.
+   *
+   * Seeded from the layer so an already-long name shows its count the moment the
+   * panel opens, not only after the first keystroke.
+   */
+  // Clamp to the cap without splitting an astral character. slice() counts UTF-16
+  // code units, so cutting exactly between the halves of a surrogate pair (an
+  // emoji, a CJK extension character) leaves a lone half that renders as U+FFFD.
+  // `maxLength` has the same flaw, but this clamp is ours, so it may as well be
+  // right. Empty string: charCodeAt(-1) is NaN and the comparison is false.
+  const clampLayerName = (value: string) => {
+    const cut = value.slice(0, MAX_LAYER_NAME_LENGTH);
+    const last = cut.charCodeAt(cut.length - 1);
+    return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+  };
+  const [nameDraft, setNameDraft] = useState(layer.name ?? "");
+  const nameLength = nameDraft.length;
+  // Re-seed when a DIFFERENT layer is shown, and after a rename commits (blur
+  // trims, so the field should show what was actually stored). Keyed on the
+  // primitives, not the layer object, whose identity changes on any store write.
+  useEffect(() => {
+    setNameDraft(layer.name ?? "");
+  }, [layer.id, layer.name]);
   const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -353,23 +384,33 @@ const LayerPopover = ({ layer, updateLayer, children }: LayerPopoverProps) => {
             )}
           </div>
           <Input
-            defaultValue={layer.name}
-            // Hard stop at the cap. `maxLength` is the right primitive here: it
-            // blocks further typing/paste at the source instead of letting the user
-            // fill the field and then silently truncating or rejecting on blur.
+            value={nameDraft}
+            // Kept as well as the slice below, not instead of it: on keyboards that
+            // do honour it this stops the keystroke at the source, which is a better
+            // feel than accepting a character and removing it a frame later. The
+            // slice is what makes the cap actually hold on Android.
             maxLength={MAX_LAYER_NAME_LENGTH}
             className="mt-1 h-8 text-sm"
             tabIndex={-1}
-            onChange={(e) => setNameLength(e.target.value.length)}
-            onBlur={(e) => {
-              // Trim AND clamp: maxLength bounds keystrokes, but a name can also
-              // arrive from elsewhere (an imported file name pre-filling the field),
-              // and slice() is the only thing that guarantees what reaches the store.
-              const newName = e.target.value
-                .trim()
-                .slice(0, MAX_LAYER_NAME_LENGTH);
+            onChange={(e) => {
+              // Clamp on the way IN. Only ever shortens, so ordinary typing is
+              // untouched and the IME is left alone until the cap is actually hit —
+              // rewriting a controlled value mid-composition is what causes cursor
+              // jumping on Android, so it must happen at the boundary and nowhere
+              // else.
+              setNameDraft(clampLayerName(e.target.value));
+            }}
+            onBlur={() => {
+              // Trim as well, and slice again: a name can also arrive from
+              // elsewhere (an imported file name pre-filling the field), and this
+              // is the last point before it reaches the store.
+              const newName = clampLayerName(nameDraft.trim());
               if (newName && newName !== layer.name) {
                 updateLayer(layer.id, { ...layer, name: newName });
+              } else if (!newName) {
+                // An all-whitespace name is rejected; put the real one back rather
+                // than leaving the field showing something that was not saved.
+                setNameDraft(layer.name ?? "");
               }
             }}
             onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}

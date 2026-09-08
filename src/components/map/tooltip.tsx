@@ -54,6 +54,13 @@ import {
   isRasterTooltipAttrShown,
 } from "@/lib/raster-tooltip-attributes";
 
+/**
+ * Shown as the IGRS value for a point outside the grid's coverage. A stated
+ * "not available" is the point: the row is always present, so its absence can
+ * never be mistaken for a coordinate that simply was not rendered.
+ */
+const IGRS_UNAVAILABLE = "Not available";
+
 const SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS = new Set<string>(
   SHORTEST_ROUTE_INTERNAL_PROPS,
 );
@@ -773,15 +780,40 @@ const Tooltip = () => {
   // (hidden layer → no tooltip) and by deck's hover clearing when the cursor leaves
   // the feature, so a dedicated zoom gate here is both redundant and wrong.
 
-  const formatCoordinatePair = (point?: [number, number]) => {
-    if (!point || point.length < 2) return "—";
-    if (useIgrs) {
-      const igrs = calculateIgrs(point[0], point[1]);
-      if (igrs) return igrs;
-    }
-    return `[${point[1]?.toFixed(6)}°, ${point[0]?.toFixed(6)}°]`;
+  /** Decimal degrees, in the app's usual [lat°, lng°] order. */
+  const formatLatLng = (point?: [number, number]) =>
+    !point || point.length < 2
+      ? "—"
+      : `[${point[1]?.toFixed(6)}°, ${point[0]?.toFixed(6)}°]`;
+
+  /**
+   * The rows one coordinate contributes: lat/long always, and IGRS as its OWN
+   * row while the toggle is on.
+   *
+   * The toggle used to REPLACE lat/long with the grid reference, and
+   * `calculateIgrs` returns null outside the grid's window (~68–104°E,
+   * 8–39.5°N). A point beyond coverage therefore printed decimal degrees under
+   * an "IGRS" label, leaving no way to tell a real reference from a fallback —
+   * the reported bug. Two labelled rows remove the ambiguity, and a point
+   * outside coverage says so rather than quietly showing something else.
+   *
+   * `prefix` names the coordinate where a tooltip shows more than one (From /
+   * To, Center / Target) so the pairs stay attributable.
+   */
+  const coordinateRows = (
+    point?: [number, number],
+    prefix?: string,
+  ): { label: string; value: string }[] => {
+    const p = prefix ? `${prefix} ` : "";
+    const rows = [
+      { label: `${p}Latitude, Longitude`, value: formatLatLng(point) },
+    ];
+    if (!useIgrs) return rows;
+    const igrs =
+      point && point.length >= 2 ? calculateIgrs(point[0], point[1]) : null;
+    rows.push({ label: `${p}IGRS`, value: igrs ?? IGRS_UNAVAILABLE });
+    return rows;
   };
-  const coordinateLabel = useIgrs ? "IGRS" : "lat, lng";
 
   const getTooltipContent = () => {
     // Skip basic tooltip on polygon outline helper layers
@@ -828,12 +860,9 @@ const Tooltip = () => {
       if (lng === undefined || lat === undefined) return null;
 
       const properties: { label: string; value: string }[] = [
-        {
-          // formatCoordinatePair honours the IGRS toggle (and falls back to
-          // lat/long outside the IGRS window, like every other coordinate row).
-          label: coordinateLabel,
-          value: formatCoordinatePair([lng, lat]),
-        },
+        // Both rows, so a fix outside IGRS coverage cannot read as a grid
+        // reference (see coordinateRows).
+        ...coordinateRows([lng, lat]),
       ];
 
       return (
@@ -874,24 +903,24 @@ const Tooltip = () => {
       const showRow = (key: string) => isRasterTooltipAttrShown(layerInfo, key);
 
       const properties: { label: string; value: string }[] = [];
-      if (useIgrs) {
-        // IGRS collapses Latitude + Longitude into one row, gated by LATITUDE.
-        if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
-          properties.push({
-            label: "IGRS",
-            value: calculateIgrs(lng, lat) ?? "—",
-          });
-        }
-      } else {
-        if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
-          properties.push({
-            label: "Latitude",
-            value: `${lat.toFixed(6)}°`,
-          });
-        }
-        if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LONGITUDE)) {
-          properties.push({ label: "Longitude", value: `${lng.toFixed(6)}°` });
-        }
+      // Latitude and Longitude keep their own rows and their own visibility
+      // gates; IGRS is an ADDITIONAL row, not a replacement. It used to collapse
+      // the pair into one row, so a point outside the grid's window showed a bare
+      // "—" and no coordinates at all.
+      if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+        properties.push({
+          label: "Latitude",
+          value: `${lat.toFixed(6)}°`,
+        });
+      }
+      if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LONGITUDE)) {
+        properties.push({ label: "Longitude", value: `${lng.toFixed(6)}°` });
+      }
+      if (useIgrs && showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+        properties.push({
+          label: "IGRS",
+          value: calculateIgrs(lng, lat) ?? IGRS_UNAVAILABLE,
+        });
       }
 
       let valueLabel = "Value";
@@ -999,27 +1028,27 @@ const Tooltip = () => {
             isRasterTooltipAttrShown(layerInfo, key);
 
           const properties: { label: string; value: string }[] = [];
-          if (useIgrs) {
-            // IGRS collapses Latitude + Longitude into one row, gated by LATITUDE.
-            if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
-              properties.push({
-                label: "IGRS",
-                value: calculateIgrs(lng, lat) ?? "—",
-              });
-            }
-          } else {
-            if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
-              properties.push({
-                label: "Latitude",
-                value: `${lat.toFixed(6)}°`,
-              });
-            }
-            if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LONGITUDE)) {
-              properties.push({
-                label: "Longitude",
-                value: `${lng.toFixed(6)}°`,
-              });
-            }
+          // Latitude and Longitude keep their own rows and their own visibility
+          // gates; IGRS is an ADDITIONAL row, not a replacement. It used to
+          // collapse the pair into one row, so a point outside the grid's window
+          // showed a bare "—" and no coordinates at all.
+          if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+            properties.push({
+              label: "Latitude",
+              value: `${lat.toFixed(6)}°`,
+            });
+          }
+          if (showRow(RASTER_TOOLTIP_ATTRIBUTES.LONGITUDE)) {
+            properties.push({
+              label: "Longitude",
+              value: `${lng.toFixed(6)}°`,
+            });
+          }
+          if (useIgrs && showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+            properties.push({
+              label: "IGRS",
+              value: calculateIgrs(lng, lat) ?? IGRS_UNAVAILABLE,
+            });
           }
 
           if (showRow(RASTER_TOOLTIP_ATTRIBUTES.PIXEL_INDEX)) {
@@ -1100,11 +1129,8 @@ const Tooltip = () => {
           label: "Distance",
           value: `${parseFloat(getDistance(from, to)).toFixed(2)} km`,
         },
-        {
-          label: `From (${coordinateLabel})`,
-          value: formatCoordinatePair(from),
-        },
-        { label: `To (${coordinateLabel})`, value: formatCoordinatePair(to) },
+        ...coordinateRows(from, "From"),
+        ...coordinateRows(to, "To"),
       );
       return (
         <TooltipBox>
@@ -1137,13 +1163,12 @@ const Tooltip = () => {
 
       const properties = [];
       if (object.longitude !== undefined && object.latitude !== undefined) {
-        properties.push({
-          label: "Location",
-          value: useIgrs
-            ? calculateIgrs(object.longitude, object.latitude) ||
-              `[${object.latitude.toFixed(6)}°, ${object.longitude.toFixed(6)}°]`
-            : `[${object.latitude.toFixed(6)}°, ${object.longitude.toFixed(6)}°]`,
-        });
+        // This row was the reported bug in its purest form: with IGRS on it read
+        // `calculateIgrs(...) || [lat, lng]`, so a node outside the grid showed
+        // degrees under a label that promised a grid reference.
+        properties.push(
+          ...coordinateRows([object.longitude, object.latitude], "Location"),
+        );
       }
       if (
         layer.id === "udp-topology-nodes-layer" &&
@@ -1407,14 +1432,8 @@ const Tooltip = () => {
       }
 
       properties.push(
-        {
-          label: `Center (${coordinateLabel})`,
-          value: formatCoordinatePair(layerInfo.azimuthCenter),
-        },
-        {
-          label: `Target (${coordinateLabel})`,
-          value: formatCoordinatePair(layerInfo.azimuthTarget),
-        },
+        ...coordinateRows(layerInfo.azimuthCenter, "Center"),
+        ...coordinateRows(layerInfo.azimuthTarget, "Target"),
       );
 
       return (
@@ -1447,10 +1466,9 @@ const Tooltip = () => {
         });
       }
 
-      properties.push({
-        label: `Location (${coordinateLabel})`,
-        value: formatCoordinatePair([object.longitude, object.latitude]),
-      });
+      properties.push(
+        ...coordinateRows([object.longitude, object.latitude], "Location"),
+      );
 
       return (
         <TooltipBox>
@@ -1498,12 +1516,12 @@ const Tooltip = () => {
         }
 
         if (geometryType === "Point" && object.geometry.coordinates) {
-          nodeProperties.push({
-            label: `Location (${coordinateLabel})`,
-            value: formatCoordinatePair(
+          nodeProperties.push(
+            ...coordinateRows(
               object.geometry.coordinates as [number, number],
+              "Location",
             ),
-          });
+          );
         }
 
         return (
@@ -1586,14 +1604,8 @@ const Tooltip = () => {
         const from = coords[0] as [number, number];
         const to = coords[coords.length - 1] as [number, number];
         tooltipProperties.push(
-          {
-            label: `From (${coordinateLabel})`,
-            value: formatCoordinatePair(from),
-          },
-          {
-            label: `To (${coordinateLabel})`,
-            value: formatCoordinatePair(to),
-          },
+          ...coordinateRows(from, "From"),
+          ...coordinateRows(to, "To"),
         );
       }
 
@@ -1667,16 +1679,24 @@ const Tooltip = () => {
         return { latKey, lonKey, lat, lon };
       })();
 
-      const igrsAttrPair = (() => {
-        if (!useIgrs || !coordAttrKeys) return null;
-        const igrs = calculateIgrs(coordAttrKeys.lon, coordAttrKeys.lat);
-        if (!igrs) return null; // outside the IGRS window — keep the raw columns
-        return {
-          latKey: coordAttrKeys.latKey,
-          lonKey: coordAttrKeys.lonKey,
-          igrs,
-        };
-      })();
+      /**
+       * The IGRS row for a feature whose own attributes carry a lat/lon pair.
+       *
+       * Appended AFTER the attribute rows rather than folded into them. It used
+       * to take the latitude slot and drop the longitude row, which meant the
+       * grid reference replaced the feature's own columns — and outside the
+       * grid's window it vanished silently, so there was no way to tell "not
+       * covered" from "this layer has no coordinates".
+       */
+      const igrsAttrRow =
+        useIgrs && coordAttrKeys
+          ? {
+              label: "IGRS",
+              value:
+                calculateIgrs(coordAttrKeys.lon, coordAttrKeys.lat) ??
+                IGRS_UNAVAILABLE,
+            }
+          : null;
 
       /**
        * Emit one attribute row, folding the coordinate pair into a single IGRS row.
@@ -1689,18 +1709,11 @@ const Tooltip = () => {
         value: unknown,
         missingAsDash = false,
       ) => {
-        if (igrsAttrPair) {
-          if (key === igrsAttrPair.lonKey) return;
-          if (key === igrsAttrPair.latKey) {
-            tooltipProperties.push({ label: "IGRS", value: igrsAttrPair.igrs });
-            return;
-          }
-        }
         const missing = missingAsDash && !isMeaningfulPropertyValue(value);
         // A recognised lat/long COLUMN is a coordinate, so print it like every
-        // other coordinate in the app: with a degree sign. Reached only when the
-        // IGRS collapse above did not apply — toggle off, or a point outside the
-        // IGRS window — so the two can never both format the same row.
+        // other coordinate in the app: with a degree sign. These columns are
+        // always kept now; IGRS is appended as its own row instead of consuming
+        // them.
         const isCoordCol =
           !missing &&
           coordAttrKeys !== null &&
@@ -1744,6 +1757,10 @@ const Tooltip = () => {
             pushAttrRow(key, value, true);
           });
       }
+
+      // IGRS last, after the feature's own attributes, so it reads as an added
+      // reference for the lat/lon columns above rather than one of them.
+      if (igrsAttrRow) tooltipProperties.push(igrsAttrRow);
 
       // Threshold 8, matching the raster branch above (which already used 8).
       //
@@ -1869,18 +1886,8 @@ const Tooltip = () => {
       }
 
       properties.push(
-        {
-          label: `From (${coordinateLabel})`,
-          value: formatCoordinatePair(
-            object.sourcePosition as [number, number],
-          ),
-        },
-        {
-          label: `To (${coordinateLabel})`,
-          value: formatCoordinatePair(
-            object.targetPosition as [number, number],
-          ),
-        },
+        ...coordinateRows(object.sourcePosition as [number, number], "From"),
+        ...coordinateRows(object.targetPosition as [number, number], "To"),
       );
 
       return (
@@ -1916,12 +1923,9 @@ const Tooltip = () => {
                 label: "Vertex",
                 value: `${polygonVertex.vertexIndex} of ${polygonVertex.vertexTotal}`,
               },
-              // formatCoordinatePair honours the IGRS toggle, so a vertex reads the
-              // same way as every other coordinate in this tooltip.
-              {
-                label: coordinateLabel,
-                value: formatCoordinatePair(object.position),
-              },
+              // A vertex reads the same way as every other coordinate here:
+              // lat/long, and IGRS as its own row (see coordinateRows).
+              ...coordinateRows(object.position),
             ]}
           />
         </TooltipBox>
@@ -1938,10 +1942,7 @@ const Tooltip = () => {
         });
       }
 
-      properties.push({
-        label: `Coordinates (${coordinateLabel})`,
-        value: formatCoordinatePair(object.position),
-      });
+      properties.push(...coordinateRows(object.position));
 
       return (
         <TooltipBox>
@@ -2071,14 +2072,8 @@ const Tooltip = () => {
         value: `${totalKm.toFixed(2)} km`,
       });
       properties.push(
-        {
-          label: `From (${coordinateLabel})`,
-          value: formatCoordinatePair(from),
-        },
-        {
-          label: `To (${coordinateLabel})`,
-          value: formatCoordinatePair(to),
-        },
+        ...coordinateRows(from, "From"),
+        ...coordinateRows(to, "To"),
       );
 
       return (

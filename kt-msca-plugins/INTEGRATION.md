@@ -201,6 +201,126 @@ End-to-end sanity:
 
 ---
 
+---
+
+## Hardware BACK button on the GIS screen
+
+**What the GIS web app does on its own, with no host changes:** one back press
+dismisses one layer of its own UI, innermost first — tooltip, then an in-progress
+sketch, then rubber-band zoom, then the Route/Measurement/Network/Layers panels.
+
+**What it does when nothing of its own is open** depends on whether you have
+given it somewhere to go:
+
+| Situation | Behaviour |
+| --- | --- |
+| You provide `GisHostNavigation.goBack()` | The GIS app calls it — you navigate (pop your stack, switch tab, whatever "leave the GIS screen" means to you) |
+| You do not | "Press back again to exit", then `App.exitApp()` on a second press within 2 s |
+
+**Read the second row carefully if you embed us.** `App.exitApp()` is
+`Activity.finish()`, so without the hook a back press on the GIS screen closes
+**your** activity — the whole MCSA app, not just the GIS tab. That is the
+behaviour that was asked for, and the two-press confirmation is there so it takes
+a deliberate double press rather than one stray tap. If closing the app is not
+what you want — and on a SIP handset, dropping out mid-call usually is not —
+wire the hook in Option A and the exit path is never reached.
+
+### Why a hook is needed at all
+
+There is no way for the web layer to "pass the press through" to you. Capacitor's
+`AppPlugin` registers an **enabled** `OnBackPressedCallback` on the **activity's**
+`OnBackPressedDispatcher` (`AppPlugin.load()`), and when the web layer has a
+`backButton` listener its native handler only notifies JavaScript — it does not
+call your callbacks and there is no `preventDefault`. So the press is consumed by
+Capacitor whatever the web layer decides.
+
+Two consequences worth knowing before you wire this up:
+
+- **A plain Compose `BackHandler` in `GisScreen` will not fire.**
+  `OnBackPressedDispatcher` runs the most recently added enabled callback first.
+  Your `BackHandler` is added when the composable enters composition; Capacitor's
+  is added later, when the bridge is created in the fragment's `onViewCreated`
+  (`GisCapacitorFragment.load()`). Capacitor's therefore wins.
+- **`GisCapacitorFragment.handleBackPress()` is never reached** unless something
+  calls it. It only walks WebView history, and the GIS app pushes no history
+  entries, so it would return `false` regardless.
+
+### Option A — give the GIS screen a way to ask you to navigate (recommended)
+
+Keeps the GIS app's own back behaviour (panels close first) and puts your
+navigation at the end of the chain. Add one small plugin:
+
+```kotlin
+package org.deal.mcsa.plugins
+
+import com.getcapacitor.Plugin
+import com.getcapacitor.PluginCall
+import com.getcapacitor.PluginMethod
+import com.getcapacitor.annotation.CapacitorPlugin
+
+/**
+ * Lets the GIS web app hand a back press back to the host once it has nothing of
+ * its own left to close.
+ */
+@CapacitorPlugin(name = "GisHostNavigation")
+class GisHostNavigationPlugin : Plugin() {
+    companion object {
+        /** Set by the host. Runs on the UI thread. */
+        @JvmStatic
+        var onBackRequested: (() -> Unit)? = null
+    }
+
+    @PluginMethod
+    fun goBack(call: PluginCall) {
+        activity.runOnUiThread { onBackRequested?.invoke() }
+        call.resolve()
+    }
+}
+```
+
+Register it alongside the others in `GisCapacitorFragment.onCreate()`:
+
+```kotlin
+registerPlugin(GisHostNavigationPlugin::class.java)
+```
+
+Then point it at whatever "leave the GIS tab" means in your navigation — for
+example in `GisScreen`:
+
+```kotlin
+val activity = LocalActivity.current as FragmentActivity
+DisposableEffect(Unit) {
+    GisHostNavigationPlugin.onBackRequested = {
+        // your own navigation: switch tab, pop the nav controller, finish, …
+        onLeaveGis()
+    }
+    onDispose { GisHostNavigationPlugin.onBackRequested = null }
+}
+```
+
+The GIS app calls `goBack()` only after its own panels are closed, so a user on
+the GIS tab presses back a few times to clear the map UI and then once more to
+leave the screen — the usual Android feel.
+
+### Option B — take back entirely for yourself
+
+Add this to the host's `app/src/main/assets/capacitor.config.json`:
+
+```json
+{
+  "appId": "com.example.app",
+  "appName": "mcsa-gis-android",
+  "webDir": "dist",
+  "plugins": { "App": { "disableBackButtonHandler": true } }
+}
+```
+
+Capacitor then creates its callback **disabled**, the press reaches your own
+`BackHandler`/`onBackPressed`, and your navigation works with no plugin. The
+trade-off: the GIS app never sees back at all, so its panels and in-progress
+sketches no longer close on back — the user must close them with their own ✕
+buttons.
+
 ## Versioning future drops
 
 When we ship a new `kt-msca-plugins/` drop (bug fixes, GDAL bumps), bump

@@ -22,16 +22,74 @@ import {
   PanelBottomClose,
   PanelBottomOpen,
   Crosshair,
+  XCircle,
+  Loader2 as Loader2Icon,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { useDrawingMode } from "@/store/layers-store";
+import { useLiveBearing, useLiveZoomDisplay } from "@/store/map-view-store";
 import type { DrawingMode } from "@/lib/definitions";
 import { cn } from "@/lib/utils";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 
 const LONG_PRESS_DELAY = 500;
+
+/**
+ * Live zoom badge. It subscribes to the map-view store on its own, so the
+ * per-frame camera updates during a pinch / scroll re-render only this one
+ * small node — not the whole ZoomControls toolbar and not the map component
+ * (whose throttled `mapZoom` state still drives layer visibility on move-end).
+ */
+const LiveZoomReadout = () => {
+  const zoom = useLiveZoomDisplay();
+  return (
+    <div className="min-w-[36px] text-center text-xs font-semibold text-slate-800">
+      {zoom.toFixed(2)}
+    </div>
+  );
+};
+
+/** Compass needle that follows the live bearing (same isolation as above). */
+const CompassNeedle = () => {
+  const bearing = useLiveBearing();
+  return (
+    <g transform={`rotate(${-bearing} 42 42)`}>
+      {/* North-pointing red diamond/kite - larger and more prominent */}
+      <path
+        d="M 42 8 L 50 32 L 42 26 L 34 32 Z"
+        fill="#ef4444"
+        stroke="#dc2626"
+        strokeWidth="1"
+      />
+      {/* Center pivot point */}
+      <circle cx="42" cy="42" r="3" fill="#1f2937" />
+    </g>
+  );
+};
+
+/**
+ * Flip the sign of a typed coordinate.
+ *
+ * Android's numeric keypad has no minus key. `inputMode="decimal"` maps to
+ * TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL — digits and a decimal separator
+ * only. A signed keypad needs TYPE_NUMBER_FLAG_SIGNED, which HTML `inputmode`
+ * has no way to ask for, so southern latitudes and western longitudes were simply
+ * not typeable on a phone. (An earlier comment here claimed decimal DID give a
+ * minus sign; it does not, and that is why this went unnoticed.)
+ *
+ * Desktop is unaffected either way — a physical keyboard types "-" straight into
+ * the field, and still can. This is the way in on Android, and works on both.
+ *
+ * Toggling an empty field yields "-", so the order "tap minus, then type" works
+ * as naturally as typing the digits first.
+ */
+const toggleCoordinateSign = (value: string): string => {
+  const t = value.trim();
+  if (!t) return "-";
+  return t.startsWith("-") ? t.slice(1) : `-${t}`;
+};
 
 /** Side of the square toggle card (w-12). Used for on-screen clamping. */
 const TOGGLE_SIZE = 48;
@@ -107,7 +165,6 @@ type IgrsToggleProps = {
 
 const ZoomControls = ({
   mapRef,
-  zoom,
   bearing = 0,
   onToggleLayersBox,
   onToggleMeasurementBox,
@@ -125,10 +182,13 @@ const ZoomControls = ({
   maxLatitude = 90,
   onCaptureScreenshot,
   showUserLocation,
+  isFetchingLocation = false,
   isLayersBoxOpen,
   isMeasurementBoxOpen,
   isNetworkBoxOpen,
   isProcessingFiles = false,
+  onCancelUpload,
+  isCancellingUpload = false,
   isExporting = false,
   alertButtonProps,
   igrsToggleProps,
@@ -139,7 +199,7 @@ const ZoomControls = ({
   onCloseRoutePanel,
 }: {
   mapRef: React.RefObject<any>;
-  zoom: number;
+  /** Throttled (move-end) bearing — only the hover title uses it; the needle follows the live store. */
   bearing?: number;
   onToggleLayersBox?: () => void;
   onToggleMeasurementBox?: () => void;
@@ -159,10 +219,16 @@ const ZoomControls = ({
   maxLatitude?: number;
   onCaptureScreenshot?: () => void;
   showUserLocation?: boolean;
+  /** Location fetch in flight: the button is disabled and shows a spinner. */
+  isFetchingLocation?: boolean;
   isLayersBoxOpen?: boolean;
   isMeasurementBoxOpen?: boolean;
   isNetworkBoxOpen?: boolean;
   isProcessingFiles?: boolean;
+  /** Stop the running import. Only offered while one is actually running. */
+  onCancelUpload?: () => void;
+  /** The press has been registered; the current file has to finish first. */
+  isCancellingUpload?: boolean;
   isExporting?: boolean;
   cameraPopoverProps?: CameraPopoverProps;
   alertButtonProps?: AlertButtonProps;
@@ -483,6 +549,37 @@ const ZoomControls = ({
               </Button>
             </LongPressHint>
           )}
+          {/* Cancel the running import. Rendered only WHILE one is running, so
+              the bar does not carry a permanently dead red button — which also
+              means its appearance is the signal that an import is in progress.
+              Sits immediately after the + it cancels. */}
+          {onCancelUpload && isProcessingFiles && (
+            <LongPressHint
+              hint={isCancellingUpload ? "Cancelling…" : "Cancel Upload"}
+            >
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-10 w-10 rounded-none text-red-600 hover:bg-red-50 hover:text-red-700 disabled:opacity-60"
+                title={
+                  isCancellingUpload
+                    ? "Cancelling — finishing the current file"
+                    : "Cancel upload"
+                }
+                onClick={onCancelUpload}
+                // One press is enough; the flag is already set and the run stops
+                // at its next checkpoint.
+                disabled={isCancellingUpload}
+                tabIndex={-1}
+              >
+                {isCancellingUpload ? (
+                  <Loader2Icon className="h-4 w-4 animate-spin" />
+                ) : (
+                  <XCircle className="h-4 w-4" />
+                )}
+              </Button>
+            </LongPressHint>
+          )}
           {onExportLayers && (
             <LongPressHint hint="Export Layers">
               <Button
@@ -746,25 +843,41 @@ const ZoomControls = ({
           <div className="flex items-center p-0.5 ">
             {onToggleUserLocation && !(window as any).electronAPI && (
               <LongPressHint
-                hint={showUserLocation ? "Hide Location" : "Show Location"}
+                hint={
+                  isFetchingLocation
+                    ? "Fetching Location"
+                    : showUserLocation
+                      ? "Hide Location"
+                      : "Show Location"
+                }
               >
                 <Button
                   size="icon"
                   variant="ghost"
                   onClick={onToggleUserLocation}
+                  // One tap starts the fetch; the button stays disabled (with a
+                  // spinner) until it settles, so a double-tap cannot toggle the
+                  // location straight back off or start a second fetch.
+                  disabled={isFetchingLocation}
                   className={cn(
                     "h-10 w-10  hover:bg-white cursor-pointer mr-1",
                     showUserLocation &&
                       "bg-blue-600/20 hover:bg-blue-600/20 rounded-sm",
                   )}
                   title={
-                    showUserLocation
-                      ? "Hide Your Location"
-                      : "Show Your Location"
+                    isFetchingLocation
+                      ? "Fetching your location…"
+                      : showUserLocation
+                        ? "Hide Your Location"
+                        : "Show Your Location"
                   }
                   tabIndex={-1}
                 >
-                  <MapPin className="h-4 w-4" />
+                  {isFetchingLocation ? (
+                    <Loader2Icon className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <MapPin className="h-4 w-4" />
+                  )}
                 </Button>
               </LongPressHint>
             )}
@@ -990,42 +1103,88 @@ const ZoomControls = ({
                       <label className="text-xs font-medium text-muted-foreground">
                         Latitude
                       </label>
-                      <input
-                        // `inputMode=decimal` gives Android the numeric keypad WITH
-                        // a minus sign and decimal point; type=number would spawn
-                        // spinners and reject partial input like "-" mid-typing.
-                        inputMode="decimal"
-                        autoFocus
-                        value={coordLat}
-                        onChange={(e) => {
-                          setCoordLat(e.target.value);
-                          setCoordError(null);
-                        }}
-                        placeholder={`-${maxLatitude} to ${maxLatitude}`}
-                        className="mt-1 h-8 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-                      />
+                      <div className="mt-1 flex items-center gap-1">
+                        <input
+                          // `inputMode=decimal` keeps the numeric keypad (and
+                          // type=number is still wrong here: it spawns spinners and
+                          // rejects partial input like "-" mid-typing). The minus
+                          // comes from the ± button, since Android's decimal keypad
+                          // has no minus key — see toggleCoordinateSign.
+                          inputMode="decimal"
+                          autoFocus
+                          value={coordLat}
+                          onChange={(e) => {
+                            setCoordLat(e.target.value);
+                            setCoordError(null);
+                          }}
+                          placeholder={`-${maxLatitude} to ${maxLatitude}`}
+                          className="h-8 w-full min-w-0 rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                        />
+                        <button
+                          type="button"
+                          // Not focusable and mousedown-prevented so tapping it
+                          // cannot dismiss the Android keyboard mid-entry.
+                          tabIndex={-1}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setCoordLat((v) => toggleCoordinateSign(v));
+                            setCoordError(null);
+                          }}
+                          title="Toggle north / south (negative = south)"
+                          aria-label="Toggle sign of latitude"
+                          className={cn(
+                            "h-8 w-8 shrink-0 rounded-md border border-input text-sm font-semibold transition-colors",
+                            coordLat.trim().startsWith("-")
+                              ? "bg-blue-600/15 text-blue-700"
+                              : "text-slate-600 hover:bg-slate-100",
+                          )}
+                        >
+                          ±
+                        </button>
+                      </div>
                     </div>
                     <div className="flex-1">
                       <label className="text-xs font-medium text-muted-foreground">
                         Longitude
                       </label>
-                      <input
-                        inputMode="decimal"
-                        value={coordLng}
-                        onChange={(e) => {
-                          setCoordLng(e.target.value);
-                          setCoordError(null);
-                        }}
-                        placeholder="-180 to 180"
-                        className="mt-1 h-8 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-                      />
+                      <div className="mt-1 flex items-center gap-1">
+                        <input
+                          inputMode="decimal"
+                          value={coordLng}
+                          onChange={(e) => {
+                            setCoordLng(e.target.value);
+                            setCoordError(null);
+                          }}
+                          placeholder="-180 to 180"
+                          className="h-8 w-full min-w-0 rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                        />
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setCoordLng((v) => toggleCoordinateSign(v));
+                            setCoordError(null);
+                          }}
+                          title="Toggle east / west (negative = west)"
+                          aria-label="Toggle sign of longitude"
+                          className={cn(
+                            "h-8 w-8 shrink-0 rounded-md border border-input text-sm font-semibold transition-colors",
+                            coordLng.trim().startsWith("-")
+                              ? "bg-blue-600/15 text-blue-700"
+                              : "text-slate-600 hover:bg-slate-100",
+                          )}
+                        >
+                          ±
+                        </button>
+                      </div>
                     </div>
                   </div>
                   {/* The limit is projection-dependent, so state it up front rather
                       than only failing after the user has typed a pole latitude. */}
                   <p className="mt-2 text-[10px] leading-snug text-slate-500">
-                    This base map can display latitudes up to ±
-                    {maxLatitude === 90 ? "90" : maxLatitude.toFixed(4)}°.
+                    Use ± for south / west. This base map can display latitudes up
+                    to ±{maxLatitude === 90 ? "90" : maxLatitude.toFixed(4)}°.
                   </p>
                   {coordError && (
                     <p className="mt-2 text-[11px] leading-snug text-red-600">
@@ -1199,18 +1358,8 @@ const ZoomControls = ({
                   W
                 </text>
 
-                {/* Compass needle - red kite/diamond shape pointing north (rotates with bearing) */}
-                <g transform={`rotate(${-bearing} 42 42)`}>
-                  {/* North-pointing red diamond/kite - larger and more prominent */}
-                  <path
-                    d="M 42 8 L 50 32 L 42 26 L 34 32 Z"
-                    fill="#ef4444"
-                    stroke="#dc2626"
-                    strokeWidth="1"
-                  />
-                  {/* Center pivot point */}
-                  <circle cx="42" cy="42" r="3" fill="#1f2937" />
-                </g>
+                {/* Compass needle - red kite/diamond shape pointing north (rotates with the live bearing) */}
+                <CompassNeedle />
               </svg>
             </div>
           </div>
@@ -1233,9 +1382,7 @@ const ZoomControls = ({
               <ZoomIn className="h-4 w-4" />
             </Button>
           </LongPressHint>
-          <div className="min-w-[36px] text-center text-xs font-semibold text-slate-800">
-            {zoom.toFixed(2)}
-          </div>
+          <LiveZoomReadout />
           <LongPressHint hint="Zoom Out">
             <Button
               size="icon"

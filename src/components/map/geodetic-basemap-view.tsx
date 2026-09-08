@@ -1040,7 +1040,8 @@ export function GeodeticBasemapView({
     size.height,
   ]);
 
-  // Selection rectangle (fill + white outline) shown while dragging a zoom box.
+  // Selection rectangle (fill + blue outline) shown while dragging a zoom
+  // box; blue (not white) so it reads on light basemap tiles too.
   const rubberBandLayers = useMemo(() => {
     if (!rubberBand) return [];
     const minLng = Math.min(rubberBand.start[0], rubberBand.end[0]);
@@ -1069,7 +1070,7 @@ export function GeodeticBasemapView({
         id: "geo-rubber-band-outline",
         data: [{ path: ring }],
         getPath: (d: { path: [number, number][] }) => d.path,
-        getColor: [255, 255, 255, 255],
+        getColor: [59, 130, 246, 255],
         getWidth: 2,
         widthUnits: "pixels",
         widthMinPixels: 2,

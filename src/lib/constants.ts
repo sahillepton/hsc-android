@@ -102,3 +102,24 @@ export const TOPOLOGY_ALTITUDE_RESOLUTION_M = 1.2192;
  *  positioned; the same number seeds the initial selection so the settings panel
  *  and the tooltip always agree. */
 export const TOOLTIP_DEFAULT_ATTR_LIMIT = 10;
+
+/**
+ * How long the "Press back again to exit" arm-window lasts, in ms.
+ *
+ * Android's own convention for this is ~2 s; long enough that a deliberate
+ * double-press is comfortable, short enough that a press now and another a
+ * minute later never adds up to an accidental exit.
+ */
+export const BACK_EXIT_CONFIRM_MS = 2000;
+
+/**
+ * Android package ids for which this WebView IS the whole app.
+ *
+ * `App.getInfo().id` reports the real package name (Capacitor's AppPlugin reads
+ * it from the PackageManager, not from capacitor.config.json — the host ships a
+ * copy of our config, so the config's appId cannot tell the two apart). Anything
+ * not listed here means the GIS screen is embedded in someone else's app, where
+ * exiting is not ours to do: App.exitApp() calls Activity.finish(), which there
+ * would finish the HOST's activity and take their whole app down.
+ */
+export const STANDALONE_APP_IDS: readonly string[] = ["com.example.app"];

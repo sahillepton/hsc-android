@@ -1,4 +1,5 @@
 import Map, { useControl, NavigationControl } from "react-map-gl/mapbox";
+import type { ViewStateChangeEvent } from "react-map-gl/mapbox";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { PickingInfo } from "@deck.gl/core";
 import {
@@ -33,6 +34,7 @@ import ZoomControls from "./zoom-controls";
 import Tooltip from "./tooltip";
 import { useUdpLayers } from "./udp-layers";
 import { useUdpDataStore } from "@/store/udp-data-store";
+import { setMapView } from "@/store/map-view-store";
 // import UdpConfigDialog from "./udp-config-dialog"; // Removed: port is now fixed at 40074
 import OfflineLocationTracker from "./offline-location-tracker";
 import { initializeTileServer } from "./tile-folder-dialog";
@@ -115,6 +117,8 @@ import {
   TILES_FOLDER_NAME,
   STORAGE_PERMISSION_TIMEOUT_MS,
   DEFAULT_LAYER_MAX_ZOOM,
+  BACK_EXIT_CONFIRM_MS,
+  STANDALONE_APP_IDS,
 } from "@/lib/constants";
 import {
   upsertManifestEntry,
@@ -1102,11 +1106,16 @@ const MapComponent = ({
   // the standalone APK and the integrated host app.
   //
   // Back now dismisses ONE layer of UI per press, innermost first, which is the
-  // Android convention. Only the last case is delegated to the host: with nothing
-  // open we do NOT call App.exitApp() ourselves — in an integrated build the GIS
-  // screen is one screen inside someone else's activity stack, and killing the
-  // process would be hostile. Returning without calling preventDefault lets the
-  // host decide (pop its own back stack, or exit if it is the root).
+  // Android convention. What happens once nothing is left to close depends on who
+  // is hosting us — see `handleExhaustedBackPress`.
+  //
+  // NOTE for anyone editing this: there is no "let the event through" from JS.
+  // Capacitor's AppPlugin registers an ENABLED OnBackPressedCallback on the
+  // Activity's dispatcher, and when JS has a `backButton` listener its native
+  // handler only notifies JS — it never calls the host's own callbacks and offers
+  // no preventDefault. So a handler that returns without doing anything does not
+  // defer to the host, it SWALLOWS the press. That is exactly why back was dead:
+  // the chain below returned false and nothing else ran.
   const backHandlerStateRef = useRef({
     hoverInfo: false,
     drawingMode: false,
@@ -1167,8 +1176,81 @@ const MapComponent = ({
       onToggleLayersBox?.();
       return true;
     }
-    return false; // nothing of ours to close — let the host handle it
+    return false; // nothing of ours is open
   };
+
+  /**
+   * Which app owns this WebView: true for our own APK, false when the GIS screen
+   * is embedded in someone else's app, null if it could not be determined.
+   *
+   * No longer decides whether back may exit — both builds exit now — but kept
+   * because it is the only reliable way to tell the two apart (see
+   * STANDALONE_APP_IDS) and the distinction is worth having to hand for
+   * diagnostics and for any behaviour that does need to differ.
+   */
+  const isStandaloneAppRef = useRef<boolean | null>(null);
+  /** True while a second back press would exit. Cleared after the window. */
+  const backExitArmedRef = useRef(false);
+  const backExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * A back press with none of our own UI left to dismiss.
+   *
+   * One policy for both builds, in this order:
+   *
+   *   1. If the host wired the optional navigation hook, let it navigate. That is
+   *      "back to the previous state" — a host that can pop its own stack or
+   *      switch tab should do that rather than close.
+   *   2. Otherwise: arm, tell the user, and exit on a second press inside the
+   *      window. This is the Android convention, and it is what the standalone
+   *      APK always does since it has no host to defer to.
+   *
+   * The exit applies to the integrated build too, per an explicit product
+   * decision. Worth knowing what that means, because it is not reversible from
+   * here: `App.exitApp()` is `Activity.finish()`, so in the integrated build back
+   * closes the HOST's activity — the whole MCSA app, not just the GIS tab. On a
+   * SIP handset that can mean dropping out of the app mid-call, which is why the
+   * two-press confirmation is kept there as well and why step 1 exists: a host
+   * that registers `GisHostNavigation` never reaches the exit at all.
+   */
+  const handleExhaustedBackPress = useCallback(async () => {
+    const { App } = await import("@capacitor/app");
+
+    // Step 1 — a cooperating host navigates instead of closing. See
+    // kt-msca-plugins/INTEGRATION.md for the ~20 lines this needs on their side.
+    const hostBack = (
+      window as unknown as {
+        Capacitor?: {
+          Plugins?: { GisHostNavigation?: { goBack?: () => Promise<void> } };
+        };
+      }
+    ).Capacitor?.Plugins?.GisHostNavigation?.goBack;
+    if (hostBack) {
+      try {
+        await hostBack();
+        return;
+      } catch (err) {
+        // Hook present but broken: fall through to the exit path rather than
+        // leaving back dead, which is the bug this whole handler exists to fix.
+        console.warn("[Back] Host navigation hook failed:", err);
+      }
+    }
+
+    // Step 2 — confirm, then close.
+    if (backExitArmedRef.current) {
+      backExitArmedRef.current = false;
+      if (backExitTimerRef.current) clearTimeout(backExitTimerRef.current);
+      await App.exitApp();
+      return;
+    }
+    backExitArmedRef.current = true;
+    toast.notification("Press back again to exit");
+    if (backExitTimerRef.current) clearTimeout(backExitTimerRef.current);
+    backExitTimerRef.current = setTimeout(() => {
+      backExitArmedRef.current = false;
+      backExitTimerRef.current = null;
+    }, BACK_EXIT_CONFIRM_MS);
+  }, []);
 
   useEffect(() => {
     let listener: { remove: () => void } | undefined;
@@ -1177,8 +1259,19 @@ const MapComponent = ({
     (async () => {
       try {
         const { App } = await import("@capacitor/app");
+        // Resolve who is hosting us BEFORE the first press can arrive, so the
+        // very first back is already judged correctly.
+        try {
+          const info = await App.getInfo();
+          isStandaloneAppRef.current = STANDALONE_APP_IDS.includes(info.id);
+        } catch {
+          // Could not tell — stay on the cautious side and behave as embedded.
+          isStandaloneAppRef.current = null;
+        }
         const l = await App.addListener("backButton", () => {
-          backHandlerActionsRef.current();
+          // Close one layer of our own UI, or apply the exhausted-press policy.
+          if (backHandlerActionsRef.current()) return;
+          void handleExhaustedBackPress();
         });
         if (removed) l.remove();
         else listener = l;
@@ -1190,8 +1283,13 @@ const MapComponent = ({
     return () => {
       removed = true;
       listener?.remove();
+      if (backExitTimerRef.current) {
+        clearTimeout(backExitTimerRef.current);
+        backExitTimerRef.current = null;
+      }
+      backExitArmedRef.current = false;
     };
-  }, []);
+  }, [handleExhaustedBackPress]);
 
   const [routeState, setRouteState] = useState<RouteToolState>(
     initialRouteToolState,
@@ -1206,6 +1304,30 @@ const MapComponent = ({
     if (active) setHoverInfo(undefined);
   }, [isRoutePanelOpen, routeState.pickMode, setHoverInfo]);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
+  /**
+   * Cancellation for the running import.
+   *
+   * A ref, not state: the running `handleUpload` closure has to observe the flag
+   * flipping AFTER it started, which a captured state value can never do.
+   * `uploadCancelRequested` is the state half, purely so the button can show that
+   * the press was registered while the current file finishes.
+   *
+   * Cancellation lands at CHECKPOINTS — between picked files and between entries
+   * of a ZIP — not mid-file. Parsing a single file (GeoTIFF decode, shapefile
+   * read) is synchronous inside its parser and holds the main thread, so there is
+   * no point inside it at which anything could observe a flag or a click. That is
+   * also exactly the case the user hits: a long import is long because it is many
+   * files, or a big archive, and both are interruptible between items.
+   */
+  const uploadCancelRef = useRef<{ cancelled: boolean } | null>(null);
+  const [uploadCancelRequested, setUploadCancelRequested] = useState(false);
+
+  const cancelUpload = useCallback(() => {
+    const token = uploadCancelRef.current;
+    if (!token || token.cancelled) return;
+    token.cancelled = true;
+    setUploadCancelRequested(true);
+  }, []);
   const [isExporting, setIsExporting] = useState(false);
   const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
   // Flips true once the mapbox instance has loaded. The custom-basemap apply effect
@@ -1324,6 +1446,17 @@ const MapComponent = ({
    * fused provider is willing to wait.
    */
   const pendingLocationRecenterRef = useRef(false);
+  /**
+   * True from the tap on the location button until the one-shot
+   * getCurrentPosition settles. Drives the button's disabled state + spinner;
+   * the ref mirror (unlike state, it cannot lag a render) swallows a second
+   * tap, so a double-tap can neither toggle location straight back off nor
+   * start a second fetch. Deliberately bounded to the one-shot: the cold-GPS
+   * "still acquiring" wait is not part of it, so the user can always turn
+   * location off during a long search.
+   */
+  const [isFetchingLocation, setIsFetchingLocation] = useState(false);
+  const locationFetchInFlightRef = useRef(false);
   const [geodeticCommand, setGeodeticCommand] = useState<{
     center: [number, number];
     zoom: number;
@@ -2354,11 +2487,53 @@ const MapComponent = ({
   // COMMENTED OUT: Not using HTML file input anymore - using NativeUploader directly
   // const fileInputRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * After an import, surface what was just added: open the Layers panel and
+   * close any other panel, mirroring the exclusivity the toolbar's Layers
+   * toggle enforces. The open state is read through the back-handler mirror
+   * ref, not this closure: handleUpload runs for a long time (picker, staging,
+   * parsing) and the user may have opened or closed the panel meanwhile, so a
+   * stale "closed" would toggle the panel shut instead of open.
+   */
+  const showLayersPanelAfterImport = () => {
+    setIsMeasurementBoxOpen(false);
+    setIsNetworkBoxOpen(false);
+    setIsRoutePanelOpen(false);
+    if (!backHandlerStateRef.current.isLayersBoxOpen) onToggleLayersBox?.();
+  };
+
   const handleUpload = async () => {
     if (isProcessingFiles) {
       return; // Prevent multiple uploads while processing
     }
     setIsProcessingFiles(true);
+
+    // This run's cancel token. Published on the ref so the toolbar button can
+    // flip it, and read back at every checkpoint below.
+    const cancelToken = { cancelled: false };
+    uploadCancelRef.current = cancelToken;
+    setUploadCancelRequested(false);
+
+    // Every staged/extracted file this run created, so a cancel can remove the
+    // ones it never got to. Paths already deleted on the happy path stay in the
+    // list — deleting them again just fails harmlessly, which is far safer than
+    // trying to track exactly which are still live.
+    const stagedPathsToClean: string[] = [];
+
+    /**
+     * Yield the main thread, then report whether the user has pressed cancel.
+     *
+     * The yield is the important half: without returning to the event loop the
+     * button could not paint, let alone be clicked, so a flag check alone would
+     * never see anything. A macrotask (setTimeout 0) is used rather than a
+     * microtask because only a macrotask lets React commit and the browser
+     * dispatch the pending click.
+     */
+    const cancelledAtCheckpoint = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return cancelToken.cancelled;
+    };
+
     const toastId = toast.loading("Opening file picker...");
     let progressListener: { remove: () => void } | null = null;
     let pickerClosedListener: { remove: () => void } | null = null;
@@ -2437,6 +2612,15 @@ const MapComponent = ({
         return;
       }
 
+      // Staged copies now exist on disk, so from here on a cancel has something
+      // to clean up.
+      for (const f of result.files) {
+        if (f?.absolutePath) stagedPathsToClean.push(f.absolutePath);
+      }
+
+      // Set by a checkpoint when the user presses cancel, so the summary below
+      // reports a cancellation instead of claiming success.
+      let cancelledByUser = false;
       // Track if any files were actually valid
       let hasValidFiles = false;
       // Remember the reason the most-recent file was rejected so the
@@ -2464,6 +2648,13 @@ const MapComponent = ({
       for (let i = 0; i < result.files.length; i++) {
         const stagedFile = result.files[i];
         const fileNum = i + 1;
+
+        // Between files: the natural place to stop. Anything already imported is
+        // a complete layer and is kept.
+        if (await cancelledAtCheckpoint()) {
+          cancelledByUser = true;
+          break;
+        }
 
         try {
           // Step 1: Check if file extension is allowed
@@ -2648,6 +2839,17 @@ const MapComponent = ({
               ) {
                 const extractedFile = extractResult.files[zipFileIdx];
                 const zipFileNum = zipFileIdx + 1;
+
+                // A big archive is the main reason an import runs long, so its
+                // entries get the same treatment as top-level files. Breaking
+                // here leaves the outer loop to notice and stop as well.
+                if (await cancelledAtCheckpoint()) {
+                  cancelledByUser = true;
+                  break;
+                }
+                if (extractedFile?.absolutePath) {
+                  stagedPathsToClean.push(extractedFile.absolutePath);
+                }
 
                 if (
                   fileBasenameLower(extractedFile.name) === "sketch_layers.zip"
@@ -3190,6 +3392,33 @@ const MapComponent = ({
         }
       }
 
+      // Cancelled: delete the staged copies this run made and say what was kept.
+      // Checked BEFORE the `hasValidFiles` gate below, which would otherwise
+      // report "no valid files found" for an import stopped before its first one.
+      if (cancelledByUser) {
+        let removed = 0;
+        for (const absolutePath of stagedPathsToClean) {
+          try {
+            await NativeUploader.deleteFile({ absolutePath });
+            removed++;
+          } catch {
+            // Already deleted on the happy path, or never written — either way
+            // there is nothing to do and nothing worth telling the user.
+          }
+        }
+        toast.update(
+          toastId,
+          hasValidFiles
+            ? `Import cancelled. Layers already added were kept; ${removed} staged file(s) removed.`
+            : `Import cancelled. ${removed} staged file(s) removed.`,
+          "notification",
+        );
+        setTimeout(() => toast.dismiss(toastId), 5000);
+        // The layers that made it in before the cancel are still new to the user.
+        if (hasValidFiles) showLayersPanelAfterImport();
+        return;
+      }
+
       // Check if any files were actually valid. If not, surface the most
       // recent specific rejection reason (size cap, blocked extension, etc.)
       // so the user understands why — the generic "only GIS files allowed"
@@ -3209,6 +3438,7 @@ const MapComponent = ({
         `Successfully uploaded and rendered file(s)`,
         "success",
       );
+      showLayersPanelAfterImport();
     } catch (error) {
       console.error("[FileUpload] Error:", error);
       const errorMessage =
@@ -3253,6 +3483,9 @@ const MapComponent = ({
       }
       // Always reset processing state
       setIsProcessingFiles(false);
+      // Disarm: a later press must not flip a token nobody is reading.
+      uploadCancelRef.current = null;
+      setUploadCancelRequested(false);
     }
   };
 
@@ -3860,6 +4093,9 @@ const MapComponent = ({
 
   // Toggle user location visibility and focus to location when enabling
   const handleToggleUserLocation = async () => {
+    // A tap while the fetch is in flight is the second half of a double-tap
+    // (or an impatient retry): ignore it, the first tap's fetch is running.
+    if (locationFetchInFlightRef.current) return;
     const willShow = !showUserLocation;
     setShowUserLocation(willShow);
 
@@ -3894,6 +4130,8 @@ const MapComponent = ({
     try {
       // If we don't have location yet, fetch it and show loading toast
       if (!userLocation) {
+        locationFetchInFlightRef.current = true;
+        setIsFetchingLocation(true);
         toastId = toast.loading("Fetching your location");
 
         // Request permissions first
@@ -3997,6 +4235,11 @@ const MapComponent = ({
       // Play Services missing) — nothing to wait for, so stop tracking.
       toast.error(message || "Failed to get location");
       setShowUserLocation(false);
+    } finally {
+      // Re-enable the button on every outcome (found, denied, terminal error,
+      // cold GPS still searching). A no-op when no fetch was started.
+      locationFetchInFlightRef.current = false;
+      setIsFetchingLocation(false);
     }
   };
 
@@ -7302,6 +7545,9 @@ const MapComponent = ({
         maxPitch={MAP_MAX_PITCH}
         onLoad={async (map: any) => {
           const mapInstance = map.target;
+          // Seed the live zoom badge / compass needle with the camera the map
+          // actually came up with; onMove keeps them current from here on.
+          setMapView(mapInstance.getZoom(), mapInstance.getBearing());
 
           // Remove any old raster tile sources/layers if they exist (we only use tile server)
           try {
@@ -7563,6 +7809,13 @@ const MapComponent = ({
         onTouchEnd={handleTouchEnd}
         dragPan={!rubberBandMode && !isRubberBandDrawing}
         touchZoomRotate={!rubberBandMode && !isRubberBandDrawing}
+        onMove={(e: ViewStateChangeEvent) => {
+          // Live zoom badge + compass needle: publish the camera every frame to
+          // the tiny map-view store. Only its two leaf subscribers inside
+          // ZoomControls re-render; the throttled mapZoom / mapBearing state
+          // below (layer visibility, tooltips) stays on move-end.
+          setMapView(e.viewState.zoom, e.viewState.bearing);
+        }}
         onMoveEnd={(e: any) => {
           if (e && e.viewState) {
             // Throttle updates to reduce re-renders during map operations
@@ -7668,8 +7921,10 @@ const MapComponent = ({
             commandView={geodeticCommand}
             onViewStateChange={(center, zoom) => {
               geodeticViewRef.current = { center, zoom };
-              // Keep the on-screen zoom readout (mapZoom → the "6.13" display, and
-              // zoom-dependent layer visibility) in sync with the live geodetic
+              // Live zoom badge (the geodetic camera has no bearing; keep it).
+              setMapView(orthoZoomToMapbox(zoom));
+              // Keep mapZoom (zoom-dependent layer visibility, tooltip thresholds) in
+              // sync with the live geodetic
               // zoom. Throttled via the same ref the mapbox path uses so the
               // deck-managed (uncontrolled) camera stays smooth on low-end
               // devices — no per-frame parent re-render.
@@ -7727,7 +7982,6 @@ const MapComponent = ({
       {/* COMMENTED OUT: HTML file input - using NativeUploader directly to avoid double picker */}
       <ZoomControls
         mapRef={mapRef}
-        zoom={mapZoom}
         bearing={mapBearing}
         onToggleLayersBox={() => {
           const willBeOpen = !(isLayersBoxOpen ?? false);
@@ -7776,7 +8030,10 @@ const MapComponent = ({
         maxLatitude={geodeticBasemap ? 90 : MAX_MERCATOR_LATITUDE}
         onCaptureScreenshot={handleCaptureScreenshot}
         showUserLocation={showUserLocation}
+        isFetchingLocation={isFetchingLocation}
         isProcessingFiles={isProcessingFiles}
+        onCancelUpload={cancelUpload}
+        isCancellingUpload={uploadCancelRequested}
         isExporting={isExporting}
         cameraPopoverProps={{
           isOpen: isCameraPopoverOpen,
