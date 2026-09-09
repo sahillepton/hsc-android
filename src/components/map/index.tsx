@@ -66,6 +66,8 @@ import {
   usePendingPolygon,
   useIgrsPreference,
   useSetIgrsPreference,
+  useUtmPreference,
+  useSetUtmPreference,
   useUserLocation,
 } from "@/store/layers-store";
 import {
@@ -1060,6 +1062,8 @@ const MapComponent = ({
   const { pendingPolygonPoints, setPendingPolygonPoints } = usePendingPolygon();
   const useIgrs = useIgrsPreference();
   const setUseIgrs = useSetIgrsPreference();
+  const useUtm = useUtmPreference();
+  const setUseUtm = useSetUtmPreference();
   const {
     userLocation,
     showUserLocation,
@@ -8059,6 +8063,10 @@ const MapComponent = ({
         igrsToggleProps={{
           value: useIgrs,
           onToggle: (checked) => setUseIgrs(checked),
+        }}
+        utmToggleProps={{
+          value: useUtm,
+          onToggle: (checked) => setUseUtm(checked),
         }}
         rubberBandMode={rubberBandMode}
         onToggleRubberBand={() => setRubberBandMode((prev) => !prev)}

@@ -6,6 +6,7 @@ import {
   formatDistance,
   calculateIgrs,
 } from "./utils";
+import { calculateUtm } from "./utm";
 import { EARTH_RADIUS_M, METERS_PER_DEGREE_LAT } from "./constants";
 
 export const computeLayerBounds = (layer: LayerProps) => {
@@ -513,7 +514,7 @@ const formatCoordinateWithSystem = (
 
 export const formatLayerMeasurements = (
   layer: LayerProps,
-  options?: { useIgrs?: boolean }
+  options?: { useIgrs?: boolean; useUtm?: boolean }
 ): LayerMeasurement[] => {
   const measurements: LayerMeasurement[] = [];
   const pushMeasurement = (label: string, value?: string | null) => {
@@ -544,6 +545,14 @@ export const formatLayerMeasurements = (
     if (!value) return;
     const isIgrsUnavailable = options?.useIgrs && !isIgrsAvailable(point);
     measurements.push({ label, value, isIgrsUnavailable });
+    // UTM is an ADDITIONAL row (never a replacement), as in the tooltip, so
+    // it composes with the IGRS/LAT-LONG row above instead of fighting it.
+    if (options?.useUtm) {
+      measurements.push({
+        label: label.replace(/\s*\([^)]*\)\s*$/, " (UTM)"),
+        value: calculateUtm(point[0], point[1]) ?? "Not available",
+      });
+    }
   };
 
   if (layer.type === "point") {

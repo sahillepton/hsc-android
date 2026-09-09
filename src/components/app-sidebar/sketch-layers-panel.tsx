@@ -21,6 +21,7 @@ import {
   useHoverInfo,
   useLayers,
   useIgrsPreference,
+  useUtmPreference,
 } from "@/store/layers-store";
 import LayerPopover from "./layer-popover";
 import SketchLayerCardSkeleton from "./sketch-layer-card-skeleton";
@@ -223,6 +224,7 @@ const SketchLayersPanel = ({
 }: SketchLayersPanelProps) => {
   const { layers } = useLayers();
   const useIgrs = useIgrsPreference();
+  const useUtm = useUtmPreference();
   const { focusLayer, deleteLayer, updateLayer } = useFocusLayerRequest();
   const { hoverInfo, setHoverInfo } = useHoverInfo();
 
@@ -411,7 +413,7 @@ const SketchLayersPanel = ({
             layer.type === "azimuth"
               ? { ...layer, azimuthAngleDeg: azimuthAngle }
               : layer,
-            { useIgrs },
+            { useIgrs, useUtm },
           );
           const badgeClass =
             typeAccent[layer.type] ?? "text-slate-600 bg-slate-100";

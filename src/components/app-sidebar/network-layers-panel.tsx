@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -67,7 +67,6 @@ const NetworkLayersPanel = ({
   // mapbox camera and the geodetic OrthographicView. See handleFocusLayer.
   const { setFocusLayerRequest } = useFocusLayerRequest();
   const [focusedLayerId, setFocusedLayerId] = useState<string | null>(null);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const topologyData = useUdpDataStore((state) => state.udpData.topology);
   const {
     motherNodeSymbol,
@@ -288,34 +287,10 @@ const NetworkLayersPanel = ({
     };
   };
 
-  const toggleGroupExpansion = (groupId: string) => {
-    setExpandedGroups((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(groupId)) {
-        newSet.delete(groupId);
-      } else {
-        newSet.add(groupId);
-      }
-      return newSet;
-    });
-  };
-
-  // Initialize all groups as expanded by default when topology groups change
+  // Connected components are still detected — the map renderer, the legend
+  // and the icon picker key off them — but the console no longer shows them
+  // as groups (see renderTopology).
   const topologyGroups = detectTopologyGroups();
-  useEffect(() => {
-    if (topologyGroups.length > 0) {
-      const allGroupIds = topologyGroups.map((g) => g.id);
-      setExpandedGroups((prev) => {
-        const newSet = new Set(prev);
-        allGroupIds.forEach((id) => {
-          if (!newSet.has(id)) {
-            newSet.add(id);
-          }
-        });
-        return newSet;
-      });
-    }
-  }, [topologyGroups.map((g) => g.id).join(",")]);
 
   // Collect active group icons (to disable them in mother node picker)
   const activeGroupIconSet = new Set<string>();
@@ -552,109 +527,100 @@ const NetworkLayersPanel = ({
     );
   };
 
-  const renderTopologyGroups = () => {
+  // One card for the whole topology: every connection, flat, no "Group A/B"
+  // headers or per-group expanders. In practice there is a single connected
+  // component, so the grouping only added chrome. Presentation only — the
+  // detection above is unchanged.
+  const renderTopology = () => {
     if (topologyGroups.length === 0) {
       return null;
     }
 
+    const isTopologyFocused = focusedLayerId === "topology-group-all";
+    const allNodeIds = new Set<number>();
+    topologyGroups.forEach((g) => g.nodeIds.forEach((id) => allNodeIds.add(id)));
+    const connections = topologyGroups
+      .flatMap((g) => g.connections)
+      .sort((a, b) => a.from - b.from || a.to - b.to);
+    // Nodes in a component with no link at all (the old per-group fallback list).
+    const unlinkedNodes = topologyGroups
+      .filter((g) => g.connections.length === 0)
+      .flatMap((g) => Array.from(g.nodeIds))
+      .sort((a, b) => a - b);
+
     return (
-      <>
-        {topologyGroups.map((group) => {
-          const isGroupFocused =
-            focusedLayerId === `topology-group-${group.id}`;
-          const isExpanded = expandedGroups.has(group.id);
+      <div className="mb-3">
+        <div
+          className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
+            isTopologyFocused ? "border-l-4 border-l-sky-300" : ""
+          }`}
+        >
+          <div className="absolute right-3 top-3 flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              title="Focus Topology"
+              onClick={(e) => {
+                e.stopPropagation();
+                // Same focus path as before, over every node at once.
+                handleFocusGroup({ id: "all", nodeIds: allNodeIds });
+              }}
+            >
+              <LocateFixed size={10} />
+            </Button>
+            <div onClick={(e) => e.stopPropagation()}>
+              {/* Icon config for the topology nodes. Symbols are stored per
+                  component; with one component (the normal case) this is all of
+                  them. */}
+              <UdpLayerConfigPopover
+                layerId={`topology-group-${topologyGroups[0].id}`}
+                layerName="Topology Nodes"
+              />
+            </div>
+          </div>
 
-          return (
-            <div key={group.id} className="mb-3">
-              <div
-                className={`relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm ${
-                  isGroupFocused ? "border-l-4 border-l-sky-300" : ""
-                }`}
-              >
-                <div className="absolute right-3 top-3 flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    title={`Focus Group ${group.id}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleFocusGroup(group);
-                    }}
-                  >
-                    <LocateFixed size={10} />
-                  </Button>
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <UdpLayerConfigPopover
-                      layerId={`topology-group-${group.id}`}
-                      layerName={`Group ${group.id}`}
-                    />
-                  </div>
-                </div>
-
-                <div className="min-w-0 pr-14">
-                  <div
-                    className="flex items-start gap-2 cursor-pointer select-none"
-                    onClick={() => toggleGroupExpansion(group.id)}
-                  >
-                    <div className="flex items-center gap-2">
-                      {isExpanded ? (
-                        <ChevronDown
-                          size={14}
-                          className="text-muted-foreground"
-                        />
-                      ) : (
-                        <ChevronRight
-                          size={14}
-                          className="text-muted-foreground"
-                        />
-                      )}
-                      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
-                        <span className="truncate text-[16px]">
-                          Group {group.id}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {isExpanded && (
-                    <div className="mt-3 border-t border-border/40 pt-3 w-full">
-                      {group.connections.length > 0 ? (
-                        <>
-                          <div className="text-[12px] font-semibold text-zinc-700 mb-2">
-                            Connections:
-                          </div>
-                          <div className="space-y-1">
-                            {group.connections.map((conn, idx) => (
-                              <div
-                                key={idx}
-                                className="text-[12px] font-mono text-zinc-600"
-                              >
-                                {conn.from} ↔ {conn.to} (SNR {conn.snr})
-                              </div>
-                            ))}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="space-y-1">
-                          {Array.from(group.nodeIds).map((nodeId) => (
-                            <div
-                              key={nodeId}
-                              className="text-[12px] font-mono text-zinc-600"
-                            >
-                              Node {nodeId}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+          <div className="min-w-0 pr-14">
+            <div className="flex items-start gap-2">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+                <span className="truncate text-[16px]">Topology</span>
               </div>
             </div>
-          );
-        })}
-      </>
+
+            <div className="mt-3 border-t border-border/40 pt-3 w-full">
+              {connections.length > 0 && (
+                <>
+                  <div className="text-[12px] font-semibold text-zinc-700 mb-2">
+                    Connections:
+                  </div>
+                  <div className="space-y-1">
+                    {connections.map((conn) => (
+                      <div
+                        key={`${conn.from}-${conn.to}`}
+                        className="text-[12px] font-mono text-zinc-600"
+                      >
+                        {conn.from} ↔ {conn.to} (SNR {conn.snr})
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {unlinkedNodes.length > 0 && (
+                <div className={connections.length > 0 ? "space-y-1 mt-2" : "space-y-1"}>
+                  {unlinkedNodes.map((nodeId) => (
+                    <div
+                      key={nodeId}
+                      className="text-[12px] font-mono text-zinc-600"
+                    >
+                      Node {nodeId}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     );
   };
 
@@ -783,7 +749,7 @@ const NetworkLayersPanel = ({
           </div>
         )}
         {hasTopologyData && renderLegend()}
-        {hasTopologyData && renderTopologyGroups()}
+        {hasTopologyData && renderTopology()}
       </div>
     );
   };

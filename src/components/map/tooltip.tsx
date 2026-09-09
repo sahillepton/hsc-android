@@ -5,6 +5,7 @@ import {
   formatLabel,
   calculateIgrs,
 } from "@/lib/utils";
+import { calculateUtm } from "@/lib/utm";
 import {
   TOOLTIP_DEFAULT_ATTR_LIMIT,
   TOPOLOGY_ALTITUDE_RESOLUTION_M,
@@ -19,6 +20,7 @@ import {
   useHoverInfo,
   useLayers,
   useIgrsPreference,
+  useUtmPreference,
   useUserLocation,
 } from "@/store/layers-store";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -60,6 +62,8 @@ import {
  * never be mistaken for a coordinate that simply was not rendered.
  */
 const IGRS_UNAVAILABLE = "Not available";
+/** Same wording for a point outside UTM's 80°S–84°N coverage. */
+const UTM_UNAVAILABLE = "Not available";
 
 const SHORTEST_ROUTE_TOOLTIP_HIDDEN_PROPS = new Set<string>(
   SHORTEST_ROUTE_INTERNAL_PROPS,
@@ -217,6 +221,7 @@ const Tooltip = () => {
   const { hoverInfo } = useHoverInfo();
   const { layers } = useLayers();
   const useIgrs = useIgrsPreference();
+  const useUtm = useUtmPreference();
   const { showUserLocation, userLocation } = useUserLocation();
   const [coarsePointer, setCoarsePointer] = useState(
     () =>
@@ -700,7 +705,7 @@ const Tooltip = () => {
     const w = el.offsetWidth;
     const h = el.offsetHeight;
     setBoxSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
-  }, [hoverInfo, object, useIgrs, mapZoom]);
+  }, [hoverInfo, object, useIgrs, useUtm, mapZoom]);
 
   if (!hoverInfo) {
     return null;
@@ -787,8 +792,8 @@ const Tooltip = () => {
       : `[${point[1]?.toFixed(6)}°, ${point[0]?.toFixed(6)}°]`;
 
   /**
-   * The rows one coordinate contributes: lat/long always, and IGRS as its OWN
-   * row while the toggle is on.
+   * The rows one coordinate contributes: lat/long always, then IGRS and UTM
+   * each as its OWN row while its toggle is on.
    *
    * The toggle used to REPLACE lat/long with the grid reference, and
    * `calculateIgrs` returns null outside the grid's window (~68–104°E,
@@ -808,10 +813,16 @@ const Tooltip = () => {
     const rows = [
       { label: `${p}Latitude, Longitude`, value: formatLatLng(point) },
     ];
-    if (!useIgrs) return rows;
-    const igrs =
-      point && point.length >= 2 ? calculateIgrs(point[0], point[1]) : null;
-    rows.push({ label: `${p}IGRS`, value: igrs ?? IGRS_UNAVAILABLE });
+    if (useIgrs) {
+      const igrs =
+        point && point.length >= 2 ? calculateIgrs(point[0], point[1]) : null;
+      rows.push({ label: `${p}IGRS`, value: igrs ?? IGRS_UNAVAILABLE });
+    }
+    if (useUtm) {
+      const utm =
+        point && point.length >= 2 ? calculateUtm(point[0], point[1]) : null;
+      rows.push({ label: `${p}UTM`, value: utm ?? UTM_UNAVAILABLE });
+    }
     return rows;
   };
 
@@ -920,6 +931,12 @@ const Tooltip = () => {
         properties.push({
           label: "IGRS",
           value: calculateIgrs(lng, lat) ?? IGRS_UNAVAILABLE,
+        });
+      }
+      if (useUtm && showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+        properties.push({
+          label: "UTM",
+          value: calculateUtm(lng, lat) ?? UTM_UNAVAILABLE,
         });
       }
 
@@ -1048,6 +1065,12 @@ const Tooltip = () => {
             properties.push({
               label: "IGRS",
               value: calculateIgrs(lng, lat) ?? IGRS_UNAVAILABLE,
+            });
+          }
+          if (useUtm && showRow(RASTER_TOOLTIP_ATTRIBUTES.LATITUDE)) {
+            properties.push({
+              label: "UTM",
+              value: calculateUtm(lng, lat) ?? UTM_UNAVAILABLE,
             });
           }
 

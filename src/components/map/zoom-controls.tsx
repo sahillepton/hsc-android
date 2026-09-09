@@ -192,6 +192,7 @@ const ZoomControls = ({
   isExporting = false,
   alertButtonProps,
   igrsToggleProps,
+  utmToggleProps,
   rubberBandMode,
   onToggleRubberBand,
   isRoutePanelOpen,
@@ -233,6 +234,8 @@ const ZoomControls = ({
   cameraPopoverProps?: CameraPopoverProps;
   alertButtonProps?: AlertButtonProps;
   igrsToggleProps?: IgrsToggleProps;
+  /** Same control as IGRS, for the UTM grid (same {value, onToggle} shape). */
+  utmToggleProps?: IgrsToggleProps;
   rubberBandMode?: boolean;
   onToggleRubberBand?: () => void;
   isRoutePanelOpen?: boolean;
@@ -1051,6 +1054,18 @@ const ZoomControls = ({
                 checked={igrsToggleProps.value}
                 onCheckedChange={igrsToggleProps.onToggle}
                 aria-label="Toggle IGRS coordinates"
+              />
+            </div>
+          )}
+          {utmToggleProps && (
+            <div className="flex items-center gap-2 px-3 border-l border-slate-200">
+              <span className="text-[10px] font-semibold text-slate-800 uppercase">
+                UTM
+              </span>
+              <Switch
+                checked={utmToggleProps.value}
+                onCheckedChange={utmToggleProps.onToggle}
+                aria-label="Toggle UTM coordinates"
               />
             </div>
           )}

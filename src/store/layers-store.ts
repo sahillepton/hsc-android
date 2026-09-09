@@ -66,6 +66,9 @@ interface LayerState {
   setPendingPolygonPoints: (points: [number, number][]) => void;
   useIgrs: boolean;
   setUseIgrs: (value: boolean) => void;
+  /** Show UTM (zone/band, easting, northing) alongside lat/long — same shape as useIgrs. */
+  useUtm: boolean;
+  setUseUtm: (value: boolean) => void;
   userLocation: {
     lat: number;
     lng: number;
@@ -321,6 +324,8 @@ const useLayerStore = create<LayerState>()((set, get) => ({
   setShowUserLocation: (show) => set({ showUserLocation: show }),
   useIgrs: false,
   setUseIgrs: (value) => set({ useIgrs: value }),
+  useUtm: false,
+  setUseUtm: (value) => set({ useUtm: value }),
 }));
 
 export const useLayers = () => {
@@ -510,3 +515,6 @@ export const loadAutosavedLayers = async () => {
 export const useIgrsPreference = () => useLayerStore((state) => state.useIgrs);
 export const useSetIgrsPreference = () =>
   useLayerStore((state) => state.setUseIgrs);
+export const useUtmPreference = () => useLayerStore((state) => state.useUtm);
+export const useSetUtmPreference = () =>
+  useLayerStore((state) => state.setUseUtm);
