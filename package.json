@@ -16,7 +16,8 @@
     "build:electron": "node scripts/build-electron.js",
     "electron": "yarn build:electron && electron .",
     "prepackage": "node scripts/fetch-gdal-electron-prebuild.mjs",
-    "package": "yarn prepackage && yarn electron:build && yarn build:electron && electron-builder",
+    "package": "yarn prepackage && yarn electron:build && yarn build:electron && electron-builder --dir && node scripts/make-portable.cjs",
+    "package:installers": "yarn prepackage && yarn electron:build && yarn build:electron && electron-builder",
     "sync:mcsa-gis-android-sync": "node scripts/sync-integration-assets.mjs"
   },
   "dependencies": {
@@ -97,6 +98,9 @@
       "output": "release"
     },
     "npmRebuild": false,
+    "electronDownload": {
+      "isVerifyChecksum": false
+    },
     "files": [
       "dist/**/*",
       "dist-electron/**/*"

@@ -186,6 +186,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
+import LayerLoadBadge from "@/components/map/layer-load-badge";
 
 /** Last path segment, lowercased (handles Windows `\\` and nested zip paths). */
 function fileBasenameLower(fileName: string): string {
@@ -1461,6 +1462,10 @@ const MapComponent = ({
    */
   const [isFetchingLocation, setIsFetchingLocation] = useState(false);
   const locationFetchInFlightRef = useRef(false);
+  // Mirrors ZoomControls' collapse toggle: the Storage Paths button and the GPU
+  // load badge (top right) hide with the tool bar, so 'hide tool bar' really
+  // does leave nothing but the map, compass and zoom column.
+  const [toolbarHidden, setToolbarHidden] = useState(false);
   const [geodeticCommand, setGeodeticCommand] = useState<{
     center: [number, number];
     zoom: number;
@@ -4553,7 +4558,7 @@ const MapComponent = ({
       path,
       color: [68, 68, 68],
       lineWidth: 6,
-      visible: false, // Hidden by default - user can toggle visibility in layers panel
+      visible: true, // A sketch stays on screen after its tool is closed; only imports start hidden.
       segmentDistancesKm,
       totalDistanceKm,
     };
@@ -4672,7 +4677,7 @@ const MapComponent = ({
         }`,
         polygon: [closedPath],
         color: [32, 32, 32, 180],
-        visible: false, // Hidden by default - user can toggle visibility in layers panel
+        visible: true, // Same as the tap-to-close polygon above: the sketch stays on screen.
       };
       addLayer(newLayer);
       lastLayerCreationTimeRef.current = Date.now();
@@ -7982,7 +7987,13 @@ const MapComponent = ({
 
       <Tooltip />
       {/* Settings Button with Paths Info */}
-      <SettingsButton tileServerUrl={tileServerUrl} />
+      {/* `hidden` (display:none) rather than unmounting, so the Storage Paths
+          popover keeps its resolved paths and the badge its state. */}
+      <div hidden={toolbarHidden}>
+        <SettingsButton tileServerUrl={tileServerUrl} />
+        {/* GPU load advice once many layers are loaded (counts, what to hide). */}
+        <LayerLoadBadge />
+      </div>
       {/* COMMENTED OUT: HTML file input - using NativeUploader directly to avoid double picker */}
       <ZoomControls
         mapRef={mapRef}
@@ -8086,6 +8097,7 @@ const MapComponent = ({
           }
         }}
         onCloseRoutePanel={closeRoutePanel}
+        onToolbarHiddenChange={setToolbarHidden}
       />
 
       {/* UDP Config Dialog removed - port is now fixed at 40074, data arrives automatically */}

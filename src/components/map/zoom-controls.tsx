@@ -198,6 +198,7 @@ const ZoomControls = ({
   isRoutePanelOpen,
   onToggleRoutePanel,
   onCloseRoutePanel,
+  onToolbarHiddenChange,
 }: {
   mapRef: React.RefObject<any>;
   /** Throttled (move-end) bearing — only the hover title uses it; the needle follows the live store. */
@@ -241,6 +242,9 @@ const ZoomControls = ({
   isRoutePanelOpen?: boolean;
   onToggleRoutePanel?: () => void;
   onCloseRoutePanel?: () => void;
+  /** Fired when the tool bar is collapsed / expanded, so the parent can hide
+   *  its own top-right chrome (Storage Paths, GPU load) along with it. */
+  onToolbarHiddenChange?: (hidden: boolean) => void;
 }) => {
   const { drawingMode, setDrawingMode } = useDrawingMode();
   const [isSaving, setIsSaving] = useState(false);
@@ -251,6 +255,11 @@ const ZoomControls = ({
   // stack and this toggle deliberately STAY visible — hiding them too would leave
   // no way back, and they are the controls you still want while inspecting.
   const [toolbarHidden, setToolbarHidden] = useState(false);
+  // One place for both set sites (the collapse button and the drag-to-expand
+  // pointer-up), so the parent always mirrors the real state.
+  useEffect(() => {
+    onToolbarHiddenChange?.(toolbarHidden);
+  }, [toolbarHidden, onToolbarHiddenChange]);
   /**
    * Free position of the collapsed toggle, in viewport pixels. `null` = parked in
    * its default bottom-right corner.

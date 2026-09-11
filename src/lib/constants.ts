@@ -123,3 +123,13 @@ export const BACK_EXIT_CONFIRM_MS = 2000;
  * would finish the HOST's activity and take their whole app down.
  */
 export const STANDALONE_APP_IDS: readonly string[] = ["com.example.app"];
+
+/**
+ * Ceiling behind the "GPU load" badge (top right, beside Storage Paths).
+ *
+ * A rough, tunable number for how many FEATURES an offline tablet draws
+ * smoothly at once: every visible feature is geometry to tessellate, upload and
+ * draw. Past it the app lags, and Android kills the WebView when graphics memory
+ * runs out. The badge advises against it; it never hides anything itself.
+ */
+export const RECOMMENDED_VISIBLE_FEATURES = 50_000;
