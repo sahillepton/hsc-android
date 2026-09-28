@@ -4,6 +4,82 @@ import { useNetworkLayersVisible } from "@/store/layers-store";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
 import { useUdpDataStore } from "@/store/udp-data-store";
 import { Udp } from "../../plugins/udp";
+import {
+  UDP_PORT,
+  UDP_NO_DATA_TIMEOUT_MS,
+  UDP_STALE_CHECK_INTERVAL_MS,
+  UDP_STALE_THRESHOLD_MS,
+} from "@/lib/constants";
+
+/**
+ * TODO(REVERT): When true, ignore socket payload and parse this fixed buffer instead.
+ * Use this for testing — works with Vite HMR without rebuilding `dist-electron/main.cjs`.
+ * (Electron main.ts changes are NOT applied until `yarn build:electron`.)
+ */
+const UDP_USE_TEST_BUFFER = false;
+const UDP_TEST_BUFFER = new Uint8Array(
+  [
+    "22",
+    "0",
+    "56",
+    "1",
+    "3",
+    "192",
+    "168",
+    "148",
+    "20",
+    "4",
+    "1",
+    "3",
+    "20",
+    "1",
+    "181",
+    "237",
+    "96",
+    "4",
+    "161",
+    "155",
+    "160",
+    "0",
+    "180",
+    "192",
+    "168",
+    "148",
+    "20",
+    "2",
+    "1",
+    "3",
+    "100",
+    "1",
+    "178",
+    "224",
+    "32",
+    "4",
+    "158",
+    "142",
+    "96",
+    "0",
+    "120",
+    "192",
+    "168",
+    "148",
+    "20",
+    "3",
+    "1",
+    "4",
+    "20",
+    "1",
+    "180",
+    "102",
+    "192",
+    "4",
+    "160",
+    "21",
+    "0",
+    "0",
+    "150",
+  ].map((h) => parseInt(h, 16)),
+);
 
 // Shared connection state to prevent multiple instances from creating duplicate connections
 const globalConnectionState = {
@@ -15,404 +91,15 @@ const globalConnectionState = {
   lastMessageTime: null as number | null,
 };
 
+/** Log effective topology UDP payload once per page load (dev/debug). */
+let rawTopologyPacketLoggedOnce = false;
+
 // UdpLayerData interface is now defined in udp-data-store.ts
 
-// Binary parsing functions (from websocket-server.js)
-const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
-  const msg = new Uint8Array(msgBuffer);
-  const bin = Array.from(msg)
-    .map((b) => b.toString(2).padStart(8, "0"))
-    .join("");
+type BinaryInput = ArrayBuffer | Uint8Array;
 
-  const readBits = (start: number, len: number) =>
-    parseInt(bin.slice(start, start + len), 2);
-
-  const readI16 = (start: number) => {
-    const v = readBits(start, 16);
-    return v & 0x8000 ? v - 0x10000 : v;
-  };
-
-  const readU32 = (start: number) => readBits(start, 32);
-
-  const readString = (start: number, len: number) => {
-    const bytes = [];
-    for (let i = 0; i < len; i++) {
-      const byte = readBits(start + i * 8, 8);
-      if (byte === 0) break;
-      bytes.push(byte);
-    }
-    return String.fromCharCode(...bytes);
-  };
-
-  const header = {
-    msgId: readBits(0, 8),
-    opcode: readBits(8, 8),
-    reserved0: readBits(16, 32),
-    reserved1: readBits(48, 32),
-    reserved2: readBits(80, 32),
-  };
-
-  const opcode = header.opcode;
-
-  if (opcode === 101) {
-    // Network Members Positions
-    const numMembers = readBits(128, 8);
-    let offset = 160;
-    const members = [];
-    for (let i = 0; i < numMembers; i++) {
-      const m = {
-        globalId: readU32(offset),
-        latitude: readU32(offset + 32) / 11930469,
-        longitude: readU32(offset + 64) / 11931272.17,
-        altitude: readI16(offset + 96),
-        veIn: readI16(offset + 112),
-        veIe: readI16(offset + 128),
-        veIu: readI16(offset + 144),
-        trueHeading: readI16(offset + 160),
-        reserved: readI16(offset + 176),
-        opcode: 101,
-      };
-      members.push(m);
-      offset += 192;
-    }
-    return {
-      type: "networkMemberPositions",
-      opcode: 101,
-      data: members,
-      header,
-    };
-  }
-
-  if (opcode === 102) {
-    // Network Members Metadata
-    const numMembers = readBits(128, 8);
-    let offset = 160;
-    const members = [];
-
-    for (let i = 0; i < numMembers; i++) {
-      // opcode102B - globalData (40 bytes = 320 bits)
-      const globalId = readU32(offset);
-      const callsign = readString(offset + 32, 6);
-      const callsignId = readBits(offset + 80, 16);
-
-      // opcode102C - internalData (4 bytes = 32 bits, starts at offset+320)
-      const internalOffset = offset + 320;
-      const isMotherAc = readBits(internalOffset, 8);
-      const trackId = readBits(internalOffset + 8, 16);
-
-      // opcode102D - regionalData (starts at offset+352)
-      const regionalOffset = offset + 352;
-      const isValid = readBits(regionalOffset, 8);
-      const role = readBits(regionalOffset + 8, 8);
-      const idnTag = readBits(regionalOffset + 16, 8);
-      const acCategory = readBits(regionalOffset + 24, 8);
-      const isMissionLeader = readBits(regionalOffset + 32, 8);
-      const isRogue = readBits(regionalOffset + 40, 8);
-      const isFormation = readBits(regionalOffset + 48, 8);
-      const recoveryEmergency = readBits(regionalOffset + 56, 8);
-      const displayId = readBits(regionalOffset + 64, 16);
-      const acType = readBits(regionalOffset + 80, 16);
-      const bimg = readBits(regionalOffset + 96, 16);
-      const timg = readBits(regionalOffset + 112, 16);
-      const c2Critical = readBits(regionalOffset + 128, 8);
-      const controllingNodeId = readBits(regionalOffset + 136, 8);
-      const ctn = readString(regionalOffset + 152, 5);
-
-      // opcode102G - metadata (8 bytes, part of regionalData at regionalOffset+192)
-      const metadataOffset = regionalOffset + 192;
-      const baroAltitude = readI16(metadataOffset);
-      const groundSpeed = readI16(metadataOffset + 16);
-      const mach = readI16(metadataOffset + 32);
-
-      // opcode102E - battleGroupData (starts at offset+608 = offset+320+32+256)
-      const battleOffset = offset + 608;
-      const bgIsValid = readBits(battleOffset, 8);
-      const q1LockFinalizationState = readBits(battleOffset + 8, 8);
-      const q2LockFinalizationState = readBits(battleOffset + 16, 8);
-      const fuelState = readBits(battleOffset + 24, 8);
-      const q1LockGlobalId = readU32(battleOffset + 32);
-      const q2LockGlobalId = readU32(battleOffset + 64);
-      const radarLockGlobalId = readU32(battleOffset + 96);
-      const combatEmergency = readBits(battleOffset + 160, 8);
-      const chaffRemaining = readBits(battleOffset + 168, 8);
-      const flareRemaining = readBits(battleOffset + 176, 8);
-      const masterArmStatus = readBits(battleOffset + 184, 8);
-      const acsStatus = readBits(battleOffset + 192, 8);
-      const fuel = readBits(battleOffset + 200, 8);
-      const numOfWeapons = readBits(battleOffset + 208, 8);
-      const numOfSensors = readBits(battleOffset + 216, 8);
-
-      // Parse weaponsData
-      let weaponsOffset = battleOffset + 224;
-      const weaponsData = [];
-      for (let w = 0; w < numOfWeapons; w++) {
-        weaponsData.push({
-          code: readBits(weaponsOffset, 8),
-          value: readBits(weaponsOffset + 8, 8),
-        });
-        weaponsOffset += 32;
-      }
-
-      // Parse sensorsData
-      let sensorsOffset = weaponsOffset;
-      const sensorsData = [];
-      for (let s = 0; s < numOfSensors; s++) {
-        sensorsData.push({
-          code: readBits(sensorsOffset, 8),
-          value: readBits(sensorsOffset + 8, 8),
-        });
-        sensorsOffset += 32;
-      }
-
-      const member = {
-        globalId,
-        callsign,
-        callsignId,
-        isMotherAc,
-        trackId,
-        isValid,
-        role,
-        idnTag,
-        acCategory,
-        isMissionLeader,
-        isRogue,
-        isFormation,
-        recoveryEmergency,
-        displayId,
-        acType,
-        bimg,
-        timg,
-        c2Critical,
-        controllingNodeId,
-        ctn,
-        baroAltitude,
-        groundSpeed,
-        mach,
-        battleGroupData: {
-          isValid: bgIsValid,
-          q1LockFinalizationState,
-          q2LockFinalizationState,
-          fuelState,
-          q1LockGlobalId,
-          q2LockGlobalId,
-          radarLockGlobalId,
-          combatEmergency,
-          chaffRemaining,
-          flareRemaining,
-          masterArmStatus,
-          acsStatus,
-          fuel,
-          weaponsData,
-          sensorsData,
-        },
-        opcode: 102,
-      };
-
-      members.push(member);
-
-      // Calculate next member offset (base + variable weapons + sensors)
-      offset = sensorsOffset;
-    }
-
-    return {
-      type: "networkMemberMetadata",
-      opcode: 102,
-      data: members,
-      header,
-    };
-  }
-
-  if (opcode === 104) {
-    // Targets
-    const numTargets = readBits(128, 16);
-    let offset = 160;
-    const targets = [];
-    for (let i = 0; i < numTargets; i++) {
-      const t = {
-        globalId: readU32(offset),
-        latitude: readU32(offset + 32) / 11930469,
-        longitude: readU32(offset + 64) / 11931272.17,
-        altitude: readI16(offset + 96),
-        heading: readI16(offset + 112),
-        groundSpeed: readI16(offset + 128),
-        reserved0: readBits(offset + 144, 8),
-        reserved1: readBits(offset + 152, 8),
-        range: readU32(offset + 160),
-        opcode: 104,
-      };
-      targets.push(t);
-      offset += 192;
-    }
-    return { type: "targets", opcode: 104, data: targets, header };
-  }
-
-  if (opcode === 103) {
-    // Engaging Members
-    const numEngagingMembers = readBits(128, 8);
-    let offset = 160;
-    const engagingMembers = [];
-    for (let i = 0; i < numEngagingMembers; i++) {
-      const e = {
-        globalId: readU32(offset),
-        engagementTargetGid: readU32(offset + 32),
-        weaponLaunch: readBits(offset + 64, 8),
-        hangFire: readBits(offset + 72, 8),
-        tth: readBits(offset + 80, 8),
-        tta: readBits(offset + 88, 8),
-        engagementTargetWeaponCode: readBits(offset + 96, 8),
-        reserved: readBits(offset + 104, 8),
-        dMax1: readI16(offset + 112),
-        dMax2: readI16(offset + 128),
-        dmin: readI16(offset + 144),
-        opcode: 103,
-      };
-      engagingMembers.push(e);
-      offset += 160;
-    }
-    return {
-      type: "engagingMembers",
-      opcode: 103,
-      data: engagingMembers,
-      header,
-    };
-  }
-
-  if (opcode === 105) {
-    // Targets with SA Leader
-    const numTargets = readBits(128, 16);
-    let offset = 160;
-    const targets = [];
-    for (let i = 0; i < numTargets; i++) {
-      const globalId = readU32(offset);
-      const displayId = readBits(offset + 32, 16);
-      const callSign = readString(offset + 48, 6);
-      const callsignId = readBits(offset + 96, 16);
-      const iffSensor = readBits(offset + 112, 8);
-      const trackSource = readBits(offset + 120, 8);
-      const grouped = readBits(offset + 128, 8);
-      const isLocked = readBits(offset + 136, 8);
-      const localTrackNumber = readBits(offset + 144, 16);
-      const saLeader = readU32(offset + 160);
-      const acType = readBits(offset + 192, 16);
-      const acCategory = readBits(offset + 208, 8);
-      const nodeId = readBits(offset + 216, 8);
-      const idnTag = readBits(offset + 224, 8);
-      const nctr = readBits(offset + 232, 8);
-      const jam = readBits(offset + 240, 8);
-      const numOfContributors = readBits(offset + 248, 8);
-      const lno = readBits(offset + 256, 8);
-      const ctn = readString(offset + 264, 5);
-
-      // Parse contributors
-      let contributorsOffset = offset + 320;
-      const contributors = [];
-      for (let c = 0; c < numOfContributors; c++) {
-        contributors.push({
-          displayId: readBits(contributorsOffset, 16),
-          lno: readBits(contributorsOffset + 16, 8),
-        });
-        contributorsOffset += 32;
-      }
-
-      const target = {
-        globalId,
-        displayId,
-        callSign,
-        callsignId,
-        iffSensor,
-        trackSource,
-        grouped,
-        isLocked,
-        localTrackNumber,
-        saLeader,
-        acType,
-        acCategory,
-        nodeId,
-        idnTag,
-        nctr,
-        jam,
-        numOfContributors,
-        lno,
-        ctn,
-        contributors,
-        opcode: 105,
-      };
-
-      targets.push(target);
-      offset = contributorsOffset;
-    }
-    return { type: "targets105", opcode: 105, data: targets, header };
-  }
-
-  if (opcode === 106) {
-    // Threats
-    const senderGlobalId = readU32(128);
-    const numOfThreats = readBits(160, 8);
-    let offset = 192;
-    const threats = [];
-    for (let i = 0; i < numOfThreats; i++) {
-      const t = {
-        threatId: readBits(offset, 8),
-        isSearchMode: readBits(offset + 8, 8),
-        isLockOn: readBits(offset + 16, 8),
-        threatType: readBits(offset + 24, 8),
-        threatRange: readBits(offset + 32, 8),
-        reserved: readBits(offset + 40, 24),
-        threatAzimuth: readBits(offset + 64, 16),
-        threatFrequency: readBits(offset + 80, 16),
-        opcode: 106,
-      };
-      threats.push(t);
-      offset += 96;
-    }
-    return {
-      type: "threats",
-      opcode: 106,
-      data: threats,
-      header,
-      senderGlobalId,
-    };
-  }
-
-  if (opcode === 122) {
-    // Geo Messages
-    const globalId = readU32(128);
-    const messageId = readU32(160);
-    const senderGid = readU32(192);
-    const latitude = readU32(224) / 11930469;
-    const longitude = readU32(256) / 11931272.17;
-    const altitude = readI16(288);
-    const missionId = readBits(304, 16);
-    const source = readBits(320, 8);
-    const geoType = readBits(328, 8);
-    const action = readBits(336, 8);
-    const nodeId = readBits(344, 8);
-
-    return {
-      type: "geoMessages",
-      opcode: 122,
-      data: [
-        {
-          globalId,
-          messageId,
-          senderGid,
-          latitude,
-          longitude,
-          altitude,
-          missionId,
-          source,
-          geoType,
-          action,
-          nodeId,
-          opcode: 122,
-        },
-      ],
-      header,
-    };
-  }
-
-  return { type: "unknown", opcode, header };
-};
+/** Wire INT32 lat/lon → decimal degrees (`public/network-topology-struct.md`). */
+const TOPO_LATLON_RAW_TO_DEG = 0.000000083819;
 
 /**
  * Parse topology binary data from UDP server (NEW FORMAT)
@@ -432,13 +119,13 @@ const parseBinaryMessage = (msgBuffer: ArrayBuffer) => {
  *         - UINT8 id (1 byte)
  *         - UINT8 snr (1 byte)
  *     - positional:
- *       - INT32 latitude (4 bytes, big-endian, microdegrees)
- *       - INT32 longitude (4 bytes, big-endian, microdegrees)
+ *       - INT32 latitude (4 bytes, big-endian; degrees = raw × TOPO_LATLON_RAW_TO_DEG)
+ *       - INT32 longitude (4 bytes, big-endian; same scale)
  *       - UINT16 altitude (2 bytes, big-endian)
- *     - int8_t RSSI (1 byte, signed, -128 to 127)
+ *     (no RSSI — entry ends after altitude)
  */
 const parseTopologyBinary = (
-  buffer: ArrayBuffer
+  buffer: BinaryInput,
 ): {
   motherNodeId: number | null;
   nodes: Map<
@@ -449,28 +136,32 @@ const parseTopologyBinary = (
       lat: number;
       long: number;
       altitude: number;
-      rssi: number;
       neighbors: Array<{ id: number; snr: number }>;
     }
   >;
   connections: Map<string, number>;
 } => {
-  const view = new DataView(buffer);
-  const bufferLength = buffer.byteLength;
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const bufferLength = bytes.byteLength;
   let offset = 0;
 
   const hasEnoughBytes = (bytesNeeded: number): boolean => {
     return offset + bytesNeeded <= bufferLength;
   };
 
-  const emptyResult = { motherNodeId: null as number | null, nodes: new Map() as Map<number, any>, connections: new Map() as Map<string, number> };
+  const emptyResult = {
+    motherNodeId: null as number | null,
+    nodes: new Map() as Map<number, any>,
+    connections: new Map() as Map<string, number>,
+  };
 
   // --- Header ---
 
   // ExtMsgType (1 byte)
   if (!hasEnoughBytes(1)) {
     console.warn(
-      "[Topology Parser] Buffer too small: cannot read ext_msg_type"
+      "[Topology Parser] Buffer too small: cannot read ext_msg_type",
     );
     return emptyResult;
   }
@@ -479,7 +170,7 @@ const parseTopologyBinary = (
   // payload_length (2 bytes, big-endian)
   if (!hasEnoughBytes(2)) {
     console.warn(
-      "[Topology Parser] Buffer too small: cannot read payload_length"
+      "[Topology Parser] Buffer too small: cannot read payload_length",
     );
     return emptyResult;
   }
@@ -498,7 +189,7 @@ const parseTopologyBinary = (
   // numFusedNodes (1 byte)
   if (!hasEnoughBytes(1)) {
     console.warn(
-      "[Topology Parser] Buffer too small: cannot read numFusedNodes"
+      "[Topology Parser] Buffer too small: cannot read numFusedNodes",
     );
     return emptyResult;
   }
@@ -513,7 +204,6 @@ const parseTopologyBinary = (
       lat: number;
       long: number;
       altitude: number;
-      rssi: number;
       neighbors: Array<{ id: number; snr: number }>;
     }
   >();
@@ -524,7 +214,7 @@ const parseTopologyBinary = (
     // IP[4] (4 bytes, big-endian / network byte order)
     if (!hasEnoughBytes(4)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read IP`
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read IP`,
       );
       break;
     }
@@ -534,7 +224,7 @@ const parseTopologyBinary = (
     // topology.id (1 byte)
     if (!hasEnoughBytes(1)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read topology id`
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read topology id`,
       );
       break;
     }
@@ -544,7 +234,7 @@ const parseTopologyBinary = (
     // topology.numNeighbors (1 byte)
     if (!hasEnoughBytes(1)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read numNeighbors`
+        `[Topology Parser] Buffer too small at node ${i + 1}/${numFusedNodes}: cannot read numNeighbors`,
       );
       break;
     }
@@ -556,7 +246,7 @@ const parseTopologyBinary = (
     for (let j = 0; j < numNeighbors; j++) {
       if (!hasEnoughBytes(2)) {
         console.warn(
-          `[Topology Parser] Buffer too small at node ${nodeId}, neighbor ${j + 1}/${numNeighbors}`
+          `[Topology Parser] Buffer too small at node ${nodeId}, neighbor ${j + 1}/${numNeighbors}`,
         );
         break;
       }
@@ -572,50 +262,42 @@ const parseTopologyBinary = (
       connections.set(`${smallerId}_${largerId}`, snr);
     }
 
-    // positional.latitude (INT32, big-endian, microdegrees)
+    // positional.latitude (INT32, big-endian → degrees via struct scale)
     if (!hasEnoughBytes(4)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read latitude`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read latitude`,
       );
       break;
     }
-    const lat = view.getInt32(offset, false) / 1000000;
+
+    const latRaw = view.getInt32(offset, false);
     offset += 4;
 
-    // positional.longitude (INT32, big-endian, microdegrees)
+    // positional.longitude (INT32, big-endian, same scale as latitude)
     if (!hasEnoughBytes(4)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read longitude`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read longitude`,
       );
       break;
     }
-    const long = view.getInt32(offset, false) / 1000000;
+    const lonRaw = view.getInt32(offset, false);
     offset += 4;
+
+    const lat = latRaw * TOPO_LATLON_RAW_TO_DEG;
+    const long = lonRaw * TOPO_LATLON_RAW_TO_DEG;
 
     // positional.altitude (UINT16, big-endian)
     if (!hasEnoughBytes(2)) {
       console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read altitude`
+        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read altitude`,
       );
       break;
     }
     const altitude = view.getUint16(offset, false);
     offset += 2;
 
-    // RSSI (int8_t, signed, -128 to 127)
-    if (!hasEnoughBytes(1)) {
-      console.warn(
-        `[Topology Parser] Buffer too small at node ${nodeId}: cannot read RSSI`
-      );
-      break;
-    }
-    const rssi = view.getInt8(offset);
-    offset += 1;
-
-    nodes.set(nodeId, { id: nodeId, ip, lat, long, altitude, rssi, neighbors });
+    nodes.set(nodeId, { id: nodeId, ip, lat, long, altitude, neighbors });
   }
-
-  console.log("[Topology] Parsed nodes:", JSON.stringify(Array.from(nodes.values()), null, 2));
 
   return { motherNodeId, nodes, connections };
 };
@@ -633,60 +315,31 @@ const hexToRgb = (hex: string): [number, number, number] => {
 };
 
 /**
- * Convert SNR value to color gradient using three configurable stops.
- * @param snr Signal-to-Noise Ratio (0-100)
- * @param colors Tuple of 3 hex color strings [low, mid, high]
- * @returns RGBA color array [R, G, B, A]
+ * Map SNR value to one of 4 fixed level colors.
+ * Poor: 0-24, Medium: 25-49, Good: 50-74, High: 75-100
  */
-const getSnrColor = (
-  snr: number,
-  colors: [string, string, string] = ["#FF0000", "#FFFF00", "#00FF00"]
-): [number, number, number, number] => {
-  const normalized = Math.max(0, Math.min(1, snr / 100));
+const getSnrColor = (snr: number): [number, number, number, number] => {
+  const clamped = Math.max(0, Math.min(100, snr));
 
-  const low = hexToRgb(colors[0]);
-  const mid = hexToRgb(colors[1]);
-  const high = hexToRgb(colors[2]);
-
-  if (normalized < 0.5) {
-    // Lerp low → mid
-    const t = normalized * 2;
-    return [
-      Math.round(low[0] + (mid[0] - low[0]) * t),
-      Math.round(low[1] + (mid[1] - low[1]) * t),
-      Math.round(low[2] + (mid[2] - low[2]) * t),
-      200,
-    ];
-  } else {
-    // Lerp mid → high
-    const t = (normalized - 0.5) * 2;
-    return [
-      Math.round(mid[0] + (high[0] - mid[0]) * t),
-      Math.round(mid[1] + (high[1] - mid[1]) * t),
-      Math.round(mid[2] + (high[2] - mid[2]) * t),
-      200,
-    ];
-  }
+  if (clamped < 25) return [...hexToRgb("#DC2626"), 210]; // Poor
+  if (clamped < 50) return [...hexToRgb("#F97316"), 210]; // Medium
+  if (clamped < 75) return [...hexToRgb("#EAB308"), 210]; // Good
+  return [...hexToRgb("#16A34A"), 210]; // High
 };
 
 /**
- * Interpolate line width from 3 breakpoints based on SNR value.
- * @param snr Signal-to-Noise Ratio (0-100)
- * @param widths [lowWidth, midWidth, highWidth]
- * @returns interpolated pixel width
+ * Map SNR value to one of 4 level widths.
+ * Poor: 0-24, Medium: 25-49, Good: 50-74, High: 75-100
  */
 const getSnrWidth = (
   snr: number,
-  widths: [number, number, number] = [1, 3, 5]
+  widths: [number, number, number, number] = [1, 3, 5, 7],
 ): number => {
-  const normalized = Math.max(0, Math.min(1, snr / 100));
-  if (normalized < 0.5) {
-    const t = normalized * 2;
-    return widths[0] + (widths[1] - widths[0]) * t;
-  } else {
-    const t = (normalized - 0.5) * 2;
-    return widths[1] + (widths[2] - widths[1]) * t;
-  }
+  const clamped = Math.max(0, Math.min(100, snr));
+  if (clamped < 25) return widths[0];
+  if (clamped < 50) return widths[1];
+  if (clamped < 75) return widths[2];
+  return widths[3];
 };
 
 export const useUdpLayers = (onHover?: (info: any) => void) => {
@@ -696,18 +349,43 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
   const setUdpData = useUdpDataStore((state) => state.setUdpData);
   const connectionError = useUdpDataStore((state) => state.connectionError);
   const setConnectionError = useUdpDataStore(
-    (state) => state.setConnectionError
+    (state) => state.setConnectionError,
   );
   const noDataWarning = useUdpDataStore((state) => state.noDataWarning);
   const setNoDataWarning = useUdpDataStore((state) => state.setNoDataWarning);
   const isConnected = useUdpDataStore((state) => state.isConnected);
   const setIsConnected = useUdpDataStore((state) => state.setIsConnected);
   const resetConnectionState = useUdpDataStore(
-    (state) => state.resetConnectionState
+    (state) => state.resetConnectionState,
   );
   const { networkLayersVisible } = useNetworkLayersVisible();
-  const { getNodeSymbol, getLayerSymbol, getGroupSymbol, nodeSymbols, motherNodeSymbol, snrColors, snrLineWidths } =
-    useUdpSymbolsStore();
+  const {
+    getNodeSymbol,
+    getLayerSymbol,
+    getGroupSymbol,
+    nodeSymbols,
+    motherNodeSymbol,
+    snrLineWidths,
+  } = useUdpSymbolsStore();
+  // Memoised on the store value. This was a bare array literal, so it got a NEW
+  // identity on every render — and it is a dependency of the `udpLayers` useMemo
+  // below, so EVERY topology/member/target deck layer was rebuilt on every render
+  // of this hook's host component. Fresh instances each time mean deck cannot match
+  // them to the previous ones: it re-runs a full prop diff and re-uploads
+  // attributes instead of skipping unchanged layers. With a live UDP feed driving
+  // frequent renders, the topology layers were being re-created faster than they
+  // settled, which is what made them appear only intermittently.
+  const effectiveSnrLineWidths = useMemo<
+    [number, number, number, number]
+  >(
+    () => [
+      snrLineWidths[0] ?? 1,
+      snrLineWidths[1] ?? 3,
+      snrLineWidths[2] ?? 5,
+      snrLineWidths[3] ?? 7,
+    ],
+    [snrLineWidths],
+  );
   const groupSymbols = useUdpSymbolsStore((state) => state.groupSymbols);
 
   useEffect(() => {
@@ -732,13 +410,36 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     globalConnectionState.isConnecting = true;
 
     let connectionEstablished = false;
+    let firstMessageHandled = false;
     let noDataTimeout: NodeJS.Timeout | null = null;
+    type UdpUpdater = (prev: any) => any;
+    let pendingUpdater: UdpUpdater | null = null;
+    let rafHandle: number | null = null;
     setConnectionError(null);
     setNoDataWarning(null);
 
+    const flushPendingUdpUpdate = () => {
+      if (!pendingUpdater) return;
+      const updater = pendingUpdater;
+      pendingUpdater = null;
+      setUdpData(updater);
+    };
+
+    const scheduleUdpUpdate = (updater: UdpUpdater) => {
+      const previous = pendingUpdater;
+      pendingUpdater = previous ? (state) => updater(previous(state)) : updater;
+
+      if (rafHandle === null) {
+        rafHandle = requestAnimationFrame(() => {
+          rafHandle = null;
+          flushPendingUdpUpdate();
+        });
+      }
+    };
+
     const connectUdp = async () => {
       try {
-        // Create UDP socket bound to port 40074 (handled in native plugin)
+        // Create UDP socket bound to UDP_PORT (handled in native plugin)
         await Udp.create({});
         connectionEstablished = true;
         globalConnectionState.isConnected = true;
@@ -749,11 +450,11 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         // Check for no data after 5 seconds
         noDataTimeout = setTimeout(() => {
           setNoDataWarning(
-            "No data received on port 40074. Please check network connectivity."
+            `No data received on port ${UDP_PORT}. Please check network connectivity.`,
           );
           setIsConnected(false);
           globalConnectionState.isConnected = false;
-        }, 5000);
+        }, UDP_NO_DATA_TIMEOUT_MS);
         globalConnectionState.noDataTimeout = noDataTimeout;
 
         // No registration message needed - data arrives automatically from intranet
@@ -765,10 +466,13 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
         globalConnectionState.staleCheckInterval = setInterval(() => {
           if (globalConnectionState.lastMessageTime === null) return;
           const now = Date.now();
-          if (now - globalConnectionState.lastMessageTime > 5000) {
-            console.log("[UDP] No data for 5s — clearing stale topology");
+          if (
+            now - globalConnectionState.lastMessageTime >
+            UDP_STALE_THRESHOLD_MS
+          ) {
             globalConnectionState.lastMessageTime = null;
-            setUdpData((prev) => ({
+            firstMessageHandled = false;
+            scheduleUdpUpdate((prev) => ({
               ...prev,
               topology: {
                 motherNodeId: null,
@@ -777,12 +481,12 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               },
             }));
           }
-        }, 2000);
+        }, UDP_STALE_CHECK_INTERVAL_MS);
       } catch (error: any) {
         console.error("❌ UDP connection error:", error);
         const errorMessage =
           error?.message || error?.toString() || "Unknown error";
-        const fullErrorMessage = `Failed to bind UDP socket on port 40074!\n\nError: ${errorMessage}\n\nPlease check network permissions.`;
+        const fullErrorMessage = `Failed to bind UDP socket on port ${UDP_PORT}!\n\nError: ${errorMessage}\n\nPlease check network permissions.`;
         setIsConnected(false);
         globalConnectionState.isConnected = false;
         globalConnectionState.isConnecting = false;
@@ -793,34 +497,40 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
     // Helper function to handle binary messages
     const handleBinaryMessage = (
-      buffer: ArrayBuffer | number[] | Uint8Array
+      buffer: ArrayBuffer | number[] | Uint8Array,
     ) => {
       // Track last message time for stale detection
       globalConnectionState.lastMessageTime = Date.now();
 
-      // Convert buffer to ArrayBuffer if needed
-      let arrayBuffer: ArrayBuffer;
+      // Convert incoming payload to a byte view without unnecessary copies.
+      let packet: Uint8Array;
       if (buffer instanceof ArrayBuffer) {
-        arrayBuffer = buffer;
+        packet = new Uint8Array(buffer);
       } else if (Array.isArray(buffer)) {
-        // Convert array to ArrayBuffer
-        const uint8Array = new Uint8Array(buffer);
-        arrayBuffer = uint8Array.buffer;
+        // Backward-compatible fallback for older payloads.
+        packet = Uint8Array.from(buffer);
       } else if (buffer instanceof Uint8Array) {
-        // Create a new ArrayBuffer from Uint8Array
-        arrayBuffer = new Uint8Array(buffer).buffer;
+        packet = buffer;
       } else {
         console.error("[Topology] Unknown buffer type:", typeof buffer);
         return;
       }
 
-      // Try topology parsing first
-      try {
-        const topologyData = parseTopologyBinary(arrayBuffer);
+      if (UDP_USE_TEST_BUFFER) {
+        packet = UDP_TEST_BUFFER;
+      }
 
-        // If successful and we got nodes, update store and return early
+      if (!rawTopologyPacketLoggedOnce) {
+        rawTopologyPacketLoggedOnce = true;
+      }
+
+      // Topology-only UDP mode.
+      try {
+        const topologyData = parseTopologyBinary(packet);
+
+        // If successful and we got nodes, update topology state.
         if (topologyData.nodes.size > 0) {
-          setUdpData((prev) => ({
+          scheduleUdpUpdate((prev) => ({
             ...prev,
             topology: {
               motherNodeId: topologyData.motherNodeId,
@@ -828,85 +538,9 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               connections: topologyData.connections,
             },
           }));
-          return; // Exit early, don't parse as regular binary
         }
-      } catch (e) {
-        // Not topology format, continue to regular parser
-        console.log("[Topology] Parse failed, trying regular parser:", e);
-      }
-
-      // Fall back to regular binary parser
-      const parsed = parseBinaryMessage(arrayBuffer);
-      const enrichedData = {
-        ...parsed,
-        timestamp: new Date().toISOString(),
-        rawLength: arrayBuffer.byteLength,
-      };
-
-      if (enrichedData.type === "networkMemberPositions") {
-        // Store positions in Map, then merge with metadata
-        setUdpData((prev) => {
-          const newPositions = new Map(prev.networkMemberPositions);
-          (enrichedData.data || []).forEach((member: any) => {
-            newPositions.set(member.globalId, member);
-          });
-
-          // Merge positions with metadata
-          const merged = Array.from(newPositions.values()).map((pos) => {
-            const meta = prev.networkMemberMetadata.get(pos.globalId);
-            const result = meta ? { ...pos, ...meta } : pos;
-            return result;
-          });
-
-          return {
-            ...prev,
-            networkMemberPositions: newPositions,
-            networkMembers: merged,
-          };
-        });
-      } else if (enrichedData.type === "networkMemberMetadata") {
-        // Store metadata in Map, then merge with positions
-        setUdpData((prev) => {
-          const newMetadata = new Map(prev.networkMemberMetadata);
-          (enrichedData.data || []).forEach((member: any) => {
-            newMetadata.set(member.globalId, member);
-          });
-
-          // Merge positions with metadata
-          const merged = Array.from(prev.networkMemberPositions.values()).map(
-            (pos) => {
-              const meta = newMetadata.get(pos.globalId);
-              const result = meta ? { ...pos, ...meta } : pos;
-              return result;
-            }
-          );
-
-          return {
-            ...prev,
-            networkMemberMetadata: newMetadata,
-            networkMembers: merged,
-          };
-        });
-      } else if (enrichedData.type === "targets") {
-        setUdpData((prev) => ({
-          ...prev,
-          targets: enrichedData.data || [],
-        }));
-      } else if (enrichedData.type === "engagingMembers") {
-        setUdpData((prev) => ({
-          ...prev,
-          engagingMembers: enrichedData.data || [],
-        }));
-      } else if (enrichedData.type === "threats") {
-        setUdpData((prev) => ({
-          ...prev,
-          threats: enrichedData.data || [],
-        }));
-      } else if (enrichedData.type === "geoMessages") {
-        setUdpData((prev) => ({
-          ...prev,
-          geoMessages: enrichedData.data || [],
-        }));
+      } catch {
+        // Ignore malformed/non-topology packets in topology-only mode.
       }
     };
 
@@ -921,9 +555,12 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           // Listen for UDP messages
           listener = await Udp.addListener("udpMessage", (event: any) => {
             try {
-              setNoDataWarning(null);
-              setIsConnected(true);
-              globalConnectionState.isConnected = true;
+              if (!firstMessageHandled) {
+                firstMessageHandled = true;
+                setNoDataWarning(null);
+                setIsConnected(true);
+                globalConnectionState.isConnected = true;
+              }
               if (globalConnectionState.noDataTimeout) {
                 clearTimeout(globalConnectionState.noDataTimeout);
                 globalConnectionState.noDataTimeout = null;
@@ -950,6 +587,12 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     setupListener();
 
     return () => {
+      if (rafHandle !== null) {
+        cancelAnimationFrame(rafHandle);
+        rafHandle = null;
+      }
+      flushPendingUdpUpdate();
+
       // Cleanup on unmount
       if (globalConnectionState.isConnected) {
         if (globalConnectionState.noDataTimeout) {
@@ -998,14 +641,14 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           typeof d.longitude === "number" &&
           typeof d.latitude === "number" &&
           !isNaN(d.longitude) &&
-          !isNaN(d.latitude)
+          !isNaN(d.latitude),
       );
 
       // Build connections based on controllingNodeId
       validMembers.forEach((member: any) => {
         if (member.controllingNodeId && member.controllingNodeId !== 0) {
           const controller = validMembers.find(
-            (m: any) => m.globalId === member.controllingNodeId
+            (m: any) => m.globalId === member.controllingNodeId,
           );
 
           if (controller) {
@@ -1035,7 +678,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           widthUnits: "pixels",
           widthMinPixels: 1,
           widthMaxPixels: 4,
-        })
+        }),
       );
     }
 
@@ -1048,7 +691,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             typeof d.longitude === "number" &&
             typeof d.latitude === "number" &&
             !isNaN(d.longitude) &&
-            !isNaN(d.latitude)
+            !isNaN(d.latitude),
         )
         .map((d: any) => ({
           globalId: d.globalId,
@@ -1073,7 +716,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
                 "naval_unit",
               ].includes(symbol);
               return {
-                url: `/icons/${symbol}.svg`,
+                url: `icons/${symbol}.svg`,
                 width: isRectangularIcon ? 28 : 32,
                 height: isRectangularIcon ? 20 : 32,
                 anchorY: isRectangularIcon ? 10 : 16,
@@ -1094,7 +737,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               getPosition: [udpData.networkMembers.length],
               getIcon: [udpData.networkMembers.length, nodeSymbols],
             },
-          })
+          }),
         );
       }
     }
@@ -1108,7 +751,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             typeof d.longitude === "number" &&
             typeof d.latitude === "number" &&
             !isNaN(d.longitude) &&
-            !isNaN(d.latitude)
+            !isNaN(d.latitude),
         )
         .map((d: any) => ({
           globalId: d.globalId,
@@ -1133,7 +776,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
                 "naval_unit",
               ].includes(symbol);
               return {
-                url: `/icons/${symbol}.svg`,
+                url: `icons/${symbol}.svg`,
                 width: isRectangularIcon ? 28 : 32,
                 height: isRectangularIcon ? 20 : 32,
                 anchorY: isRectangularIcon ? 10 : 16,
@@ -1154,7 +797,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               getPosition: [udpData.targets.length],
               getIcon: [udpData.targets.length, nodeSymbols],
             },
-          })
+          }),
         );
       }
     }
@@ -1167,7 +810,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           typeof d.longitude === "number" &&
           typeof d.latitude === "number" &&
           !isNaN(d.longitude) &&
-          !isNaN(d.latitude)
+          !isNaN(d.latitude),
       );
 
       if (validGeoMessages.length > 0) {
@@ -1179,7 +822,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             parameters: { depthTest: false, depthMask: false },
             getIcon: (_d: any) => {
               return {
-                url: `/icons/unknown_aircraft.svg`,
+                url: `icons/unknown_aircraft.svg`,
                 width: 32,
                 height: 32,
                 anchorY: 16,
@@ -1199,7 +842,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             updateTriggers: {
               getPosition: [udpData.geoMessages.length],
             },
-          })
+          }),
         );
       }
     }
@@ -1219,9 +862,15 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           connectionData.push({
             from: { longitude: fromNode.long, latitude: fromNode.lat },
             to: { longitude: toNode.long, latitude: toNode.lat },
+            // Node ids + the connections-map key let the tooltip follow this link
+            // LIVE: it re-reads the two nodes' current positions and the current SNR
+            // as they move, instead of showing a stale click-time snapshot.
+            fromId: nodeId1,
+            toId: nodeId2,
+            connectionKey: key,
             snr,
-            color: getSnrColor(snr, snrColors),
-            width: getSnrWidth(snr, snrLineWidths),
+            color: getSnrColor(snr),
+            width: getSnrWidth(snr, effectiveSnrLineWidths),
           });
         }
       });
@@ -1240,7 +889,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
             widthUnits: "pixels",
             widthMinPixels: 1,
             widthMaxPixels: 12,
-          })
+          }),
         );
       }
     }
@@ -1252,7 +901,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
           typeof node.long === "number" &&
           typeof node.lat === "number" &&
           !isNaN(node.long) &&
-          !isNaN(node.lat)
+          !isNaN(node.lat),
       );
 
       if (topologyNodes.length > 0) {
@@ -1339,8 +988,10 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
 
         const topologyNodesWithProps = topologyNodes.map((node) => ({
           globalId: node.id,
+          ip: node.ip,
           longitude: node.long,
           latitude: node.lat,
+          altitude: node.altitude,
           groupId: nodeToGroup.get(node.id) || "A", // Needed for icon selection
           isMotherNode: node.id === motherNodeId,
         }));
@@ -1357,11 +1008,11 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               if (d.isMotherNode) {
                 const mSymbol = motherNodeSymbol || "mother-fighter";
                 return {
-                  url: `/icons/${mSymbol}.svg`,
-                  width: 48,
-                  height: 48,
-                  anchorY: 24,
-                  anchorX: 24,
+                  url: `icons/${mSymbol}.svg`,
+                  width: 32,
+                  height: 32,
+                  anchorY: 16,
+                  anchorX: 16,
                   mask: false,
                 };
               }
@@ -1376,11 +1027,11 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
                 "naval_unit",
               ].includes(symbol);
               return {
-                url: `/icons/${symbol}.svg`,
-                width: isRectangularIcon ? 42 : 48,
-                height: isRectangularIcon ? 30 : 48,
-                anchorY: isRectangularIcon ? 15 : 24,
-                anchorX: isRectangularIcon ? 21 : 24,
+                url: `icons/${symbol}.svg`,
+                width: isRectangularIcon ? 30 : 32,
+                height: isRectangularIcon ? 22 : 32,
+                anchorY: isRectangularIcon ? 11 : 16,
+                anchorX: isRectangularIcon ? 15 : 16,
                 mask: false,
               };
             },
@@ -1388,19 +1039,24 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
               d.longitude || d.long,
               d.latitude || d.lat,
             ],
-            getSize: 48,
+            getSize: 32,
             sizeScale: 1,
             getPixelOffset: [0, 0],
             alphaCutoff: 0.001,
             billboard: true,
             sizeUnits: "pixels",
-            sizeMinPixels: 36,
-            sizeMaxPixels: 64,
+            sizeMinPixels: 22,
+            sizeMaxPixels: 40,
             updateTriggers: {
               getPosition: [udpData.topology.nodes.size],
-              getIcon: [udpData.topology.nodes.size, nodeSymbols, groupSymbols, motherNodeSymbol],
+              getIcon: [
+                udpData.topology.nodes.size,
+                nodeSymbols,
+                groupSymbols,
+                motherNodeSymbol,
+              ],
             },
-          })
+          }),
         );
       }
     }
@@ -1416,8 +1072,7 @@ export const useUdpLayers = (onHover?: (info: any) => void) => {
     nodeSymbols,
     groupSymbols,
     motherNodeSymbol,
-    snrColors,
-    snrLineWidths,
+    effectiveSnrLineWidths,
   ]);
 
   return { udpLayers, connectionError, noDataWarning, isConnected };

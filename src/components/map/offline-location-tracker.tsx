@@ -47,11 +47,10 @@ export default function OfflineLocationTracker() {
                 lng: pos.coords.longitude,
                 accuracy: pos.coords.accuracy || 0,
               };
-              //  console.log("User location updated:", location);
               setUserLocation(location);
               setUserLocationError(null);
             }
-          }
+          },
         );
 
         if (isMounted) {
@@ -61,7 +60,7 @@ export default function OfflineLocationTracker() {
         if (!isMounted) return;
         console.error("Geolocation error:", error);
         setUserLocationError(
-          error.message || "Failed to start location tracking"
+          error.message || "Failed to start location tracking",
         );
       }
     };

@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
+import { initSessionPaths } from "./sessions/sessionPathsInit";
 
 // Suppress harmless OpenGL warnings that occur during file operations
 // These are Android rendering warnings that don't affect functionality
@@ -19,8 +20,13 @@ import App from "./App.tsx";
 //   originalConsoleError.apply(console, args);
 // };
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>
-);
+async function boot() {
+  await initSessionPaths();
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
+
+void boot();

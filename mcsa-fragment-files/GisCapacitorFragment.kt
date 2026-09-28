@@ -22,10 +22,13 @@ import org.deal.mcsa.plugins.ZipFolderPlugin
 import org.deal.mcsa.plugins.MemberActionPlugin
 import org.deal.mcsa.plugins.OfflineTileServerPlugin
 import org.deal.mcsa.plugins.ScreenshotPlugin
+import org.deal.mcsa.plugins.SessionInfoPlugin
+import org.deal.mcsa.plugins.RasterTilingPlugin
+import org.deal.mcsa.plugins.FeatureAccessMapPlugin
 
 /**
  * GisCapacitorFragment - A fragment that hosts the Capacitor WebView
- * for the hsc-android GIS application with FULL plugin support.
+ * for the mcsa-gis-android GIS application with FULL plugin support.
  * 
  * This mirrors BridgeActivity's approach:
  * - Official plugins are loaded via PluginManager from capacitor.plugins.json
@@ -55,7 +58,7 @@ class GisCapacitorFragment : Fragment() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Register ONLY custom plugins (same as hsc-android MainActivity does)
+        // Register ONLY custom plugins (same as mcsa-gis-android MainActivity does)
         // Official plugins are loaded from capacitor.plugins.json by PluginManager
         registerPlugin(UdpPlugin::class.java)
         registerPlugin(NativeUploaderPlugin::class.java)
@@ -63,6 +66,9 @@ class GisCapacitorFragment : Fragment() {
         registerPlugin(MemberActionPlugin::class.java)
         registerPlugin(OfflineTileServerPlugin::class.java)
         registerPlugin(ScreenshotPlugin::class.java)
+        registerPlugin(SessionInfoPlugin::class.java)
+        registerPlugin(RasterTilingPlugin::class.java)
+        registerPlugin(FeatureAccessMapPlugin::class.java)
         
         Logger.debug("$TAG: Registered ${initialPlugins.size} custom plugins")
     }

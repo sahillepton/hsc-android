@@ -38,7 +38,50 @@ export interface OfflineTileServerPlugin {
    * @returns true if permissions are granted, false otherwise
    */
   checkStoragePermission(): Promise<{ hasPermission: boolean }>;
+
+  /**
+   * Point the /basemap/ route at a folder (or clear it with an empty path).
+   * Same server / same port — leaves the default tiles + user rasters untouched.
+   * @param options.path - Absolute folder path (Electron) or SAF tree URI (Android)
+   */
+  basemapSetFolder(options: { path: string }): Promise<{
+    ok?: boolean;
+    baseUrl: string | null;
+    port?: number;
+  }>;
 }
 
-export const OfflineTileServer =
-  registerPlugin<OfflineTileServerPlugin>("OfflineTileServer");
+// ── Platform detection ──
+function isElectron(): boolean {
+  return typeof window !== "undefined" && !!(window as any).electronAPI;
+}
+
+// ── Electron desktop implementation ──
+function createDesktopPlugin(): OfflineTileServerPlugin {
+  const api = () => (window as any).electronAPI;
+  return {
+    async selectTileFolder() {
+      return await api().tileServerSelectFolder();
+    },
+    async updateFolderPath(options: { uri: string; useTms?: boolean }) {
+      return await api().tileServerUpdateFolder(options.uri);
+    },
+    async getServerUrl() {
+      return await api().tileServerGetUrl();
+    },
+    async getSavedFolderUri() {
+      return await api().tileServerGetSavedFolder();
+    },
+    async checkStoragePermission() {
+      return await api().tileServerCheckPermission();
+    },
+    async basemapSetFolder(options: { path: string }) {
+      return await api().basemapSetFolder(options.path);
+    },
+  };
+}
+
+// ── Export: Electron uses IPC, Android uses Capacitor native plugin ──
+export const OfflineTileServer: OfflineTileServerPlugin = isElectron()
+  ? createDesktopPlugin()
+  : registerPlugin<OfflineTileServerPlugin>("OfflineTileServer");

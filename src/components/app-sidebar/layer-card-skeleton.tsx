@@ -1,6 +1,13 @@
 export default function LayerCardSkeleton() {
   return (
-    <div className="mb-3">
+    // pb-3, not mb-3 — this is a react-virtuoso item root, and virtuoso measures
+    // its wrapper with getBoundingClientRect().height, which EXCLUDES a child's
+    // margin (the margin collapses through the wrapper's bottom edge). A margin
+    // here makes every row measure 12 px short, so the list's scroll range ends up
+    // 12 px × N too small: the last card can't scroll fully into view and fast
+    // scrolls overshoot the computed end. Padding sits inside the border box and
+    // is measured, with the same 12 px gap. Must match the real card's spacing.
+    <div className="pb-3">
       <div className="relative rounded-2xl border border-border/60 bg-white/90 p-4 shadow-sm">
         {/* Top row - action buttons */}
         <div className="absolute right-3 top-3 flex items-center gap-1">

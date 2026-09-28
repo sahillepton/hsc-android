@@ -63,7 +63,7 @@ const IconSelection = ({
             title={iconName.replace(/_/g, " ").replace(/-/g, " ")}
           >
             <img
-              src={`/icons/${iconName}.svg`}
+              src={`icons/${iconName}.svg`}
               alt={iconName}
               className="w-4 h-4"
             />

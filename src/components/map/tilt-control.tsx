@@ -4,6 +4,15 @@ import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
+// Coordinates display at 6 decimals everywhere, so a 7th typed decimal would
+// only read back rounded (6.9999999 -> 7.000000). Same rule as the coordinate
+// dialog in zoom-controls.
+const COORDINATE_DECIMALS = 6;
+const limitCoordinateDecimals = (value: string): string => {
+  const dot = value.indexOf(".");
+  return dot < 0 ? value : value.slice(0, dot + 1 + COORDINATE_DECIMALS);
+};
+
 const TiltControl = ({
   mapRef,
   pitch,
@@ -118,7 +127,7 @@ const TiltControl = ({
                 step="any"
                 placeholder="Lat"
                 value={latitude}
-                onChange={(e) => setLatitude(e.target.value)}
+                onChange={(e) => setLatitude(limitCoordinateDecimals(e.target.value))}
                 className="h-7 text-[10px]"
               />
             </div>
@@ -128,7 +137,7 @@ const TiltControl = ({
                 step="any"
                 placeholder="Long"
                 value={longitude}
-                onChange={(e) => setLongitude(e.target.value)}
+                onChange={(e) => setLongitude(limitCoordinateDecimals(e.target.value))}
                 className="h-7 text-[10px]"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {

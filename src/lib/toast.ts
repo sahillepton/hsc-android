@@ -61,7 +61,7 @@ export const toast = {
     // Remove existing toast
     if (currentToastId) {
       const existing = container.querySelector(
-        `[data-toast-id="${currentToastId}"]`
+        `[data-toast-id="${currentToastId}"]`,
       );
       if (existing) existing.remove();
     }
@@ -103,7 +103,7 @@ export const toast = {
     // Remove existing toast
     if (currentToastId) {
       const existing = container.querySelector(
-        `[data-toast-id="${currentToastId}"]`
+        `[data-toast-id="${currentToastId}"]`,
       );
       if (existing) existing.remove();
     }
@@ -141,7 +141,7 @@ export const toast = {
     // Remove existing toast
     if (currentToastId) {
       const existing = container.querySelector(
-        `[data-toast-id="${currentToastId}"]`
+        `[data-toast-id="${currentToastId}"]`,
       );
       if (existing) existing.remove();
     }
@@ -191,7 +191,7 @@ export const toast = {
       createToastContainer();
     }
     const toastEl = toastContainer?.querySelector(
-      `[data-toast-id="${id}"]`
+      `[data-toast-id="${id}"]`,
     ) as HTMLElement;
     if (toastEl) {
       const styles = getToastStyles();
@@ -215,7 +215,7 @@ export const toast = {
         if (existingTimeout) clearTimeout(existingTimeout);
         (toastEl as any).__dismissTimeout = setTimeout(
           () => toast.dismiss(id),
-          3000
+          3000,
         );
       } else if (type === "error") {
         toastEl.innerHTML = `
@@ -227,7 +227,7 @@ export const toast = {
         if (existingTimeout) clearTimeout(existingTimeout);
         (toastEl as any).__dismissTimeout = setTimeout(
           () => toast.dismiss(id),
-          5000
+          5000,
         );
       } else if (type === "notification") {
         toastEl.innerHTML = `
@@ -259,7 +259,7 @@ export const toast = {
     // Remove existing toast
     if (currentToastId) {
       const existing = container.querySelector(
-        `[data-toast-id="${currentToastId}"]`
+        `[data-toast-id="${currentToastId}"]`,
       );
       if (existing) existing.remove();
     }

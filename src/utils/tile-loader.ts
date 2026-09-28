@@ -24,15 +24,10 @@ export async function loadTileFromCache(
     try {
       const result = await TileCache.getTile({ z, x, y });
 
-      // Decode base64 to ArrayBuffer
+      // Decode base64 to ArrayBuffer using browser-native decode (non-blocking, C++ engine)
       const base64Data = result.data;
-      const binaryString = atob(base64Data);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      return bytes.buffer;
+      const res = await fetch(`data:application/octet-stream;base64,${base64Data}`);
+      return await res.arrayBuffer();
     } catch (error) {
       console.error(`Error loading tile ${cacheKey}:`, error);
       throw error;

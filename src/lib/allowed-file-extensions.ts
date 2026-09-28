@@ -21,6 +21,7 @@ export const ALLOWED_FILE_EXTENSIONS = new Set([
   "shx",
   "dbf",
   "prj",
+  "cpg",
   // Archive format (for containing the above formats)
   "zip",
 ]);

@@ -22,9 +22,9 @@ interface UdpSymbolsState {
   // SNR gradient colors [low, mid, high] as hex strings
   snrColors: [string, string, string]; // Default: ["#FF0000", "#FFFF00", "#00FF00"]
   setSnrColors: (colors: [string, string, string]) => void;
-  // SNR line widths [low, mid, high] in pixels
-  snrLineWidths: [number, number, number]; // Default: [1, 3, 5]
-  setSnrLineWidths: (widths: [number, number, number]) => void;
+  // SNR line widths [poor, medium, good, high] in pixels
+  snrLineWidths: [number, number, number, number]; // Default: [1, 3, 5, 7]
+  setSnrLineWidths: (widths: [number, number, number, number]) => void;
 }
 
 export const useUdpSymbolsStore = create<UdpSymbolsState>()(
@@ -108,8 +108,8 @@ export const useUdpSymbolsStore = create<UdpSymbolsState>()(
       setSnrColors: (colors: [string, string, string]) =>
         set({ snrColors: colors }),
       // SNR line widths
-      snrLineWidths: [1, 3, 5] as [number, number, number],
-      setSnrLineWidths: (widths: [number, number, number]) =>
+      snrLineWidths: [1, 3, 5, 7] as [number, number, number, number],
+      setSnrLineWidths: (widths: [number, number, number, number]) =>
         set({ snrLineWidths: widths }),
     }),
     {

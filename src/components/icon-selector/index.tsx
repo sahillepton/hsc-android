@@ -39,7 +39,7 @@ export const IconSelector: React.FC<IconSelectorProps> = ({
       >
         {currentIcon && (
           <img
-            src={`/icons/${currentIcon}.svg`}
+            src={`icons/${currentIcon}.svg`}
             alt={currentIcon}
             className="w-4 h-4"
           />
@@ -82,7 +82,7 @@ export const IconSelector: React.FC<IconSelectorProps> = ({
                   }`}
                 >
                   <img
-                    src={`/icons/${iconName}.svg`}
+                    src={`icons/${iconName}.svg`}
                     alt={iconName}
                     className="w-4 h-4"
                   />

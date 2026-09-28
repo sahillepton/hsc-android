@@ -25,3 +25,28 @@ allprojects {
         mavenCentral()
     }
 }
+
+// Force JDK 21 javac on every subproject that compiles Java.
+// Capacitor 7 modules declare `compileOptions { sourceCompatibility VERSION_21 }`
+// (a source-level check) but do NOT request a toolchain, so without this Gradle
+// uses the system JDK (which may be < 21). The foojay resolver in
+// settings.gradle pairs with this to auto-download JDK 21 to ~/.gradle/jdks/
+// — no system Java install required.
+//
+// LOCAL TO THIS STANDALONE BUILD ONLY. The client integration uses its own
+// build.gradle.kts at integration-main/ root and is unaffected.
+subprojects { sub ->
+    sub.afterEvaluate { p ->
+        if (p.plugins.hasPlugin('com.android.library') ||
+            p.plugins.hasPlugin('com.android.application')) {
+            p.tasks.withType(JavaCompile).configureEach { task ->
+                task.javaCompiler.set(
+                    p.extensions.getByType(org.gradle.jvm.toolchain.JavaToolchainService)
+                        .compilerFor { spec ->
+                            spec.languageVersion.set(JavaLanguageVersion.of(21))
+                        }
+                )
+            }
+        }
+    }
+}

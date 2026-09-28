@@ -6,7 +6,7 @@ import { AppSidebar } from "./components/app-sidebar";
 import LayersBox from "./components/map/layers-box";
 import { toast } from "./lib/toast";
 import { NativeUploader } from "./plugins/native-uploader";
-
+import { RasterTiling } from "./plugins/raster-tiling";
 const App = () => {
   const [isLayersPanelVisible, setIsLayersPanelVisible] = useState(false);
   const [isLayersBoxOpen, setIsLayersBoxOpen] = useState(false);
@@ -16,36 +16,42 @@ const App = () => {
     const cleanupUntrackedFiles = async () => {
       const toastId = toast.loading("Setting Up App.");
       try {
-        const { loadUntrackedFiles, clearUntracked } = await import(
-          "./sessions/manifestStore"
-        );
+        const { loadUntrackedFiles, clearUntracked } =
+          await import("./sessions/manifestStore");
         const untrackedFiles = await loadUntrackedFiles();
 
         if (untrackedFiles.length > 0) {
-          console.log(
-            `[AppStartup] Found ${untrackedFiles.length} untracked file(s) to cleanup`
-          );
           // Delete each file using plugin
           for (const file of untrackedFiles) {
             try {
               await NativeUploader.deleteFile({
                 absolutePath: file.absolutePath,
               });
-              console.log(
-                `[AppStartup] Deleted untracked file: ${file.absolutePath}`
-              );
             } catch (error) {
               console.warn(
                 `[AppStartup] Failed to delete untracked file: ${file.absolutePath}`,
-                error
+                error,
               );
               // Continue with other files even if one fails
+            }
+            // Also sweep any tile cache produced for this layer last session.
+            // Pass the absolute path as a fallback so Electron can locate the
+            // cache dir even though its in-process registry is fresh.
+            try {
+              await RasterTiling.unregisterLayer({
+                layerId: file.layerId,
+                path: file.absolutePath,
+              });
+            } catch (error) {
+              console.warn(
+                `[AppStartup] Failed to sweep tile cache for layer: ${file.layerId}`,
+                error,
+              );
             }
           }
 
           // Clear untracked.json after cleanup
           await clearUntracked();
-          console.log(`[AppStartup] Cleanup complete, cleared untracked.json`);
         }
 
         toast.dismiss(toastId);

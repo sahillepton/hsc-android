@@ -153,3 +153,75 @@
   );
   background-size: 1000px 100%;
 }
+
+/* Modern scrollbar styling for floating map panels */
+.panel-scrollbar,
+.panel-scrollbar * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.85) transparent;
+}
+
+.panel-scrollbar::-webkit-scrollbar,
+.panel-scrollbar *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.panel-scrollbar::-webkit-scrollbar-track,
+.panel-scrollbar *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.panel-scrollbar::-webkit-scrollbar-thumb,
+.panel-scrollbar *::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(148, 163, 184, 0.9),
+    rgba(100, 116, 139, 0.9)
+  );
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.panel-scrollbar::-webkit-scrollbar-thumb:hover,
+.panel-scrollbar *::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(100, 116, 139, 0.95),
+    rgba(71, 85, 105, 0.95)
+  );
+}
+
+/* Slimmer scrollbar for drawing measurement preview */
+.measurement-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.82) rgba(15, 23, 42, 0.06);
+}
+
+.measurement-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.measurement-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 9999px;
+}
+
+.measurement-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(148, 163, 184, 0.95),
+    rgba(100, 116, 139, 0.95)
+  );
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+}
+
+.measurement-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(100, 116, 139, 1),
+    rgba(71, 85, 105, 1)
+  );
+}

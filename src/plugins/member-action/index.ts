@@ -1,29 +1,48 @@
 import { registerPlugin } from "@capacitor/core";
 
+/** Tooltip → native: only these two fields are sent. */
 export interface MemberActionData {
-  memberId: string; // Global ID of the member
-  action: "call" | "message" | "info"; // Action type
-  memberName?: string; // Optional: Member's name
-  phoneNumber?: string; // Optional: Phone number for call/message
-  metadata?: string; // Optional: Any additional JSON data
+  globalId: string;
+  /** "stream" added for BugID 285; native passes the string through verbatim. */
+  action: "video" | "ftp" | "call" | "message" | "stream";
 }
 
 export interface MemberActionPlugin {
-  /**
-   * Notify the native app about a member action
-   * Called when user clicks Call/Message button in tooltip
-   */
   notifyAction(options: MemberActionData): Promise<{ success: boolean }>;
 
-  /**
-   * Listen for responses from native app (optional)
-   */
   addListener(
     eventName: "actionResponse",
-    listenerFunc: (event: { memberId: string; status: string }) => void
+    listenerFunc: (event: { globalId: string; status: string }) => void,
   ): Promise<{ remove: () => void }>;
 }
 
-const MemberAction = registerPlugin<MemberActionPlugin>("MemberAction");
+function isElectron(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof (window as Window & { electronAPI?: unknown }).electronAPI !==
+      "undefined"
+  );
+}
+
+function createDesktopPlugin(): MemberActionPlugin {
+  return {
+    async notifyAction(options: MemberActionData) {
+      void options;
+      return { success: false };
+    },
+    async addListener(
+      eventName: "actionResponse",
+      listenerFunc: (event: { globalId: string; status: string }) => void,
+    ) {
+      void eventName;
+      void listenerFunc;
+      return { remove: () => {} };
+    },
+  };
+}
+
+const MemberAction: MemberActionPlugin = isElectron()
+  ? createDesktopPlugin()
+  : registerPlugin<MemberActionPlugin>("MemberAction");
 
 export default MemberAction;

@@ -2,7 +2,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Settings2 } from "lucide-react";
 import { useUdpSymbolsStore } from "@/store/udp-symbols-store";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // All available icons (including fighters 11-14 and helicopters)
 const allAvailableIcons = [
@@ -36,6 +36,23 @@ const UdpLayerConfigPopover = ({
     useUdpSymbolsStore();
 
   const [open, setOpen] = useState(false);
+  // Close this config panel when a container OUTSIDE it scrolls (network list or
+  // page). ONLY the `scroll` event — not `wheel`/`touchmove`, which also fire on the
+  // map's wheel/pinch zoom and made zoom stutter. Radix still closes it on an
+  // outside pointer-down. Scrolls inside the panel are ignored.
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideScroll = (e: Event) => {
+      const t = e.target as Node | null;
+      if (t && contentRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    window.addEventListener("scroll", closeOnOutsideScroll, true);
+    return () => {
+      window.removeEventListener("scroll", closeOnOutsideScroll, true);
+    };
+  }, [open]);
 
   // Check if this is a topology group (starts with "topology-group-")
   const isTopologyGroup = layerId.startsWith("topology-group-");
@@ -105,6 +122,7 @@ const UdpLayerConfigPopover = ({
         </Button>
       </PopoverTrigger>
       <PopoverContent
+        ref={contentRef}
         className="w-70 -ml-60"
         align="center"
         side="bottom"
@@ -136,7 +154,7 @@ const UdpLayerConfigPopover = ({
                       title={iconName.replace(/_/g, " ").replace(/-/g, " ")}
                     >
                       <img
-                        src={`/icons/${iconName}.svg`}
+                        src={`icons/${iconName}.svg`}
                         alt={iconName}
                         className="w-4 h-4"
                       />

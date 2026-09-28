@@ -14,6 +14,11 @@ android {
     versionCode 1
     versionName "1.0"
     multiDexEnabled true
+    // Raster tiling ships GDAL .so libs only for these ABIs (~95% of devices).
+    // Add 'x86_64' here if you need to run on the emulator.
+    ndk {
+      abiFilters 'arm64-v8a', 'armeabi-v7a'
+    }
   }
 
   compileOptions {
@@ -24,6 +29,25 @@ android {
   kotlin {
     compilerOptions {
       jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+    }
+  }
+
+  // Package the prebuilt GDAL .so files without compression so dlopen() can
+  // mmap them directly. Capacitor's defaults already do this on AGP 8+, but
+  // we set it explicitly so older AGP versions behave the same.
+  packagingOptions {
+    jniLibs {
+      useLegacyPackaging false
+    }
+  }
+
+  // jniLibs.srcDirs default already covers src/main/jniLibs but stating it
+  // explicitly makes the GDAL drop-in instructions identical for the
+  // integrated MCSA build.
+  sourceSets {
+    main {
+      jniLibs.srcDirs += ['src/main/jniLibs']
+      assets.srcDirs += ['src/main/assets']
     }
   }
 
@@ -46,10 +70,17 @@ dependencies {
 
   implementation "androidx.appcompat:appcompat:1.7.0"
   implementation "androidx.core:core-ktx:1.15.0"
-  
+
   // NanoHTTPD for local tile server
   implementation 'org.nanohttpd:nanohttpd:2.3.1'
   implementation "androidx.documentfile:documentfile:1.0.1"
+
+  // Official GDAL Java SWIG bindings used by RasterTilingPlugin.
+  // The .jar is produced by scripts/build-gdal-android.sh and is
+  // ABI-independent (a single jar serves both arm64-v8a and armeabi-v7a).
+  // The matching libgdaljni.so + libgdal.so/libproj.so/etc live under
+  // src/main/jniLibs/<abi>/ and load at runtime via System.loadLibrary.
+  implementation files('libs/gdal.jar')
 }
 
 /**

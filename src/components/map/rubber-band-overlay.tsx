@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { LineLayer, PolygonLayer } from "@deck.gl/layers";
+import { PathLayer, PolygonLayer } from "@deck.gl/layers";
 
 interface RubberBandRectangleProps {
   isDrawing: boolean;
@@ -13,7 +13,7 @@ interface RubberBandRectangleProps {
  */
 export const calculateRectangleBounds = (
   start: [number, number] | null,
-  end: [number, number] | null
+  end: [number, number] | null,
 ): {
   minLng: number;
   maxLng: number;
@@ -42,16 +42,6 @@ export const useRubberBandRectangle = ({
   return useMemo(() => {
     if ((!isDrawing && !isZooming) || !start || !end) {
       return null;
-    }
-
-    // Debug: Log when creating rectangle
-    if (isDrawing) {
-      console.log("[RubberBand] Creating rectangle layer:", {
-        start,
-        end,
-        isDrawing,
-        isZooming,
-      });
     }
 
     // Create rectangle coordinates
@@ -87,7 +77,7 @@ export const useRubberBandRectangle = ({
     ];
 
     // Return both a filled polygon (semi-transparent) and an outline
-    // We'll use PolygonLayer for fill and LineLayer for outline
+    // We'll use PolygonLayer for fill and PathLayer for outline
     return [
       // Fill layer (semi-transparent blue like MS Paint selection)
       new PolygonLayer({
@@ -106,17 +96,21 @@ export const useRubberBandRectangle = ({
           getPolygon: [start, end],
         },
       }),
-      // Outline layer (white solid border - more visible)
-      new LineLayer({
+      // Outline layer. Must be a PathLayer: LineLayer has no `getPath` accessor
+      // (it takes source/target positions), so with it the outline silently never
+      // rendered and only the faint fill was visible while dragging. The app's
+      // blue accent (azimuth labels, active-tool highlight) rather than white, so
+      // the box also reads on light basemap tiles.
+      new PathLayer({
         id: "rubber-band-rectangle-outline",
         data: [{ path: rectangle }],
         pickable: false,
         getPath: (d: any) => d.path,
-        getColor: [255, 255, 255, 255], // White outline
-        getWidth: 3,
+        getColor: [59, 130, 246, 255],
+        getWidth: 2,
         widthUnits: "pixels",
-        widthMinPixels: 3,
-        widthMaxPixels: 3,
+        widthMinPixels: 2,
+        widthMaxPixels: 2,
         parameters: { depthTest: false },
         updateTriggers: {
           getPath: [start, end],

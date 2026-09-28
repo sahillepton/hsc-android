@@ -18,7 +18,6 @@ interface UdpLayerData {
         lat: number;
         long: number;
         altitude: number;
-        rssi: number;
         neighbors: Array<{ id: number; snr: number }>;
       }
     >;

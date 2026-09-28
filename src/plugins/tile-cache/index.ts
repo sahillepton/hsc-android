@@ -14,4 +14,31 @@ export interface TileCachePlugin {
   pickDirectory(): Promise<{ path: string }>;
 }
 
-export const TileCache = registerPlugin<TileCachePlugin>("TileCache");
+// ── Platform detection ──
+function isElectron(): boolean {
+  return typeof window !== "undefined" && !!(window as any).electronAPI;
+}
+
+// ── Electron desktop implementation ──
+function createDesktopPlugin(): TileCachePlugin {
+  const api = () => (window as any).electronAPI;
+  return {
+    async setTilesDirectory(options: { path: string }) {
+      return await api().tileCacheSetDir(options.path);
+    },
+    async getTile(options: { z: string; x: string; y: string }) {
+      return await api().tileCacheGetTile(options.z, options.x, options.y);
+    },
+    async clearCache() {
+      return await api().tileCacheClear();
+    },
+    async pickDirectory() {
+      return await api().tileCachePickDir();
+    },
+  };
+}
+
+// ── Export: Electron uses IPC, Android uses Capacitor native plugin ──
+export const TileCache: TileCachePlugin = isElectron()
+  ? createDesktopPlugin()
+  : registerPlugin<TileCachePlugin>("TileCache");

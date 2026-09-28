@@ -6,7 +6,7 @@ const NetworkBox = ({ onClose }: { onClose: () => void }) => {
   return (
     <div
       style={{ zoom: 0.9 }}
-      className="absolute top-4 left-4 z-50 flex w-[400px] max-h-[calc(100vh-120px)] flex-col rounded-lg border border-border/70 bg-card shadow-2xl"
+      className="panel-scrollbar absolute top-4 left-4 z-50 flex w-[400px] max-h-[calc(100vh-120px)] flex-col rounded-lg border border-border/70 bg-card shadow-2xl"
     >
       <div className="flex items-center justify-between px-4 py-3 pb-2 shrink-0">
         <div>
