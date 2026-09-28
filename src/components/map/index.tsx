@@ -187,6 +187,7 @@ import {
 } from "@/components/ui/select";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
 import LayerLoadBadge from "@/components/map/layer-load-badge";
+import { registerMapSettledWaiter } from "@/lib/map-settled";
 
 /** Last path segment, lowercased (handles Windows `\\` and nested zip paths). */
 function fileBasenameLower(fileName: string): string {
@@ -904,6 +905,44 @@ const MapComponent = ({
   const demRasterPickSuppressRef = useRef(false);
   const zoomUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const zoomDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Answers the sidebar's "is what I just changed on screen yet?" (see
+  // lib/map-settled.ts) for whichever renderer is active. Both refs are
+  // stable, so this registers once.
+  useEffect(() => {
+    registerMapSettledWaiter(
+      () =>
+        new Promise<void>((resolve) => {
+          const map = mapRef.current?.getMap?.();
+          if (geodeticBasemapRef.current || !map) {
+            // Deck-only renderer: its animation loop draws the frame after the
+            // store commit; one more frame guarantees that draw has happened.
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+            return;
+          }
+          // Mapbox with the deck overlay: the overlay redraws inside mapbox's
+          // own frame loop, so `idle` (no render pending, every visible tile
+          // in) covers both. Capped so a renderer that never settles cannot
+          // strand the caller.
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            clearTimeout(cap);
+            try {
+              map.off("idle", finish);
+            } catch {
+              /* map torn down */
+            }
+            resolve();
+          };
+          const cap = setTimeout(finish, 60_000);
+          map.on("idle", finish);
+          map.triggerRepaint?.(); // guarantees a render, hence an `idle`
+        }),
+    );
+    return () => registerMapSettledWaiter(null);
+  }, []);
 
   useEffect(() => {
     (window as any).mapRef = mapRef;

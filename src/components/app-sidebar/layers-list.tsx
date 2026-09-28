@@ -17,6 +17,8 @@ import {
   getShortestRouteDisplayName,
 } from "@/lib/route-layer";
 import { useIgrsPreference } from "@/store/layers-store";
+import { toast } from "@/lib/toast";
+import { waitForMapSettled } from "@/lib/map-settled";
 
 type LayerCardItemProps = {
   layer: LayerProps;
@@ -275,6 +277,12 @@ const LayersList = ({
       selectedIds.includes(layer.id)
     );
 
+    // Turning layers ON is the slow direction (their features have to be
+    // tessellated, uploaded and drawn), so keep a loader up until the map has
+    // actually drawn them, not just until the store has been updated.
+    const turningOn = selectedLayers.some((layer) => layer.visible === false);
+    const loaderId = turningOn ? toast.loading("Toggle Visibility ON") : null;
+
     // Toggle each layer individually based on its current state
     selectedLayers.forEach((layer) => {
       // If layer is hidden (visible === false), make it visible (true)
@@ -282,6 +290,10 @@ const LayersList = ({
       const newVisibility = layer.visible === false ? true : false;
       onToggleVisibility(layer.id, newVisibility);
     });
+
+    if (loaderId) {
+      void waitForMapSettled().then(() => toast.dismiss(loaderId));
+    }
   };
 
   return (
