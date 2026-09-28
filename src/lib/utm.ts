@@ -9,7 +9,7 @@ import proj4 from "proj4";
  * and one display string, so every tooltip and panel prints UTM the same way,
  * mirroring `calculateIgrs`:
  *
- *   "43R 716094 E 3167096 N"   → zone 43, band R, easting / northing in metres
+ *   "43R 716094.56 E 3167096.12 N"   → zone 43, band R, easting / northing in metres
  *
  * UTM is defined between 80°S and 84°N. Outside that (the polar UPS grids) this
  * returns null, exactly like IGRS does outside its window, so callers show
@@ -72,12 +72,24 @@ export function toUtm(lon: number, lat: number): UtmCoordinate | null {
 }
 
 /**
- * Display string for a lon/lat, e.g. "43R 716094 E 3167096 N" (whole metres,
- * the usual field precision). Argument order matches `calculateIgrs`:
+ * Metres to exactly two decimals, TRUNCATED rather than rounded (716094.567 ->
+ * "716094.56"). Done on the formatted string, not with Math.trunc(v * 100),
+ * because the multiplication can land a hair below the true value and drop a
+ * digit (1.15 * 100 = 114.999...). toFixed(6) rounds only at the micrometre,
+ * far below anything the cut at two decimals can see.
+ */
+function truncateTo2(v: number): string {
+  const s = v.toFixed(6);
+  return s.slice(0, s.indexOf(".") + 3);
+}
+
+/**
+ * Display string for a lon/lat, e.g. "43R 716094.56 E 3167096.12 N" (metres to
+ * two decimals, truncated). Argument order matches `calculateIgrs`:
  * (longitude, latitude). Null outside UTM coverage.
  */
 export function calculateUtm(lon: number, lat: number): string | null {
   const u = toUtm(lon, lat);
   if (!u) return null;
-  return `${u.zone}${u.band} ${Math.round(u.easting)} E ${Math.round(u.northing)} N`;
+  return `${u.zone}${u.band} ${truncateTo2(u.easting)} E ${truncateTo2(u.northing)} N`;
 }

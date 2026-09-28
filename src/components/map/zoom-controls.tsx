@@ -91,6 +91,18 @@ const toggleCoordinateSign = (value: string): string => {
   return t.startsWith("-") ? t.slice(1) : `-${t}`;
 };
 
+/**
+ * Coordinates are shown everywhere at 6 decimals (~0.1 m), so a 7th typed
+ * decimal can never be displayed: 6.9999999 would plot fine but read back as
+ * 7.000000. Refusing anything past the 6th keeps what is typed identical to
+ * what is shown. Truncates (never rounds), so a pasted value is cut, not moved.
+ */
+const COORDINATE_DECIMALS = 6;
+const limitCoordinateDecimals = (value: string): string => {
+  const dot = value.indexOf(".");
+  return dot < 0 ? value : value.slice(0, dot + 1 + COORDINATE_DECIMALS);
+};
+
 /** Side of the square toggle card (w-12). Used for on-screen clamping. */
 const TOGGLE_SIZE = 48;
 /** Movement before a press becomes a drag rather than a tap (px). */
@@ -287,6 +299,8 @@ const ZoomControls = ({
   const dragRef = useRef({
     active: false,
     moved: false,
+    /** A press ended without dragging; the follow-up click should expand. */
+    tap: false,
     startX: 0,
     startY: 0,
     originX: 0,
@@ -322,6 +336,7 @@ const ZoomControls = ({
     dragRef.current = {
       active: true,
       moved: false,
+      tap: false,
       startX: e.clientX,
       startY: e.clientY,
       originX: rect.left,
@@ -365,15 +380,28 @@ const ZoomControls = ({
         /* storage blocked — position still applies for this session */
       }
     } else {
-      // A TAP. Handled here rather than in the button's onClick because this
-      // wrapper calls setPointerCapture on pointerdown, and while a pointer is
-      // captured the follow-up `click` is retargeted to the CAPTURING element —
-      // so the inner Button's onClick never ran and the bar could not be
-      // reopened after the button had been dragged. pointerup always fires on
-      // the capture target, so deciding it here is deterministic.
-      setToolbarHidden(false);
+      // A TAP — but the expand itself waits for the wrapper's `click`, not
+      // here. Expanding on pointerup re-anchors this button to its corner
+      // synchronously, and on touch Android then synthesises the tap's click by
+      // hit-testing the finger position AGAIN — which now finds whatever the
+      // button had been parked over (e.g. the Settings trigger) and clicks
+      // that too. Deferring to `click` means the button is still under the
+      // finger when that hit-test runs, so the click lands here and nowhere
+      // else. The click does reach this wrapper: with a mouse it is retargeted
+      // to the capturing element, with touch it is hit-tested onto it.
+      d.tap = true;
     }
     e.stopPropagation();
+  };
+
+  const onToggleClick = () => {
+    const d = dragRef.current;
+    // Only the EXPAND direction, and only for a press that ended as a tap. The
+    // collapse click (bar open) is the inner Button's; the click that can
+    // follow a mouse drag has tap=false and is ignored.
+    if (!toolbarHidden || !d.tap) return;
+    d.tap = false;
+    setToolbarHidden(false);
   };
   const [coordDialogOpen, setCoordDialogOpen] = useState(false);
   const [coordLat, setCoordLat] = useState("");
@@ -1138,7 +1166,7 @@ const ZoomControls = ({
                           autoFocus
                           value={coordLat}
                           onChange={(e) => {
-                            setCoordLat(e.target.value);
+                            setCoordLat(limitCoordinateDecimals(e.target.value));
                             setCoordError(null);
                           }}
                           placeholder={`-${maxLatitude} to ${maxLatitude}`}
@@ -1176,7 +1204,7 @@ const ZoomControls = ({
                           inputMode="decimal"
                           value={coordLng}
                           onChange={(e) => {
-                            setCoordLng(e.target.value);
+                            setCoordLng(limitCoordinateDecimals(e.target.value));
                             setCoordError(null);
                           }}
                           placeholder="-180 to 180"
@@ -1207,8 +1235,9 @@ const ZoomControls = ({
                   {/* The limit is projection-dependent, so state it up front rather
                       than only failing after the user has typed a pole latitude. */}
                   <p className="mt-2 text-[10px] leading-snug text-slate-500">
-                    Use ± for south / west. This base map can display latitudes up
-                    to ±{maxLatitude === 90 ? "90" : maxLatitude.toFixed(4)}°.
+                    Use ± for south / west. Up to {COORDINATE_DECIMALS} decimal
+                    places. This base map can display latitudes up to ±
+                    {maxLatitude === 90 ? "90" : maxLatitude.toFixed(4)}°.
                   </p>
                   {coordError && (
                     <p className="mt-2 text-[11px] leading-snug text-red-600">
@@ -1242,6 +1271,7 @@ const ZoomControls = ({
           onPointerMove={onTogglePointerMove}
           onPointerUp={onTogglePointerUp}
           onPointerCancel={onTogglePointerUp}
+          onClick={onToggleClick}
           style={
             // Only once collapsed AND actually moved does it leave the corner.
             // `fixed` (not absolute) so the stored coordinates are plain viewport
@@ -1285,7 +1315,7 @@ const ZoomControls = ({
               onClick={() => {
                 // Only the COLLAPSE direction. While collapsed the wrapper owns
                 // the gesture (pointer capture retargets click away from here), so
-                // expanding is done in onTogglePointerUp; doing it in both places
+                // expanding is done in onToggleClick; doing it in both places
                 // would toggle twice on a single tap.
                 if (toolbarHidden) return;
                 setToolbarHidden(true);
