@@ -36,6 +36,28 @@ public class ZipFolderPlugin extends Plugin {
 
     private final Handler main = new Handler(Looper.getMainLooper());
 
+    /**
+     * Cancel flag for the extraction in flight (the app runs one import at a
+     * time). Set by cancelExtract(), reset when an extraction starts, honoured
+     * BETWEEN entries — the entry being written finishes first, the same
+     * checkpoint granularity the import loop uses.
+     */
+    private volatile boolean extractCancelRequested = false;
+    /** Files written by the extraction in flight, so a cancel can remove them. */
+    private final List<File> extractWrittenFiles = new ArrayList<>();
+
+    private static class ExtractionCancelledException extends Exception {
+        ExtractionCancelledException() {
+            super("Extraction cancelled");
+        }
+    }
+
+    @PluginMethod
+    public void cancelExtract(PluginCall call) {
+        extractCancelRequested = true;
+        call.resolve();
+    }
+
     @PluginMethod
     public void zipHscSessionsFolder(PluginCall call) {
         new Thread(() -> {
@@ -368,6 +390,8 @@ public class ZipFolderPlugin extends Plugin {
     public void extractZipRecursive(PluginCall call) {
         String zipPath = call.getString("zipPath");
         String outputDirParam = call.getString("outputDir");
+        extractCancelRequested = false;
+        extractWrittenFiles.clear();
         
         if (zipPath == null || zipPath.isEmpty()) {
             main.post(() -> call.reject("zipPath is required"));
@@ -421,6 +445,15 @@ public class ZipFolderPlugin extends Plugin {
 
                 main.post(() -> call.resolve(result));
 
+            } catch (ExtractionCancelledException e) {
+                // Leave nothing half-done: to the import, a cancelled
+                // extraction is as if the archive had never been opened.
+                for (File written : extractWrittenFiles) {
+                    if (written.exists() && !written.delete()) {
+                        written.deleteOnExit();
+                    }
+                }
+                main.post(() -> call.reject("Extraction cancelled"));
             } catch (Exception e) {
                 main.post(() -> call.reject("Extraction failed: " + e.getMessage()));
             }
@@ -440,6 +473,9 @@ public class ZipFolderPlugin extends Plugin {
             ZipEntry entry;
             
             while ((entry = zis.getNextEntry()) != null) {
+                if (extractCancelRequested) {
+                    throw new ExtractionCancelledException();
+                }
                 String entryName = entry.getName();
                 
                 // Skip directory entries
@@ -453,6 +489,7 @@ public class ZipFolderPlugin extends Plugin {
                     
                     // For ZIPs, extract recursively
                     File tempZip = new File(destDir, "temp_" + System.currentTimeMillis() + "_" + zipFileName);
+                    extractWrittenFiles.add(tempZip);
                     
                     try (FileOutputStream fos = new FileOutputStream(tempZip);
                          BufferedOutputStream bos = new BufferedOutputStream(fos)) {
@@ -540,6 +577,8 @@ public class ZipFolderPlugin extends Plugin {
                         }
                     }
                     
+                    extractWrittenFiles.add(outputFile);
+
                     // Determine file type
                     lowerName = outputFile.getName().toLowerCase();
                     String fileType = "vector"; // default

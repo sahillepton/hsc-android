@@ -32,6 +32,15 @@ export interface ZipFolderPlugin {
       size: number;
     }>;
   }>;
+
+  /**
+   * Stop the extraction in flight between entries; it then rejects with
+   * "Extraction cancelled" and leaves nothing on disk. Implemented by the
+   * Electron main process and both Android plugins (android/ and the
+   * kt-msca-plugins drop-in); a host still running an older plugin rejects
+   * the call and the extraction runs to completion instead.
+   */
+  cancelExtract(): Promise<void>;
 }
 
 // ── Platform detection ──
@@ -51,6 +60,9 @@ function createDesktopPlugin(): ZipFolderPlugin {
     },
     async extractZipRecursive(options: { zipPath: string; outputDir?: string }) {
       return await api().zipExtractRecursive(options.zipPath, options.outputDir);
+    },
+    async cancelExtract() {
+      await api().zipCancelExtract();
     },
   };
 }

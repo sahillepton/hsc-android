@@ -28,6 +28,25 @@ class ZipFolderPlugin : Plugin() {
 
     private val main = Handler(Looper.getMainLooper())
 
+    /**
+     * Cancel flag for the extraction in flight (the app runs one import at a
+     * time). Set by cancelExtract(), reset when an extraction starts, honoured
+     * BETWEEN entries — the entry being written finishes first, the same
+     * checkpoint granularity the import loop uses.
+     */
+    @Volatile
+    private var extractCancelRequested = false
+    /** Files written by the extraction in flight, so a cancel can remove them. */
+    private val extractWrittenFiles = mutableListOf<File>()
+
+    private class ExtractionCancelledException : Exception("Extraction cancelled")
+
+    @PluginMethod
+    fun cancelExtract(call: PluginCall) {
+        extractCancelRequested = true
+        call.resolve()
+    }
+
     data class ExtractedFileInfo(
         var absolutePath: String = "",
         var name: String = "",
@@ -354,6 +373,8 @@ class ZipFolderPlugin : Plugin() {
     fun extractZipRecursive(call: PluginCall) {
         val zipPath = call.getString("zipPath")
         val outputDirParam = call.getString("outputDir")
+        extractCancelRequested = false
+        extractWrittenFiles.clear()
 
         if (zipPath.isNullOrEmpty()) {
             main.post { call.reject("zipPath is required") }
@@ -399,6 +420,15 @@ class ZipFolderPlugin : Plugin() {
 
                 main.post { call.resolve(result) }
 
+            } catch (e: ExtractionCancelledException) {
+                // Leave nothing half-done: to the import, a cancelled
+                // extraction is as if the archive had never been opened.
+                for (written in extractWrittenFiles) {
+                    if (written.exists() && !written.delete()) {
+                        written.deleteOnExit()
+                    }
+                }
+                main.post { call.reject("Extraction cancelled") }
             } catch (e: Exception) {
                 main.post { call.reject("Extraction failed: ${e.message}") }
             }
@@ -416,12 +446,16 @@ class ZipFolderPlugin : Plugin() {
             var entry: ZipEntry? = zis.nextEntry
 
             while (entry != null) {
+                if (extractCancelRequested) {
+                    throw ExtractionCancelledException()
+                }
                 val entryName = entry.name
 
                 if (!entry.isDirectory) {
                     if (entryName.lowercase().endsWith(".zip")) {
                         val zipFileName = File(entryName).name
                         val tempZip = File(destDir, "temp_${System.currentTimeMillis()}_$zipFileName")
+                        extractWrittenFiles.add(tempZip)
 
                         FileOutputStream(tempZip).use { fos ->
                             BufferedOutputStream(fos).use { bos ->
@@ -505,6 +539,8 @@ class ZipFolderPlugin : Plugin() {
                                 }
                             }
                         }
+
+                        extractWrittenFiles.add(outputFile)
 
                         // Determine file type (reuse lowerName variable name after file is written)
                         val lowerNameFinal = outputFile.name.lowercase()

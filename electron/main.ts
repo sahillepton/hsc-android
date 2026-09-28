@@ -554,7 +554,17 @@ function getFileType(
  *
  * Files are streamed straight to disk; nested .zip entries are buffered
  * in memory only because we recurse with a Buffer.
+ *
+ * Cancellation: `extractCancelRequested` is set by "zipFolder:cancelExtract",
+ * reset when an extraction starts, and honoured BETWEEN entries — the entry
+ * being streamed finishes first, the same checkpoint granularity the
+ * renderer's import loop uses. The renderer runs one import at a time.
  */
+let extractCancelRequested = false;
+/** Files written by the extraction in flight, so a cancel can remove them. */
+let extractWrittenPaths: string[] = [];
+const EXTRACT_CANCELLED = "Extraction cancelled";
+
 async function extractZipRecursive(
   zipBuf: Buffer,
   destDir: string,
@@ -586,6 +596,11 @@ async function extractZipRecursive(
 
       zipfile.on("entry", (entry: yauzl.Entry) => {
         (async () => {
+          if (extractCancelRequested) {
+            fail(new Error(EXTRACT_CANCELLED));
+            return;
+          }
+
           // Directory entry — yauzl marks these by trailing slash.
           if (/\/$/.test(entry.fileName)) {
             zipfile.readEntry();
@@ -640,6 +655,7 @@ async function extractZipRecursive(
           // multi-hundred-MB TIFF in a single allocation.
           try {
             await streamEntryToFile(zipfile, entry, outputPath);
+            extractWrittenPaths.push(outputPath);
             const stat = await fs.stat(outputPath);
             results.push({
               absolutePath: outputPath,
@@ -803,8 +819,30 @@ ipcMain.handle(
       throw new Error(`ZIP file does not exist: ${zipPath}`);
     }
 
+    // Reset BEFORE the (possibly long) read so a cancel that arrives while the
+    // archive is still being loaded is not wiped out by the reset.
+    extractCancelRequested = false;
+    extractWrittenPaths = [];
+
     const zipBuf = await fs.readFile(zipPath);
-    const extractedFiles = await extractZipRecursive(zipBuf, destDir, 0, 10);
+    let extractedFiles: ExtractedFileInfo[];
+    try {
+      extractedFiles = await extractZipRecursive(zipBuf, destDir, 0, 10);
+    } catch (e) {
+      if (extractCancelRequested) {
+        // Leave nothing half-done: to the import, a cancelled extraction is as
+        // if the archive had never been opened.
+        for (const p of extractWrittenPaths) {
+          try {
+            await fs.unlink(p);
+          } catch {
+            /* best effort */
+          }
+        }
+        throw new Error(EXTRACT_CANCELLED);
+      }
+      throw e;
+    }
     const finalFiles = await processShapefiles(extractedFiles, destDir);
 
     return {
@@ -817,6 +855,10 @@ ipcMain.handle(
     };
   },
 );
+
+ipcMain.handle("zipFolder:cancelExtract", () => {
+  extractCancelRequested = true;
+});
 
 ipcMain.handle("zipFolder:zipHscSessionsFolder", async () => {
   const sessionsDir = path.join(app.getPath("documents"), "HSC-SESSIONS");

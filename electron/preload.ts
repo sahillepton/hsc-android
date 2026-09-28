@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // ZipFolder
   zipExtractRecursive: (zipPath: string, outputDir?: string) =>
     ipcRenderer.invoke("zipFolder:extractZipRecursive", zipPath, outputDir),
+  zipCancelExtract: () => ipcRenderer.invoke("zipFolder:cancelExtract"),
   zipHscSessionsFolder: () =>
     ipcRenderer.invoke("zipFolder:zipHscSessionsFolder"),
   zipManifestFiles: (

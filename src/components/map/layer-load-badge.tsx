@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Info } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -8,7 +8,12 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { useLayers } from "@/store/layers-store";
-import { summarizeLayerLoad, type LoadStress } from "@/lib/layer-load";
+import {
+  loadStress,
+  summarizeLayerLoad,
+  type LoadStress,
+} from "@/lib/layer-load";
+import { RECOMMENDED_VISIBLE_FEATURES } from "@/lib/constants";
 
 const STRESS_LABEL: Record<LoadStress, string> = {
   low: "Low",
@@ -29,6 +34,8 @@ const STRESS_TEXT: Record<LoadStress, string> = {
 };
 
 const HIGH_LOAD_MESSAGE = "Please hide some layers to reduce the GPU load!";
+const ALL_ON_WARNING =
+  "High number of layers detected — turning them all on may crash the app";
 
 /**
  * GPU load badge — always on screen beside the Storage Paths button, in every
@@ -38,6 +45,11 @@ const HIGH_LOAD_MESSAGE = "Please hide some layers to reduce the GPU load!";
  * tapping it opens one message asking to hide layers. Same card styling as the
  * Storage Paths button and popover; everything is a tap. Hidden only together
  * with the tool bar (see index.tsx).
+ *
+ * To the badge's LEFT, a precautionary warning chip: shown while the load is
+ * not yet High but WOULD be if every loaded layer were switched on — i.e. the
+ * hidden layers alone are enough to tip it. Once the load actually is High the
+ * badge itself says so, and the chip steps aside.
  */
 export default function LayerLoadBadge() {
   const { layers } = useLayers();
@@ -45,9 +57,24 @@ export default function LayerLoadBadge() {
   const summary = useMemo(() => summarizeLayerLoad(layers), [layers]);
   const { stress } = summary;
   const isHigh = stress === "high";
+  const warnAllOn =
+    !isHigh &&
+    loadStress(summary.features / RECOMMENDED_VISIBLE_FEATURES) === "high";
 
   return (
-    <div className="absolute top-2 right-14 z-50 pointer-events-none">
+    <div className="absolute top-2 right-14 z-50 pointer-events-none flex items-center gap-2">
+      {warnAllOn && (
+        <div
+          className="pointer-events-auto flex h-10 items-center gap-2 px-3 rounded-sm bg-white/98 shadow-2xl border border-black/10 backdrop-blur-sm text-amber-700"
+          role="status"
+          title={`${summary.layers - summary.visibleLayers} hidden layer(s) hold ${summary.features - summary.visibleFeatures} features`}
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span className="text-xs font-semibold whitespace-nowrap">
+            {ALL_ON_WARNING}
+          </span>
+        </div>
+      )}
       <Popover open={open && isHigh} onOpenChange={setOpen}>
         <div
           className={cn(

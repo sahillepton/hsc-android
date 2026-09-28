@@ -1054,7 +1054,7 @@ const MapComponent = ({
   const { mousePosition, setMousePosition } = useMousePosition();
   const { layers, addLayer, setLayers, bringLayerToTop } = useLayers();
   // const { setNodeIconMappings } = useNodeIconMappings();
-  const { focusLayerRequest, setFocusLayerRequest, focusLayer } =
+  const { focusLayerRequest, setFocusLayerRequest, focusLayer, deleteLayer } =
     useFocusLayerRequest();
   const { drawingMode, setDrawingMode } = useDrawingMode();
   const { isDrawing, setIsDrawing } = useIsDrawing();
@@ -1332,6 +1332,11 @@ const MapComponent = ({
     if (!token || token.cancelled) return;
     token.cancelled = true;
     setUploadCancelRequested(true);
+    // A ZIP being extracted natively is the one step the checkpoints cannot
+    // interrupt, so ask it to stop between entries. Best effort: on a host
+    // whose native plugin predates cancelExtract the call rejects and the
+    // cancel simply lands after extraction, as before.
+    ZipFolder.cancelExtract().catch(() => {});
   }, []);
   const [isExporting, setIsExporting] = useState(false);
   const [tileServerUrl, setTileServerUrl] = useState<string | null>(null);
@@ -2529,6 +2534,14 @@ const MapComponent = ({
     // trying to track exactly which are still live.
     const stagedPathsToClean: string[] = [];
 
+    // Every layer this run adds, so a cancel can take them all back out again
+    // and leave the map exactly as it was before the import started.
+    const importedLayerIds: string[] = [];
+    const addImportedLayer = (layer: LayerProps) => {
+      addLayer(layer);
+      importedLayerIds.push(layer.id);
+    };
+
     /**
      * Yield the main thread, then report whether the user has pressed cancel.
      *
@@ -2658,8 +2671,8 @@ const MapComponent = ({
         const stagedFile = result.files[i];
         const fileNum = i + 1;
 
-        // Between files: the natural place to stop. Anything already imported is
-        // a complete layer and is kept.
+        // Between files: the natural place to stop. Anything already imported
+        // is rolled back by the cancel branch after the loop.
         if (await cancelledAtCheckpoint()) {
           cancelledByUser = true;
           break;
@@ -2775,7 +2788,7 @@ const MapComponent = ({
                 let added = 0;
                 for (const sl of sketchLayers) {
                   if (!existingIds.has(sl.id)) {
-                    addLayer(sl);
+                    addImportedLayer(sl);
                     existingIds.add(sl.id);
                     added++;
                   }
@@ -2879,7 +2892,7 @@ const MapComponent = ({
                     let added = 0;
                     for (const sl of sketchLayers) {
                       if (!sketchImportExistingIds.has(sl.id)) {
-                        addLayer(sl);
+                        addImportedLayer(sl);
                         sketchImportExistingIds.add(sl.id);
                         added++;
                       }
@@ -3007,7 +3020,7 @@ const MapComponent = ({
                           },
                         },
                       );
-                      addLayer(startHiddenOnImport(newLayer));
+                      addImportedLayer(startHiddenOnImport(newLayer));
                       const { updateManifestColor, upsertTempManifestEntry } =
                         await import("@/sessions/manifestStore");
                       await updateManifestColor(layerId, newLayer.color);
@@ -3059,7 +3072,7 @@ const MapComponent = ({
                         layerId: layerId,
                         layerName: layerName,
                       });
-                      addLayer(startHiddenOnImport(newLayer));
+                      addImportedLayer(startHiddenOnImport(newLayer));
                       // Update manifest with layer color
                       const { updateManifestColor } =
                         await import("@/sessions/manifestStore");
@@ -3100,7 +3113,7 @@ const MapComponent = ({
                       layerName: layerName,
                       generateRandomColor,
                     });
-                    addLayer(startHiddenOnImport(newLayer));
+                    addImportedLayer(startHiddenOnImport(newLayer));
                     // Update manifest with layer color
                     const { updateManifestColor } =
                       await import("@/sessions/manifestStore");
@@ -3129,6 +3142,13 @@ const MapComponent = ({
                     }`,
                   );
                 }
+              }
+
+              if (cancelledByUser) {
+                // Stopped part-way through the archive: neither "no valid
+                // files" nor "successfully processed" below would be true.
+                toast.dismiss(extractToastId);
+                break;
               }
 
               // Check if ZIP contained any valid files
@@ -3162,6 +3182,13 @@ const MapComponent = ({
                 );
               }
             } catch (zipError) {
+              if (cancelToken.cancelled) {
+                // The extraction was aborted on request (see cancelUpload):
+                // not an error, and nothing of it is left on disk.
+                toast.dismiss(extractToastId);
+                cancelledByUser = true;
+                break;
+              }
               console.error(
                 `[FileUpload] Error extracting ZIP file:`,
                 zipError,
@@ -3291,7 +3318,7 @@ const MapComponent = ({
                       },
                     },
                   );
-                  addLayer(startHiddenOnImport(newLayer));
+                  addImportedLayer(startHiddenOnImport(newLayer));
                   const { updateManifestColor, upsertTempManifestEntry } =
                     await import("@/sessions/manifestStore");
                   await updateManifestColor(layerId, newLayer.color);
@@ -3331,7 +3358,7 @@ const MapComponent = ({
                     layerId,
                     layerName,
                   });
-                  addLayer(startHiddenOnImport(newLayer));
+                  addImportedLayer(startHiddenOnImport(newLayer));
                   // Update manifest with layer color
                   const { updateManifestColor } =
                     await import("@/sessions/manifestStore");
@@ -3355,7 +3382,7 @@ const MapComponent = ({
                   layerName,
                   generateRandomColor,
                 });
-                addLayer(startHiddenOnImport(newLayer));
+                addImportedLayer(startHiddenOnImport(newLayer));
                 // Update manifest with layer color
                 const { updateManifestColor } =
                   await import("@/sessions/manifestStore");
@@ -3401,30 +3428,33 @@ const MapComponent = ({
         }
       }
 
-      // Cancelled: delete the staged copies this run made and say what was kept.
-      // Checked BEFORE the `hasValidFiles` gate below, which would otherwise
-      // report "no valid files found" for an import stopped before its first one.
+      // Cancelled: put everything back the way it was. The layers this run
+      // added go out through the same path the Layers panel uses (store,
+      // manifest entry, staged file, tile cache), then the staged copies it
+      // never got to are deleted. Checked BEFORE the `hasValidFiles` gate
+      // below, which would otherwise report "no valid files found" for an
+      // import stopped before its first one.
       if (cancelledByUser) {
-        let removed = 0;
+        for (const layerId of importedLayerIds) deleteLayer(layerId);
         for (const absolutePath of stagedPathsToClean) {
           try {
             await NativeUploader.deleteFile({ absolutePath });
-            removed++;
           } catch {
-            // Already deleted on the happy path, or never written — either way
-            // there is nothing to do and nothing worth telling the user.
+            // Already deleted (happy path, or by deleteLayer above) or never
+            // written — either way nothing to do and nothing worth telling.
           }
         }
-        toast.update(
-          toastId,
-          hasValidFiles
-            ? `Import cancelled. Layers already added were kept; ${removed} staged file(s) removed.`
-            : `Import cancelled. ${removed} staged file(s) removed.`,
-          "notification",
+        // A NEW toast, and the dismiss targets ITS id. By now the original
+        // loading toast has usually been replaced (creating any other toast
+        // removes the current one), and toast.update on a vanished id creates a
+        // fresh notification under a DIFFERENT id — one that never auto-dismisses
+        // — so dismiss(toastId) found nothing and the message stayed forever.
+        const cancelledToastId = toast.notification(
+          importedLayerIds.length > 0
+            ? `Import cancelled. ${importedLayerIds.length} layer(s) from this import removed; nothing was kept.`
+            : "Import cancelled. Nothing was added.",
         );
-        setTimeout(() => toast.dismiss(toastId), 5000);
-        // The layers that made it in before the cancel are still new to the user.
-        if (hasValidFiles) showLayersPanelAfterImport();
+        setTimeout(() => toast.dismiss(cancelledToastId), 5000);
         return;
       }
 
