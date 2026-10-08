@@ -46,10 +46,9 @@ const ALL_ON_WARNING =
  * Storage Paths button and popover; everything is a tap. Hidden only together
  * with the tool bar (see index.tsx).
  *
- * To the badge's LEFT, a precautionary warning chip: shown while the load is
- * not yet High but WOULD be if every loaded layer were switched on — i.e. the
- * hidden layers alone are enough to tip it. Once the load actually is High the
- * badge itself says so, and the chip steps aside.
+ * To the badge's LEFT, a precautionary warning chip: shown whenever the loaded
+ * layers, all switched on, would put the load at High — and it stays up once
+ * the load actually is High, so the risk is never out of sight.
  */
 export default function LayerLoadBadge() {
   const { layers } = useLayers();
@@ -58,7 +57,6 @@ export default function LayerLoadBadge() {
   const { stress } = summary;
   const isHigh = stress === "high";
   const warnAllOn =
-    !isHigh &&
     loadStress(summary.features / RECOMMENDED_VISIBLE_FEATURES) === "high";
 
   return (
